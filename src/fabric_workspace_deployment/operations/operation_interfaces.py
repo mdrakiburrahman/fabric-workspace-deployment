@@ -95,11 +95,11 @@ class AnalysisServiceCapacity:
     tenant_id: int
     contacts: list[Any]
     capacity_sku_tier: int
-    default_dataset_storage_mode: int
     capacity_rollout_region: str
     capacity_rollout_name: str
     capacity_rollout_url: str
     retention_period_days: int
+    default_dataset_storage_mode: int = 1
 
 
 @dataclass
