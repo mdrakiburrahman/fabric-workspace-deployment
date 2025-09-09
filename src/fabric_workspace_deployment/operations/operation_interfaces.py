@@ -1212,8 +1212,10 @@ class OperationParams:
         return {
             "timestamp": lambda: datetime.now().isoformat(),  # noqa: DTZ005
             "unique-env-id": lambda: os.getenv("UNIQUE_ENV_ID", self.get_user_alias()),
-            "user-alias": lambda: os.getenv("USER_ALIAS", self.get_user_alias()),
-            "user-oid": lambda: self.az_cli.get_user_oid(),
+            "user-appid": lambda: os.getenv("USER_APP_ID", self.az_cli.get_user_appid()),
+            "user-display-name": lambda: os.getenv("USER_DISPLAY_NAME", f"{self.get_user_alias()}@microsoft.com"),
+            "user-oid": lambda: os.getenv("USER_OBJECT_ID", self.az_cli.get_user_oid()),
+            "user-principal-type": lambda: os.getenv("USER_PRINCIPAL_TYPE", "User"),
         }
 
     def _replace_placeholders_in_value(self, value: Any) -> Any:

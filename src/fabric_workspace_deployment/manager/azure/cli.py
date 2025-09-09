@@ -119,7 +119,8 @@ class AzCli:
             RuntimeError: If the token cannot be retrieved or is empty
         """
         try:
-            token = self.run_command(f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
+            token = self.run_command(
+                f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
         except Exception as e:
             error = f"Failed to get access token for scope {scope}. Please ensure you are logged in with 'az login'"
             raise RuntimeError(error) from e
@@ -129,6 +130,108 @@ class AzCli:
             raise RuntimeError(error)
 
         return token
+
+    @functools.cache  # noqa: B019
+    def get_claim(self, claim_name: str) -> str:
+        """
+        Get a specific claim from the access token.
+
+        Args:
+            claim_name: The name of the claim to extract from the JWT token
+
+        Returns:
+            str: The claim value
+
+        Raises:
+            RuntimeError: If the token cannot be retrieved, decoded, or claim is not found
+
+        Here is a standard set of claims:
+
+        >>> az account get-access-token --resource 'https://analysis.windows.net/powerbi/api' --query accessToken --output tsv
+
+        ```
+        {
+          "typ": "JWT",
+          "alg": "RS256",
+          "x5t": "JYhAcTPMZ_LX6DBlOWQ7Hn0NeXE",
+          "kid": "JYhAcTPMZ_LX6DBlOWQ7Hn0NeXE"
+        }.{
+          "aud": "https://analysis.windows.net/powerbi/api",
+          "iss": "https://sts.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47/",
+          "iat": 1757451397,
+          "nbf": 1757451397,
+          "exp": 1757456730,
+          "acct": 0,
+          "acr": "1",
+          "aio": "...",
+          "amr": [
+            "fido",
+            "rsa",
+            "mfa"
+          ],
+          "appid": "04b0...7b46",
+          "appidacr": "0",
+          "controls": [
+            "app_res"
+          ],
+          "controls_auds": [
+            "00000...0000",
+            "00000...00"
+          ],
+          "deviceid": "64f9c...fa0e3",
+          "family_name": "Rahman",
+          "given_name": "Raki",
+          "idtyp": "user",
+          "ipaddr": "1...2",
+          "name": "Raki Rahman",
+          "oid": "b99...25",
+          "onprem_sid": "S-1...96",
+          "puid": "10...DD6",
+          "rh": "1.ARo...AA.",
+          "scp": "user_impersonation",
+          "sid": "00..c",
+          "signin_state": [
+            "dvc_mngd",
+            "dvc_cmp"
+          ],
+          "sub": "2m...A",
+          "tid": "72...47",
+          "unique_name": "mdrrahman@microsoft.com",
+          "upn": "mdrrahman@microsoft.com",
+          "uti": "O...A",
+          "ver": "1.0",
+          "wids": [
+            "b7...09"
+          ],
+          "xms_cc": [
+            "CP1"
+          ],
+          "xms_ftd": "Z_...bXM",
+          "xms_idrel": "1 30"
+        }.[Signature]
+        ```
+
+        """
+        try:
+            token = self.get_access_token(
+                "https://analysis.windows.net/powerbi/api")
+            parts = token.split(".")
+            if len(parts) != 3:  # noqa: PLR2004
+                raise RuntimeError("Invalid JWT token format")  # noqa: EM101
+            payload = parts[1]
+            padding = len(payload) % 4
+            if padding:
+                payload += "=" * (4 - padding)
+            decoded_payload = base64.b64decode(payload)
+            claims = json.loads(decoded_payload)
+            claim_value = claims.get(claim_name)
+            if not claim_value:
+                raise RuntimeError(f"{claim_name} claim not found in token")  # noqa: EM101
+            return claim_value
+
+        except Exception as e:
+            error = f"Failed to get {claim_name} claim: {e}"
+            raise RuntimeError(error) from e
 
     @functools.cache  # noqa: B019
     def get_user_oid(self) -> str:
@@ -141,22 +244,17 @@ class AzCli:
         Raises:
             RuntimeError: If the token cannot be retrieved, decoded, or oid claim is not found
         """
-        try:
-            token = self.get_access_token("https://analysis.windows.net/powerbi/api")
-            parts = token.split(".")
-            if len(parts) != 3:  # noqa: PLR2004
-                raise RuntimeError("Invalid JWT token format")  # noqa: EM101
-            payload = parts[1]
-            padding = len(payload) % 4
-            if padding:
-                payload += "=" * (4 - padding)
-            decoded_payload = base64.b64decode(payload)
-            claims = json.loads(decoded_payload)
-            oid = claims.get("oid")
-            if not oid:
-                raise RuntimeError("oid claim not found in token")  # noqa: EM101
-            return oid
+        return self.get_claim("oid")
 
-        except Exception as e:
-            error = f"Failed to get user object ID: {e}"
-            raise RuntimeError(error) from e
+    @functools.cache  # noqa: B019
+    def get_user_appid(self) -> str:
+        """
+        Get the user's application ID (appid) from the access token.
+
+        Returns:
+            str: The user's application ID
+
+        Raises:
+            RuntimeError: If the token cannot be retrieved, decoded, or appid claim is not found
+        """
+        return self.get_claim("appid")
