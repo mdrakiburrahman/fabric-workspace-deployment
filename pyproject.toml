@@ -13,6 +13,13 @@ keywords = []
 authors = [
   { name = "Raki Rahman", email = "mdrakiburrahman@gmail.com" },
 ]
+dependencies = [
+  "dacite==1.9.2",
+  "fabric-cicd==0.1.27",
+  "pyyaml==6.0.2",
+  "requests==2.32.5",
+  "azure-identity",
+]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
@@ -29,11 +36,7 @@ type = "virtual"
 path = ".venv"
 installer = "uv"
 dependencies = [
-  "dacite==1.9.2",
-  "fabric-cicd==0.1.27",
   "pyinstaller==6.14.1",
-  "pyyaml==6.0.2",
-  "requests==2.32.5",
 ]
 
 [project.scripts]
