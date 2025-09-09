@@ -16,7 +16,7 @@
             "executor": "nx:run-commands",
             "options": {
                 "commands": [
-                    "rm -rf build dist src/fabric_workspace_deployment/__pycache__",
+                    "rm -rf build dist src/*/__pycache__",
                     "hatch env prune",
                     "hatch run build:clean"
                 ],
