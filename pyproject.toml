@@ -52,7 +52,22 @@ dependencies = [
 ]
 [tool.hatch.envs.build.scripts]
 binary = "pyinstaller --onefile --name hello-world-app src/hello_world_app/main.py"
-clean = "rm -rf build dist *.spec"
+clean = "rm -rf build dist"
+
+[tool.hatch.envs.publish]
+dependencies = [
+  "twine>=4.0.0",
+  "keyring==25.6.0",
+  "artifacts-keyring==1.0.0",
+]
+[tool.hatch.envs.publish.scripts]
+build = "hatch build"
+upload = "twine upload --repository monitoring dist/*"
+release = [
+  "hatch run build:clean",
+  "build",
+  "upload",
+]
 
 [tool.coverage.run]
 source_pkgs = ["hello_world_app", "tests"]

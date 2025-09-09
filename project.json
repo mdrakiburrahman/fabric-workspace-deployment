@@ -35,6 +35,16 @@
                     }
                 ]
             }
+        },
+        "publish": {
+            "executor": "nx:run-commands",
+            "options": {
+                "commands": [
+                    "cp .pypirc ~/.pypirc",
+                    "hatch run publish:release"
+                ],
+                "parallel": false
+            }
         }
     }
 }
