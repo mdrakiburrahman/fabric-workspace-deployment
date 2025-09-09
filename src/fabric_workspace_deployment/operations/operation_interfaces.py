@@ -1211,12 +1211,35 @@ class OperationParams:
         """
         return {
             "timestamp": lambda: datetime.now().isoformat(),  # noqa: DTZ005
-            "unique-env-id": lambda: os.getenv("UNIQUE_ENV_ID", self.get_user_alias()),
-            "user-appid": lambda: os.getenv("USER_APP_ID", self.az_cli.get_user_appid()),
-            "user-display-name": lambda: os.getenv("USER_DISPLAY_NAME", f"{self.get_user_alias()}@microsoft.com"),
-            "user-oid": lambda: os.getenv("USER_OBJECT_ID", self.az_cli.get_user_oid()),
-            "user-principal-type": lambda: os.getenv("USER_PRINCIPAL_TYPE", "User"),
+            "unique-env-id": self._get_unique_env_id,
+            "user-appid": self._get_user_appid,
+            "user-display-name": self._get_user_display_name,
+            "user-oid": self._get_user_oid,
+            "user-principal-type": self._get_user_principal_type,
+            "user-fabric-admin-func()": self._user_fabric_admin_func,
         }
+
+    def _get_unique_env_id(self) -> str:
+        return os.getenv("UNIQUE_ENV_ID", self.get_user_alias())
+
+    def _get_user_appid(self) -> str:
+        return os.getenv("USER_APP_ID", self.az_cli.get_user_appid())
+
+    def _get_user_display_name(self) -> str:
+        return os.getenv("USER_DISPLAY_NAME", f"{self.get_user_alias()}@microsoft.com")
+
+    def _get_user_oid(self) -> str:
+        return os.getenv("USER_OBJECT_ID", self.az_cli.get_user_oid())
+
+    def _get_user_principal_type(self) -> str:
+        return os.getenv("USER_PRINCIPAL_TYPE", "User")
+
+    def _user_fabric_admin_func(self) -> str:
+        user_principal_type = self._get_user_principal_type()
+        if user_principal_type == "ServicePrincipal":
+            return self._get_user_oid()
+        else:
+            return self._get_user_display_name()
 
     def _replace_placeholders_in_value(self, value: Any) -> Any:
         """
