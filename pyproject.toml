@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hello-world-app"
+name = "fabric-workspace-deployment"
 dynamic = ["version"]
 description = ''
 readme = "README.md"
@@ -29,30 +29,30 @@ dependencies = [
 ]
 
 [project.scripts]
-hello-world-app = "hello_world_app.main:main"
+fabric-workspace-deployment = "fabric_workspace_deployment.main:main"
 
 [project.urls]
-Documentation = "https://github.com/Raki Rahman/hello-world-app#readme"
-Issues = "https://github.com/Raki Rahman/hello-world-app/issues"
-Source = "https://github.com/Raki Rahman/hello-world-app"
+Documentation = "https://github.com/mdrakiburrahman/fabric-workspace-deployment#readme"
+Issues = "https://github.com/mdrakiburrahman/fabric-workspace-deployment/issues"
+Source = "https://github.com/mdrakiburrahman/fabric-workspace-deployment"
 
 [tool.hatch.version]
 source = "code"
-path = "src/hello_world_app/__about__.py"
+path = "src/fabric_workspace_deployment/__about__.py"
 
 [tool.hatch.envs.types]
 extra-dependencies = [
   "mypy>=1.0.0",
 ]
 [tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:src/hello_world_app tests}"
+check = "mypy --install-types --non-interactive {args:src/fabric_workspace_deployment tests}"
 
 [tool.hatch.envs.build]
 dependencies = [
   "pyinstaller>=6.0.0",
 ]
 [tool.hatch.envs.build.scripts]
-binary = "pyinstaller --onefile --name hello-world-app src/hello_world_app/main.py"
+binary = "pyinstaller --onefile --name fabric-workspace-deployment src/fabric_workspace_deployment/main.py"
 clean = "rm -rf build dist"
 
 [tool.hatch.envs.publish]
@@ -71,16 +71,16 @@ release = [
 ]
 
 [tool.coverage.run]
-source_pkgs = ["hello_world_app", "tests"]
+source_pkgs = ["fabric_workspace_deployment", "tests"]
 branch = true
 parallel = true
 omit = [
-  "src/hello_world_app/__about__.py",
+  "src/fabric_workspace_deployment/__about__.py",
 ]
 
 [tool.coverage.paths]
-hello_world_app = ["src/hello_world_app", "*/hello-world-app/src/hello_world_app"]
-tests = ["tests", "*/hello-world-app/tests"]
+fabric_workspace_deployment = ["src/fabric_workspace_deployment", "*/fabric-workspace-deployment/src/fabric_workspace_deployment"]
+tests = ["tests", "*/fabric-workspace-deployment/tests"]
 
 [tool.coverage.report]
 exclude_lines = [

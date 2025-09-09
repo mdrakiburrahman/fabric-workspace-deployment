@@ -16,6 +16,8 @@
             "executor": "nx:run-commands",
             "options": {
                 "commands": [
+                    "rm -rf build dist src/fabric_workspace_deployment/__pycache__",
+                    "hatch env prune",
                     "hatch run build:clean"
                 ],
                 "parallel": false
@@ -30,7 +32,7 @@
                 "cwd": "dist",
                 "commands": [
                     {
-                        "command": "./hello-world-app",
+                        "command": "./fabric-workspace-deployment",
                         "forwardAllArgs": true
                     }
                 ]

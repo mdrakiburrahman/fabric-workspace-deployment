@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Simple hello world application.
+Fabric Workspace Deployment.
 """
 
 
 def main():
     """Main entry point for the application."""
-    print("Bye World!")
+    print("Hello Fabric!")
 
 
 if __name__ == "__main__":

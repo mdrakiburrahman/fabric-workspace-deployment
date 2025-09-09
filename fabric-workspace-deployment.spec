@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['src/hello_world_app/main.py'],
+    ['src/fabric_workspace_deployment/main.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='hello-world-app',
+    name='fabric-workspace-deployment',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
