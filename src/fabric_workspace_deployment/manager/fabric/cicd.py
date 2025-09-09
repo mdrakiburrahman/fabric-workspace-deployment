@@ -8,9 +8,9 @@ from pathlib import Path
 
 from azure.identity import AzureCliCredential
 
-from ..azure.cli import AzCli
-from .cli import FabricCli
-from ...operations.operation_interfaces import CicdManager, CommonParams, FabricWorkspaceTemplateParams, WorkspaceManager
+from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.operations.operation_interfaces import CicdManager, CommonParams, FabricWorkspaceTemplateParams, WorkspaceManager
 
 
 class FabricCicdManager(CicdManager):
@@ -45,7 +45,8 @@ class FabricCicdManager(CicdManager):
             tasks.append(task)
 
         if tasks:
-            self.logger.info(f"Executing CICD reconciliation for {len(tasks)} workspaces in parallel")
+            self.logger.info(
+                f"Executing CICD reconciliation for {len(tasks)} workspaces in parallel")
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = []
             for i, result in enumerate(results):
@@ -79,18 +80,21 @@ class FabricCicdManager(CicdManager):
         if logging.getLogger().handlers != current_handlers:
             logging.getLogger().handlers = current_handlers
 
-        self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
+        self.logger.info(
+            f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 
         fabric_cicd.constants.DEFAULT_API_ROOT_URL = self.common_params.endpoint.cicd
         target_workspace = fabric_cicd.FabricWorkspace(
             workspace_id=workspace_id,
             environment=template_params.environment_key,
-            repository_directory=str(Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
+            repository_directory=str(
+                Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
             item_type_in_scope=template_params.item_types_in_scope,
             token_credential=self.token_credential,
         )
 
-        self.logger.info(f"Adding {len(template_params.feature_flags)} feature flags")
+        self.logger.info(
+            f"Adding {len(template_params.feature_flags)} feature flags")
         for feature_flag in template_params.feature_flags:
             self.logger.debug(f"Adding feature flag: {feature_flag}")
             fabric_cicd.append_feature_flag(feature_flag)
@@ -102,4 +106,5 @@ class FabricCicdManager(CicdManager):
             self.logger.info("Unpublishing orphan items")
             fabric_cicd.unpublish_all_orphan_items(target_workspace)
 
-        self.logger.info(f"Completed CICD reconciliation for workspace ID: {workspace_id}")
+        self.logger.info(
+            f"Completed CICD reconciliation for workspace ID: {workspace_id}")

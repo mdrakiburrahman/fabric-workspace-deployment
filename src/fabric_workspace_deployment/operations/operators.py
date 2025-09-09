@@ -4,10 +4,10 @@
 
 import logging
 
-from ..factories.management_factory import ContainerizedManagementFactory, ManagementFactory
-from ..manager.azure.cli import AzCli
-from ..manager.fabric.cli import FabricCli
-from .operation_interfaces import (
+from fabric_workspace_deployment.factories.management_factory import ContainerizedManagementFactory, ManagementFactory
+from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.operations.operation_interfaces import (
     CapacityManager,
     CicdManager,
     EntryPointOperator,
@@ -31,7 +31,8 @@ class CentralOperator(EntryPointOperator):
         """
         super().__init__(operation_params)
         self.logger = logging.getLogger(__name__)
-        self.management_factory: ManagementFactory = ContainerizedManagementFactory(operation_params)
+        self.management_factory: ManagementFactory = ContainerizedManagementFactory(
+            operation_params)
         self.azure_cli: AzCli = self.management_factory.create_azure_cli()
         self.fabric_cli: FabricCli = self.management_factory.create_fabric_cli()
         self.capacity_manager: CapacityManager = self.management_factory.create_fabric_capacity_manager()
@@ -43,7 +44,8 @@ class CentralOperator(EntryPointOperator):
     async def execute(self) -> None:
         """Execute the operation based on the operation type."""
         try:
-            self.logger.info(f"Fabric CLI version: {self.fabric_cli.run_command('version')}")
+            self.logger.info(
+                f"Fabric CLI version: {self.fabric_cli.run_command('version')}")
             self.logger.info(f"Executing operation: {self.operation.value}")
 
             match self.operation:
@@ -72,10 +74,12 @@ class CentralOperator(EntryPointOperator):
                     error_message = f"Unknown operation: {self.operation}"
                     raise ValueError(error_message)
 
-            self.logger.info(f"Successfully completed operation: {self.operation.value}")
+            self.logger.info(
+                f"Successfully completed operation: {self.operation.value}")
 
         except Exception as e:
-            self.logger.error(f"Failed to execute operation {self.operation.value}: {e}")
+            self.logger.error(
+                f"Failed to execute operation {self.operation.value}: {e}")
             raise
 
     # ---------------------------------------------------------------------------- #
@@ -124,6 +128,8 @@ class CentralOperator(EntryPointOperator):
         await self.shortcut_manager.execute()
 
     def _azure_set(self) -> None:
-        self.azure_cli.run_command(f"account set --subscription {self.operation_params.common.arm.subscription_id}")
-        self.azure_cli.run_command("provider register --namespace Microsoft.Fabric")
-        self.azure_cli.run_command(f"group create --name {self.operation_params.common.arm.resource_group} --location {self.operation_params.common.arm.location}") # fmt: skip  # noqa: E501
+        self.azure_cli.run_command(
+            f"account set --subscription {self.operation_params.common.arm.subscription_id}")
+        self.azure_cli.run_command(
+            "provider register --namespace Microsoft.Fabric")
+        self.azure_cli.run_command(f"group create --name {self.operation_params.common.arm.resource_group} --location {self.operation_params.common.arm.location}")  # fmt: skip  # noqa: E501

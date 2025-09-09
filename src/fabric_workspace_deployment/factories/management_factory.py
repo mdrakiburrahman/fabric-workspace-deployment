@@ -7,14 +7,14 @@ from abc import ABC, abstractmethod
 
 from azure.identity import AzureCliCredential
 
-from ..manager.azure.cli import AzCli
-from ..manager.fabric.capacity import FabricCapacityManager
-from ..manager.fabric.cicd import FabricCicdManager
-from ..manager.fabric.cli import FabricCli
-from ..manager.fabric.rbac import FabricRbacManager
-from ..manager.fabric.shortcut import FabricShortcutManager
-from ..manager.fabric.workspace import FabricWorkspaceManager
-from ..operations.operation_interfaces import OperationParams
+from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
+from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
+from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
+from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
+from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
+from fabric_workspace_deployment.operations.operation_interfaces import OperationParams
 
 
 class ManagementFactory(ABC):
