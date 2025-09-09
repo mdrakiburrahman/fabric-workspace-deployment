@@ -6,7 +6,7 @@ Simple hello world application.
 
 def main():
     """Main entry point for the application."""
-    print("Hello World!")
+    print("Bye World!")
 
 
 if __name__ == "__main__":
