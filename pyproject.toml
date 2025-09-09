@@ -37,6 +37,7 @@ Issues = "https://github.com/Raki Rahman/hello-world-app/issues"
 Source = "https://github.com/Raki Rahman/hello-world-app"
 
 [tool.hatch.version]
+source = "code"
 path = "src/hello_world_app/__about__.py"
 
 [tool.hatch.envs.types]

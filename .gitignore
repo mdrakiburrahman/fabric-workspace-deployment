@@ -4,3 +4,4 @@ nx
 .nx/
 dist/
 build/
+__pycache__/
