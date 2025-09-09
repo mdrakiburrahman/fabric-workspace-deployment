@@ -1790,7 +1790,7 @@ class OperationParams:
     def _parse_fabric_capacity_params(self, data: dict[str, Any]) -> FabricCapacityParams:
         """Parse Fabric capacity parameters."""
         return FabricCapacityParams(
-            administrators=data["administrators"],
+            administrators=list(dict.fromkeys(data["administrators"])),
             name=data["name"],
             sku=data["sku"],
         )
