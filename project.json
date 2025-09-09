@@ -16,8 +16,9 @@
             "executor": "nx:run-commands",
             "options": {
                 "commands": [
-                    "rm -rf build dist src/*/__pycache__",
+                    "rm -rf build dist src/*/__pycache__ .venv",
                     "hatch env prune",
+                    "hatch env create",
                     "hatch run build:clean"
                 ],
                 "parallel": false

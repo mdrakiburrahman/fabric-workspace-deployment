@@ -1,0 +1,3 @@
+{
+    "python.defaultInterpreterPath": "./tools/libs/fabric_workspace_deployment/.venv/bin/python"
+}
