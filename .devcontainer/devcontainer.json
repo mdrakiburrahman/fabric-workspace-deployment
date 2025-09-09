@@ -1,0 +1,6 @@
+{
+    "name": "devcontainer",
+    "image": "monitoringdev.azurecr.io/devcontainer:cf07fac2d13bfb1491d80dab57985f27cf72fb7af7c7c68aa072e1a242f91200",
+    "remoteUser": "vscode",
+    "containerUser": "vscode"
+}
