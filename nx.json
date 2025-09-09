@@ -1,0 +1,20 @@
+{
+    "$schema": "./node_modules/nx/schemas/nx-schema.json",
+    "useDaemonProcess": false,
+    "targetDefaults": {
+        "lint": {
+            "configurations": {
+                "ci": {}
+            },
+            "cache": false
+        },
+        "test": {
+            "dependsOn": [
+                "build"
+            ]
+        }
+    },
+    "installation": {
+        "version": "18.3.5"
+    }
+}
