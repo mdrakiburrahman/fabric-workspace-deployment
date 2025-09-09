@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hello-world-app"
+dynamic = ["version"]
+description = ''
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "Raki Rahman", email = "mdrakiburrahman@gmail.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "pyinstaller>=6.0.0",
+]
+
+[project.scripts]
+hello-world-app = "hello_world_app.main:main"
+
+[project.urls]
+Documentation = "https://github.com/Raki Rahman/hello-world-app#readme"
+Issues = "https://github.com/Raki Rahman/hello-world-app/issues"
+Source = "https://github.com/Raki Rahman/hello-world-app"
+
+[tool.hatch.version]
+path = "src/hello_world_app/__about__.py"
+
+[tool.hatch.envs.types]
+extra-dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src/hello_world_app tests}"
+
+[tool.hatch.envs.build]
+dependencies = [
+  "pyinstaller>=6.0.0",
+]
+[tool.hatch.envs.build.scripts]
+binary = "pyinstaller --onefile --name hello-world-app src/hello_world_app/main.py"
+clean = "rm -rf build dist *.spec"
+
+[tool.coverage.run]
+source_pkgs = ["hello_world_app", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/hello_world_app/__about__.py",
+]
+
+[tool.coverage.paths]
+hello_world_app = ["src/hello_world_app", "*/hello-world-app/src/hello_world_app"]
+tests = ["tests", "*/hello-world-app/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

@@ -3,13 +3,37 @@
     "$schema": "node_modules/nx/schemas/project-schema.json",
     "projectType": "application",
     "targets": {
-        "test": {
+        "build": {
             "executor": "nx:run-commands",
             "options": {
                 "commands": [
-                    "echo 'test'"
+                    "hatch run build:binary"
                 ],
                 "parallel": false
+            }
+        },
+        "clean": {
+            "executor": "nx:run-commands",
+            "options": {
+                "commands": [
+                    "hatch run build:clean"
+                ],
+                "parallel": false
+            }
+        },
+        "run": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "build"
+            ],
+            "options": {
+                "cwd": "dist",
+                "commands": [
+                    {
+                        "command": "./hello-world-app",
+                        "forwardAllArgs": true
+                    }
+                ]
             }
         }
     }
