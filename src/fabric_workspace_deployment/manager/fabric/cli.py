@@ -62,10 +62,16 @@ class FabricCli:
 
         self.logger.debug(f"Exited command: {' '.join(commands)}")
 
-        if proc.returncode != 0 and self.exit_on_error:
-            raise Exception(stderr.decode(sys.stderr.encoding))
+        stdout_str = stdout.decode(sys.stdout.encoding)
+        stderr_str = stderr.decode(sys.stderr.encoding)
 
-        return (stdout.decode(sys.stdout.encoding), stderr.decode(sys.stderr.encoding))
+        self.logger.debug(f"Stdout: {stdout_str}")
+        self.logger.debug(f"Stderr: {stderr_str}")
+
+        if proc.returncode != 0 and self.exit_on_error:
+            raise Exception(stderr_str)
+
+        return (stdout_str, stderr_str)
 
     def run_fab(self, command_string: str, timeout: int | None = None) -> tuple[str, str]:
         """
