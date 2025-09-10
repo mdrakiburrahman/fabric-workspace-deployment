@@ -6,6 +6,7 @@ import functools
 import json
 import logging
 import os
+import re
 import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -1161,10 +1162,28 @@ class OperationParams:
     @functools.cache  # noqa: B019
     def get_user_alias(self) -> str:
         """
-        Gets the user's alias from their git config.
+        Gets the user's alias from environment variable or git config.
 
-        If you always need the user's alias in a specific context,
-        consider using a constant instead of calling this function directly.
+        First attempts to get from USER_DISPLAY_NAME environment variable,
+        then falls back to git config user.email if not found.
+
+        Returns:
+            str: The user's alias (cleaned from display name or email)
+        """
+        user_alias = os.getenv("USER_DISPLAY_NAME", "")
+        if user_alias:
+            cleaned_alias = re.sub(r'[^a-zA-Z0-9]', '', user_alias.lower())
+            if cleaned_alias:
+                return cleaned_alias
+
+        return self._get_user_alias_git()
+
+    # ---------------------------------------------------------------------------- #
+
+    @functools.cache  # noqa: B019
+    def _get_user_alias_git(self) -> str:
+        """
+        Gets the user's alias from their git config.
 
         Returns:
             str: The user's alias (part before @ in their git email)
@@ -1196,8 +1215,6 @@ class OperationParams:
             raise RuntimeError(err_str)
 
         return alias
-
-    # ---------------------------------------------------------------------------- #
 
     def _get_placeholder_resolvers(self) -> dict[str, Callable[[], str]]:
         """
