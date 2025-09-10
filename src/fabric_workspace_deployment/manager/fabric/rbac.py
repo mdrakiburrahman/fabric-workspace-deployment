@@ -89,16 +89,40 @@ class FabricRbacManager(RbacManager):
     async def reconcile(self, workspace_id: str, rbac_params: RbacParams) -> None:
         """
         Reconcile all RBAC for a single workspace.
+
+        The try-catch is because when workspace permissions are updated, Fabric
+        automatically but non-deterministically propagates removal of items (some, but not all),
+        so since they are non-deterministic, it leads to a race condition with us.
+
+        By retrying with no state (refresh via GET), we can eventually converge
+        to the desired state.
         """
-        workspace_folder_info = await self.get_fabric_workspace_folder_info(workspace_id)
-        workspace_items = await self.get_fabric_workspace_item_info(workspace_id)
-        workspace_rbac_info = await self.get_fabric_workspace_folder_rbac_info(workspace_folder_info.id)
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                workspace_folder_info = await self.get_fabric_workspace_folder_info(workspace_id)
+                workspace_items = await self.get_fabric_workspace_item_info(workspace_id)
+                workspace_rbac_info = await self.get_fabric_workspace_folder_rbac_info(workspace_folder_info.id)
 
-        item_rbac_infos = []
-        for workspace_item in workspace_items:
-            item_rbac_infos.append(await self.get_fabric_workspace_item_rbac_info(workspace_item.id, workspace_item.type))
+                item_rbac_infos = []
+                for workspace_item in workspace_items:
+                    item_rbac_infos.append(await self.get_fabric_workspace_item_rbac_info(workspace_item.id, workspace_item.type))
 
-        await self._reconcile_role_assignments(rbac_params, workspace_rbac_info, item_rbac_infos)
+                await self._reconcile_role_assignments(rbac_params, workspace_rbac_info, item_rbac_infos)
+
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    self.logger.error(
+                        f"Failed to reconcile role assignments after {max_retries} attempts: {e}")
+                    raise
+
+                delay = min(2 ** attempt, 15)
+                self.logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries} failed to reconcile role assignments: {e}. "
+                    f"Retrying in {delay} seconds."
+                )
+                await asyncio.sleep(delay)
 
     async def get_fabric_workspace_folder_info(self, workspace_id: str) -> FabricWorkspaceFolderInfo:
         self.logger.info(
@@ -148,6 +172,8 @@ class FabricRbacManager(RbacManager):
             )
             response.raise_for_status()
             items_data = response.json()
+            self.logger.debug(
+                f"Current State Workspace Items RBAC for {workspace_id}: {items_data}")
             items_list = items_data.get("value", [])
             fabric_items = []
             for item_data in items_list:
@@ -186,6 +212,8 @@ class FabricRbacManager(RbacManager):
             )
             response.raise_for_status()
             rbac_data = response.json()
+            self.logger.debug(
+                f"Current State Workspace RBAC for {folder_id}: {rbac_data}")
             rbac_data_snake_case = StringTransformer.convert_keys_to_snake_case(
                 rbac_data)
             detail_items = []
@@ -326,6 +354,7 @@ class FabricRbacManager(RbacManager):
             f"on item {item_id} with permissions {assignment.permissions}, "
             f"artifactPermissions {assignment.artifact_permissions}"
         )
+        self.logger.debug(payload)
 
         try:
             response = requests.put(
@@ -351,23 +380,35 @@ class FabricRbacManager(RbacManager):
         is_service_principal = identity.principal_type == PrincipalType.SERVICE_PRINCIPAL
         is_group = identity.principal_type == PrincipalType.GROUP
 
-        folder_data = {
-            "id": folder_id,
-            "permissions": assignment.permissions,
-            "isServicePrincipal": is_service_principal,
-        }
+        if assignment.permissions == 0:
+            folder_data = {
+                "id": folder_id,
+                "permissions": assignment.permissions
+            }
+            if is_group:
+                folder_data["groupId"] = identity.fabric_principal_id
+            else:
+                folder_data["userId"] = identity.fabric_principal_id
+            payload = {"folders": [folder_data]}
+            action = "REMOVING"
 
-        if is_group:
-            folder_data["groupObjectId"] = assignment.object_id
         else:
-            folder_data["userObjectId"] = assignment.object_id
+            folder_data = {
+                "id": folder_id,
+                "permissions": assignment.permissions,
+                "isServicePrincipal": is_service_principal,
+            }
+            if is_group:
+                folder_data["groupObjectId"] = assignment.object_id
+            else:
+                folder_data["userObjectId"] = assignment.object_id
+            payload = {"folders": [folder_data]}
+            action = "ADDING/UPDATING"
 
-        payload = {"folders": [folder_data]}
-
-        action = "REMOVING" if assignment.permissions == 0 else "ADDING/UPDATING"
         self.logger.info(
             f"{action} role assignment for {identity.given_name} ({assignment.object_id}) with permissions {assignment.permissions}"  # noqa: E501
         )
+        self.logger.debug(payload)
 
         try:
             response = requests.put(
@@ -443,7 +484,15 @@ class FabricRbacManager(RbacManager):
         if desired_state.purge_unmatched_role_assignments:
             for object_id, current_detail in current_assignments.items():
                 if object_id not in desired_assignments:
-                    principal_type = PrincipalType.SERVICE_PRINCIPAL if current_detail.aad_app_id else PrincipalType.USER
+                    if current_detail.group_id:
+                        principal_type = PrincipalType.GROUP
+                        fabric_principal_id = current_detail.group_id
+                    elif current_detail.aad_app_id:
+                        principal_type = PrincipalType.SERVICE_PRINCIPAL
+                        fabric_principal_id = current_detail.user_id
+                    else:
+                        principal_type = PrincipalType.USER
+                        fabric_principal_id = current_detail.user_id
                     removal_assignment = WorkspaceRbacParams(
                         permissions=0,
                         object_id=current_detail.object_id,
@@ -454,6 +503,7 @@ class FabricRbacManager(RbacManager):
                         object_id=current_detail.object_id,
                         principal_type=principal_type,
                         aad_app_id=current_detail.aad_app_id,
+                        fabric_principal_id=fabric_principal_id,
                     )
                     assignments_to_remove.append(
                         (removal_assignment, removal_identity))

@@ -331,6 +331,7 @@ class FabricWorkspaceFolderRbacDetail:
 
     id: int
     user_id: int | None
+    group_id: int | None
     permissions: int
     given_name: str
     object_id: str
@@ -349,6 +350,9 @@ class FabricWorkspaceFolderRbacInfo:
     object_id: str
     permissions: int
     shared_with_count: int
+    group_id: int | None
+    user_id: int | None
+    group_type: int | None
     detail: list[FabricWorkspaceFolderRbacDetail]
 
 
@@ -459,6 +463,7 @@ class Identity:
     object_id: str
     principal_type: PrincipalType
     aad_app_id: str | None = None
+    fabric_principal_id: int | None = None
 
 
 @dataclass
