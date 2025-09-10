@@ -299,8 +299,8 @@ class FabricWorkspaceManager(WorkspaceManager):
             f"Assigning role '{role}' to workspace identity '{app_id}' for storage scope: {scope}")
 
         try:
-            self.az_cli.run(["role", "assignment", "create", "--assignee", app_id, "--assignee-object-id",
-                            object_id, "--assignee-principal-type", "ServicePrincipal", "--role", role, "--scope", scope])
+            self.az_cli.run(["role", "assignment", "create", "--assignee-object-id", object_id,
+                            "--assignee-principal-type", "ServicePrincipal", "--role", role, "--scope", scope])
             self.logger.info(
                 f"Successfully assigned storage role for workspace: {workspace_info.display_name}")
         except Exception as e:
