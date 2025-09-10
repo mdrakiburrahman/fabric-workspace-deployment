@@ -290,16 +290,17 @@ class FabricWorkspaceManager(WorkspaceManager):
             error_msg = f"Workspace '{workspace_info.display_name}' has no managed identity"
             raise RuntimeError(error_msg)
 
-        assignee = workspace_info.workspace_identity.application_id
+        app_id = workspace_info.workspace_identity.application_id
+        object_id = workspace_info.workspace_identity.service_principal_id
         scope = f"/subscriptions/{storage_params.subscription_id}/resourceGroups/{storage_params.resource_group}/providers/Microsoft.Storage/storageAccounts/{storage_params.account}"  # noqa: E501
         role = "Storage Blob Data Reader"
 
         self.logger.info(
-            f"Assigning role '{role}' to workspace identity '{assignee}' for storage scope: {scope}")
+            f"Assigning role '{role}' to workspace identity '{app_id}' for storage scope: {scope}")
 
         try:
-            self.az_cli.run(["role", "assignment", "create", "--assignee",
-                            assignee, "--role", role, "--scope", scope])
+            self.az_cli.run(["role", "assignment", "create", "--assignee", app_id, "--assignee-object-id",
+                            object_id, "--assignee-principal-type", "ServicePrincipal", "--role", role, "--scope", scope])
             self.logger.info(
                 f"Successfully assigned storage role for workspace: {workspace_info.display_name}")
         except Exception as e:
