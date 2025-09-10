@@ -5,6 +5,8 @@
 import logging
 import sys
 from subprocess import PIPE, Popen, TimeoutExpired
+import os
+
 
 class FabricCli:
     """
@@ -40,6 +42,10 @@ class FabricCli:
         """
         if not commands or commands[0] != "fab":
             commands.insert(0, "fab")
+
+        fab_path = os.getenv("FAB_PATH")
+        if fab_path:
+            commands[0] = os.path.join(fab_path, "fab")
 
         self.logger.debug(f"Executing command: {' '.join(commands)}")
         proc = Popen(commands, stdout=PIPE, stderr=PIPE, env=env)  # noqa: S603

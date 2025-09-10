@@ -10,6 +10,7 @@ from datetime import datetime
 
 from fabric_workspace_deployment.operations.operation_interfaces import OperationParams
 from fabric_workspace_deployment.operations.operators import CentralOperator
+import os
 
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
@@ -25,8 +26,9 @@ def setup_logging() -> str:
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
     log_filename = f"app_{timestamp}.log"
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, log_level),
         format="%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s",
         handlers=[logging.FileHandler(log_filename), logging.StreamHandler()],
     )
