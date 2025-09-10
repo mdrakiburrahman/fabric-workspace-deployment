@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: MIT
 
 import logging
+import os
+import time
 from abc import ABC, abstractmethod
 
 from azure.identity import AzureCliCredential
 
+from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
@@ -98,9 +101,16 @@ class ContainerizedManagementFactory(ManagementFactory):
         return FabricWorkspaceManager(self.operation_params.common, self.create_azure_cli(), self.create_fabric_cli())
 
     def create_fabric_cicd_manager(self) -> FabricCicdManager:
+        fab_token_cicd = os.getenv("FAB_TOKEN_CICD", "").strip()
+        if fab_token_cicd:
+            expiry = int(time.time()) + (365 * 24 * 60 * 60)
+            token_credential = StaticTokenCredential(fab_token_cicd, expiry)
+        else:
+            token_credential = AzureCliCredential()
+
         return FabricCicdManager(
             self.operation_params.common,
-            AzureCliCredential(),
+            token_credential,
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),

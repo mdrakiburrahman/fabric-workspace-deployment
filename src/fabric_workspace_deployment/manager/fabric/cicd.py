@@ -6,7 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from azure.identity import AzureCliCredential
+from azure.core.credentials import TokenCredential
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
@@ -19,7 +19,7 @@ class FabricCicdManager(CicdManager):
     def __init__(
         self,
         common_params: CommonParams,
-        token_credential: AzureCliCredential,
+        token_credential: TokenCredential,
         az_cli: AzCli,
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
