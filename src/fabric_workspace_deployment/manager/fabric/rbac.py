@@ -260,6 +260,7 @@ class FabricRbacManager(RbacManager):
             )
             response.raise_for_status()
             rbac_data = response.json()
+            self.logger.debug(rbac_data)
             rbac_data_snake_case = StringTransformer.convert_keys_to_snake_case(
                 rbac_data)
             detail_items = []
@@ -614,7 +615,12 @@ class FabricRbacManager(RbacManager):
                         break
 
                 if matching_desired is None:
-                    principal_type = PrincipalType.SERVICE_PRINCIPAL if current_detail.aad_app_id else PrincipalType.USER
+                    if current_detail.group_id:
+                        principal_type = PrincipalType.GROUP
+                    elif current_detail.aad_app_id:
+                        principal_type = PrincipalType.SERVICE_PRINCIPAL
+                    else:
+                        principal_type = PrincipalType.USER
                     removal_assignment = ItemRbacDetailParams(
                         permissions=0,
                         artifact_permissions=0,

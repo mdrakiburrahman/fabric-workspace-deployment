@@ -385,6 +385,7 @@ class FabricWorkspaceItemRbacDetail:
 
     id: int
     user_id: int | None
+    group_id: int | None
     permissions: int
     given_name: str
     object_id: str
