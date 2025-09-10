@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 from subprocess import PIPE, Popen, TimeoutExpired
+import os
 
 
 class AzCli:
@@ -124,6 +125,11 @@ class AzCli:
         Raises:
             RuntimeError: If the token cannot be retrieved or is empty
         """
+        if scope == "https://analysis.windows.net/powerbi/api" and os.getenv("FAB_TOKEN"):
+            return os.getenv("FAB_TOKEN")
+        elif scope == "https://management.azure.com" and os.getenv("FAB_TOKEN_AZURE"):
+            return os.getenv("FAB_TOKEN_AZURE")
+
         try:
             token = self.run_command(
                 f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
