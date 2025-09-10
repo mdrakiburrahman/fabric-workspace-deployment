@@ -79,37 +79,30 @@ class FabricWorkspaceManager(WorkspaceManager):
         workspace_info = await self.get(workspace_params)
         as_capacity = await self.get_analysis_service_capacity(workspace_info.id)
 
+        updates_needed = []
+        fabric_updates_needed = {}
+        analysis_service_updates_needed = {}
+
         if workspace_info.display_name != workspace_params.name:
             self.logger.info(
-                f"Workspace '{workspace_params.name}' display name mismatch. Current: {workspace_info.display_name}, Desired: {workspace_params.name}. Updating."  # fmt: skip # noqa: E501
+                f"Workspace '{workspace_params.name}' display name mismatch. Current: {workspace_info.display_name}, Desired: {workspace_params.name}."
             )
-            await self.set(workspace_params, "displayName", workspace_params.name)
-            self.logger.info(
-                f"Successfully updated display name for workspace '{workspace_params.name}'")
-        else:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' display name is already correct")
+            fabric_updates_needed["displayName"] = workspace_params.name
+            updates_needed.append("displayName")
 
         if workspace_info.description != workspace_params.description:
             self.logger.info(
-                f"Workspace '{workspace_params.name}' description mismatch. Current: {workspace_info.description}, Desired: {workspace_params.description}. Updating."  # fmt: skip # noqa: E501
+                f"Workspace '{workspace_params.name}' description mismatch. Current: {workspace_info.description}, Desired: {workspace_params.description}."
             )
-            await self.set(workspace_params, "description", workspace_params.description)
-            self.logger.info(
-                f"Successfully updated description for workspace '{workspace_params.name}'")
-        else:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' description is already correct")
+            fabric_updates_needed["description"] = workspace_params.description
+            updates_needed.append("description")
 
         if as_capacity.default_dataset_storage_mode != workspace_params.dataset_storage_mode:
             self.logger.info(
-                f"Workspace '{workspace_params.name}' datasetStorageMode mismatch. Current: {as_capacity.default_dataset_storage_mode}, Desired: {workspace_params.dataset_storage_mode}. Updating."  # fmt: skip # noqa: E501
+                f"Workspace '{workspace_params.name}' datasetStorageMode mismatch. Current: {as_capacity.default_dataset_storage_mode}, Desired: {workspace_params.dataset_storage_mode}."
             )
-            await self.set_analysis_service_capacity(
-                workspace_info.id, f'{{"datasetStorageMode":{workspace_params.dataset_storage_mode}}}'
-            )
-            self.logger.info(
-                f"Successfully updated datasetStorageMode for workspace '{workspace_params.name}'")
+            analysis_service_updates_needed["datasetStorageMode"] = workspace_params.dataset_storage_mode
+            updates_needed.append("datasetStorageMode")
 
         desired_icon_payload = workspace_params.get_icon_payload(
             self.common_params.local.root_folder)
@@ -119,13 +112,39 @@ class FabricWorkspaceManager(WorkspaceManager):
             self.logger.info(
                 f"Workspace '{workspace_params.name}' icon mismatch. Updating with new icon."
             )
-            icon_json = json.dumps({"icon": desired_icon_payload})
-            await self.set_analysis_service_capacity(workspace_info.id, icon_json)
+            analysis_service_updates_needed["icon"] = desired_icon_payload
+            updates_needed.append("icon")
+
+        if fabric_updates_needed:
             self.logger.info(
-                f"Successfully updated icon for workspace '{workspace_params.name}'")
-        else:
+                f"Updating Fabric workspace properties: {list(fabric_updates_needed.keys())}")
+            for property_name, value in fabric_updates_needed.items():
+                await self.set(workspace_params, property_name, value)
             self.logger.info(
-                f"Workspace '{workspace_params.name}' icon is already correct")
+                f"Successfully updated Fabric workspace properties for '{workspace_params.name}'")
+
+        if analysis_service_updates_needed:
+            self.logger.info(
+                f"Updating Analysis Service properties: {list(analysis_service_updates_needed.keys())}")
+            update_data = {
+                "displayName": workspace_info.display_name,
+                "capacityObjectId": as_capacity.capacity_object_id
+            }
+
+            if "datasetStorageMode" in analysis_service_updates_needed:
+                update_data["datasetStorageMode"] = analysis_service_updates_needed["datasetStorageMode"]
+
+            if "icon" in analysis_service_updates_needed:
+                update_data["icon"] = analysis_service_updates_needed["icon"]
+
+            update_json = json.dumps(update_data)
+            await self.set_analysis_service_capacity(workspace_info.id, update_json)
+            self.logger.info(
+                f"Successfully updated Analysis Service properties for '{workspace_params.name}'")
+
+        if not updates_needed:
+            self.logger.info(
+                f"Workspace '{workspace_params.name}' is already up to date")
 
         if workspace_info.workspace_identity is None:
             self.logger.info(
@@ -133,12 +152,12 @@ class FabricWorkspaceManager(WorkspaceManager):
             await self.create_managed_identity(workspace_params)
             self.logger.info(
                 f"Successfully created managed identity for workspace '{workspace_params.name}'")
+            workspace_info = await self.get(workspace_params)
         else:
             self.logger.info(
-                f"Workspace '{workspace_params.name}' already has a managed identity '{workspace_info.workspace_identity}'"
-            )
+                f"Workspace '{workspace_params.name}' already has a managed identity '{workspace_info.workspace_identity}'")
 
-        await self.assign_workspace_storage_reader(await self.get(workspace_params), self.common_params.fabric.storage)
+        await self.assign_workspace_storage_reader(workspace_info, self.common_params.fabric.storage)
 
         self.logger.info(
             f"Completed reconciliation for workspace: {workspace_params.name}")
@@ -284,6 +303,9 @@ class FabricWorkspaceManager(WorkspaceManager):
             timeout=60,
         )
         response.raise_for_status()
+        response_data = response.text
+        self.logger.debug(
+            f"Analysis Service capacity update response: {response_data}")
         self.logger.info(
             f"Successfully updated Analysis Service capacity for object ID: {object_id}")
 
