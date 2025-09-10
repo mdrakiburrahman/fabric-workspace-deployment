@@ -111,6 +111,22 @@ class FabricWorkspaceManager(WorkspaceManager):
             self.logger.info(
                 f"Successfully updated datasetStorageMode for workspace '{workspace_params.name}'")
 
+        desired_icon_payload = workspace_params.get_icon_payload(
+            self.common_params.local.root_folder)
+        current_icon = as_capacity.icon
+
+        if current_icon != desired_icon_payload:
+            self.logger.info(
+                f"Workspace '{workspace_params.name}' icon mismatch. Updating with new icon."
+            )
+            icon_json = json.dumps({"icon": desired_icon_payload})
+            await self.set_analysis_service_capacity(workspace_info.id, icon_json)
+            self.logger.info(
+                f"Successfully updated icon for workspace '{workspace_params.name}'")
+        else:
+            self.logger.info(
+                f"Workspace '{workspace_params.name}' icon is already correct")
+
         if workspace_info.workspace_identity is None:
             self.logger.info(
                 f"Workspace '{workspace_params.name}' has no managed identity. Creating.")
@@ -249,7 +265,8 @@ class FabricWorkspaceManager(WorkspaceManager):
     async def set_analysis_service_capacity(self, object_id: str, data: str) -> None:
         self.logger.info(
             f"Setting Analysis Service capacity for object ID: {object_id}")
-        self.logger.info(f"Data to set: {data}")
+        self.logger.debug(
+            f"Data to set: {data[:1000]}{'...' if len(data) > 1000 else ''}")
         try:
             json.loads(data)
         except json.JSONDecodeError as e:

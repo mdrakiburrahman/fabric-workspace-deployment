@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: MIT
 
+import base64
 import functools
 import json
 import logging
 import os
 import re
 import subprocess
+import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from PIL import Image
 
 import yaml
 
@@ -101,6 +104,7 @@ class AnalysisServiceCapacity:
     capacity_rollout_url: str
     retention_period_days: int
     default_dataset_storage_mode: int = 1
+    icon: str | None = None
 
 
 @dataclass
@@ -553,11 +557,71 @@ class FabricWorkspaceParams:
 
     name: str
     description: str
+    icon_path: str
     dataset_storage_mode: int
     template: FabricWorkspaceTemplateParams
     capacity: FabricCapacityParams
     rbac: RbacParams
     shortcut: ShortcutParams | None = None
+
+    def get_icon_payload(self, root_folder: str) -> str:
+        """
+        Get the base64 encoded icon payload for the workspace.
+
+        Args:
+            root_folder: The root folder path to resolve the icon path
+
+        Returns:
+            str: The base64 encoded icon payload in the format 'data:image/png;base64,{encoded}'
+
+        Raises:
+            FileNotFoundError: If the icon file doesn't exist
+            Exception: If the file cannot be read or encoded
+        """
+        icon_full_path = os.path.join(root_folder, self.icon_path)
+
+        if not os.path.exists(icon_full_path):
+            raise FileNotFoundError(f"Icon file not found: {icon_full_path}")
+
+        try:
+            MAX_SIZE = 45 * 1024
+
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                temp_path = temp_file.name
+
+            try:
+                img = Image.open(icon_full_path)
+                q, scale = 90, 1.0
+
+                while True:
+                    if scale < 1.0:
+                        tmp = img.resize(
+                            (int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+                    else:
+                        tmp = img
+                    tmp.save(temp_path, optimize=True, quality=q)
+                    if os.path.getsize(temp_path) <= MAX_SIZE or (scale <= 0.5 and q <= 30):
+                        break
+
+                    if scale > 0.5:
+                        scale -= 0.1
+                    else:
+                        scale = max(0.1, scale)
+                        q = max(10, q - 5)
+
+                with open(temp_path, "rb") as f:
+                    data = f.read()
+
+                encoded = base64.b64encode(data).decode("utf-8")
+                return f"data:image/png;base64,{encoded}"
+
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+        except Exception as e:
+            raise Exception(
+                f"Failed to read, compress and encode icon file '{icon_full_path}': {e}") from e
 
 
 @dataclass
@@ -1476,6 +1540,18 @@ class OperationParams:
                 self.logger.error(f"Workspace template parameter_file_path at index {i} is invalid: {workspace.template.parameter_file_path}")  # fmt: skip  # noqa: E501
                 return False
 
+            if not workspace.icon_path:
+                self.logger.error(
+                    f"Workspace icon_path at index {i} cannot be empty")
+                return False
+
+            icon_full_path = os.path.join(
+                self.common.local.root_folder, workspace.icon_path)
+            if not os.path.exists(icon_full_path):
+                self.logger.error(
+                    f"Icon file not found for workspace at index {i}: {icon_full_path}")
+                return False
+
             if not workspace.capacity.name:
                 self.logger.error(
                     f"Workspace capacity name at index {i} cannot be empty")
@@ -1810,6 +1886,7 @@ class OperationParams:
         return FabricWorkspaceParams(
             name=data["name"],
             description=data["description"],
+            icon_path=data["iconPath"],
             dataset_storage_mode=data["datasetStorageMode"],
             template=self._parse_fabric_workspace_template_params(
                 data["template"]),
