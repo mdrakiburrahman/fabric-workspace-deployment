@@ -125,11 +125,11 @@ class FabricWorkspaceFolderInfo:
     tenant_id: int
     contacts: list[str]
     capacity_sku_tier: int
-    default_dataset_storage_mode: int
     capacity_rollout_region: str
     capacity_rollout_name: str
     capacity_rollout_url: str
     retention_period_days: int
+    default_dataset_storage_mode: int = 1
 
 
 @dataclass
@@ -494,16 +494,16 @@ class RbacParams:
     """RBAC configuration parameters."""
 
     purge_unmatched_role_assignments: bool
-    identities: list[Identity]
     workspace: list[WorkspaceRbacParams]
     items: list[ItemRbacParams]
 
-    def get_identity_by_object_id(self, object_id: str) -> Identity:
+    def get_identity_by_object_id(self, object_id: str, identities: list[Identity]) -> Identity:
         """
         Get identity by object ID.
 
         Args:
             object_id: The object ID to lookup
+            identities: List of identities to search
 
         Returns:
             Identity: The identity information
@@ -511,17 +511,18 @@ class RbacParams:
         Raises:
             ValueError: If the object ID is not found in identities
         """
-        for identity in self.identities:
+        for identity in identities:
             if identity.object_id == object_id:
                 return identity
         raise ValueError(f"Identity with object ID '{object_id}' not found in identities")  # noqa: EM102
 
-    def hydrate_workspace_rbac_with_identity(self, workspace_rbac: WorkspaceRbacParams) -> tuple[WorkspaceRbacParams, Identity]:
+    def hydrate_workspace_rbac_with_identity(self, workspace_rbac: WorkspaceRbacParams, identities: list[Identity]) -> tuple[WorkspaceRbacParams, Identity]:
         """
         Hydrate workspace RBAC parameters with identity information.
 
         Args:
             workspace_rbac: The workspace RBAC parameters
+            identities: List of identities to search
 
         Returns:
             tuple: (original workspace_rbac, identity information)
@@ -529,17 +530,19 @@ class RbacParams:
         Raises:
             ValueError: If the object ID is not found in identities
         """
-        identity = self.get_identity_by_object_id(workspace_rbac.object_id)
+        identity = self.get_identity_by_object_id(
+            workspace_rbac.object_id, identities)
         return workspace_rbac, identity
 
     def hydrate_item_rbac_detail_with_identity(
-        self, item_rbac_detail: ItemRbacDetailParams
+        self, item_rbac_detail: ItemRbacDetailParams, identities: list[Identity]
     ) -> tuple[ItemRbacDetailParams, Identity]:
         """
         Hydrate item RBAC detail parameters with identity information.
 
         Args:
             item_rbac_detail: The item RBAC detail parameters
+            identities: List of identities to search
 
         Returns:
             tuple: (original item_rbac_detail, identity information)
@@ -547,7 +550,8 @@ class RbacParams:
         Raises:
             ValueError: If the object ID is not found in identities
         """
-        identity = self.get_identity_by_object_id(item_rbac_detail.object_id)
+        identity = self.get_identity_by_object_id(
+            item_rbac_detail.object_id, identities)
         return item_rbac_detail, identity
 
 
@@ -654,6 +658,7 @@ class CommonParams:
     scope: ScopeParams
     arm: ArmParams
     fabric: FabricParams
+    identities: list[Identity]
 
 
 # ---------------------------------------------------------------------------- #
@@ -1414,6 +1419,7 @@ class OperationParams:
             and self._validate_endpoint_params()
             and self._validate_scope_params()
             and self._validate_arm_params()
+            and self._validate_identities_params()
             and self._validate_fabric_params()
         )
 
@@ -1481,6 +1487,22 @@ class OperationParams:
                 f"or tenantId: {self.common.arm.tenant_id} cannot be empty"
             )
             return False
+        return True
+
+    def _validate_identities_params(self) -> bool:
+        """Validate identities parameters."""
+        if self.common.identities is None:
+            self.logger.error("Common identities cannot be None")
+            return False
+
+        if len(self.common.identities) == 0:
+            self.logger.error("At least one identity must be configured")
+            return False
+
+        for j, identity in enumerate(self.common.identities):
+            if not self._validate_identity_params(identity, -1, j):
+                return False
+
         return True
 
     def _validate_fabric_params(self) -> bool:
@@ -1580,7 +1602,7 @@ class OperationParams:
             if workspace.shortcut is not None and not self._validate_shortcut_params(workspace.shortcut, i):
                 return False
 
-            if workspace.rbac is not None and not self._validate_rbac_params(workspace.rbac, i):
+            if workspace.rbac is not None and not self._validate_rbac_params(workspace.rbac, i, self.common.identities):
                 return False
 
         return self._validate_fabric_storage_params()
@@ -1637,23 +1659,22 @@ class OperationParams:
 
         return True
 
-    def _validate_rbac_params(self, rbac: RbacParams, workspace_index: int) -> bool:
+    def _validate_rbac_params(self, rbac: RbacParams, workspace_index: int, identities: list[Identity]) -> bool:
         """Validate RBAC parameters."""
         if rbac.purge_unmatched_role_assignments is None:
             self.logger.error(
                 f"Workspace rbac purgeUnmatchedRoleAssignments at index {workspace_index} cannot be None")
             return False
 
-        if rbac.identities is None:
+        if identities is None:
             self.logger.error(
-                f"Workspace rbac identities at index {workspace_index} cannot be None")
+                f"Common identities cannot be None")
             return False
 
-        # Create a lookup set for identity object IDs
         identity_object_ids = {
-            identity.object_id for identity in rbac.identities}
+            identity.object_id for identity in identities}
 
-        for j, identity in enumerate(rbac.identities):
+        for j, identity in enumerate(identities):
             if not self._validate_identity_params(identity, workspace_index, j):
                 return False
 
@@ -1839,7 +1860,16 @@ class OperationParams:
             scope=self._parse_scope_params(data["scope"]),
             arm=self._parse_arm_params(data["arm"]),
             fabric=self._parse_fabric_params(data["fabric"]),
+            identities=self._parse_identities_params(
+                data.get("identities", [])),
         )
+
+    def _parse_identities_params(self, data: list[dict[str, Any]]) -> list[Identity]:
+        """Parse identities parameters."""
+        identities = []
+        for identity_data in data:
+            identities.append(self._parse_identity_params(identity_data))
+        return self._deduplicate_list(identities)
 
     def _parse_local_params(self, data: dict[str, Any]) -> LocalParams:
         """Parse local parameters."""
@@ -1947,11 +1977,6 @@ class OperationParams:
 
     def _parse_rbac_params(self, data: dict[str, Any]) -> RbacParams:
         """Parse RBAC parameters."""
-        identities = []
-        if "identities" in data:
-            for identity_data in data["identities"]:
-                identities.append(self._parse_identity_params(identity_data))
-
         workspace_rbac = []
         if "workspace" in data:
             for workspace_rbac_data in data["workspace"]:
@@ -1964,7 +1989,6 @@ class OperationParams:
 
         return RbacParams(
             purge_unmatched_role_assignments=data["purgeUnmatchedRoleAssignments"],
-            identities=self._deduplicate_list(identities),
             workspace=self._deduplicate_list(workspace_rbac),
             items=self._deduplicate_list(items_rbac),
         )

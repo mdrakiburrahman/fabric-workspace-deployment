@@ -424,7 +424,8 @@ class FabricRbacManager(RbacManager):
         assignments_to_remove = []
 
         for object_id, desired_rbac in desired_assignments.items():
-            identity = desired_state.get_identity_by_object_id(object_id)
+            identity = desired_state.get_identity_by_object_id(
+                object_id, self.common_params.identities)
             if object_id in current_assignments:
                 current_detail = current_assignments[object_id]
                 if current_detail.permissions != desired_rbac.permissions:
@@ -530,7 +531,8 @@ class FabricRbacManager(RbacManager):
             current_details = current_permissions_by_object_id.get(
                 object_id, [])
 
-            identity = rbac_params.get_identity_by_object_id(object_id)
+            identity = rbac_params.get_identity_by_object_id(
+                object_id, self.common_params.identities)
             for desired_detail in desired_details:
                 matching_current = None
                 for current_detail in current_details:
