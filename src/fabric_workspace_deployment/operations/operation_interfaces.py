@@ -1216,6 +1216,30 @@ class OperationParams:
 
         return alias
 
+    @functools.cache  # noqa: B019
+    def _get_git_root(self) -> str:
+        """
+        Gets the git root directory.
+
+        Returns:
+            str: The git root.
+
+        Raises:
+            RuntimeError: If no git root is found
+        """
+        err_str = "No git root found. Please ensure you are in a git repository."
+
+        git_root = os.getenv("GIT_ROOT")
+        if git_root:
+            return git_root
+
+        try:
+            result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True, timeout=10)  # fmt: skip # noqa: E501, S603, S607
+            return result.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            self.logger.error(f"Failed to get git root: {e}")
+            raise RuntimeError(err_str) from e
+
     def _get_placeholder_resolvers(self) -> dict[str, Callable[[], str]]:
         """
         Get the mapping of placeholder names to their resolver functions.
@@ -1234,6 +1258,7 @@ class OperationParams:
             "user-oid": self._get_user_oid,
             "user-principal-type": self._get_user_principal_type,
             "user-fabric-admin-func()": self._user_fabric_admin_func,
+            "git-root": self._get_git_root,
         }
 
     def _get_unique_env_id(self) -> str:
