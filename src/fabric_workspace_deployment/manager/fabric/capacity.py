@@ -135,7 +135,9 @@ class FabricCapacityManager(CapacityManager):
         Note:
 
           - Fabric CLI creation only supports a single administrator, we
-            reconcile via az after creation.
+            reconcile via az after creation:
+
+            >>> https://www.azurecitadel.com/fabric/capacity/#capacity-admins
         """
         params = []
         params.append(f"sku={capacity_params.sku}")
@@ -148,6 +150,8 @@ class FabricCapacityManager(CapacityManager):
         params_str = ",".join(params)
         self.fabric_cli.run_command(
             f"create .capacities/{capacity_params.name}.Capacity -P {params_str}")
+
+        await self.set(capacity_params, "properties.administration.members", json.dumps(capacity_params.administrators))
 
     async def remove(self, capacity_params: FabricCapacityParams) -> None:
         self.fabric_cli.run_command(
