@@ -76,7 +76,7 @@ async def async_main() -> None:
     """
     logging.info(f"Starting Fabric Deployer with logs at: {setup_logging()}.")
     operation_params = parse_config()
-    logging.info(operation_params.to_pretty_json())
+    logging.debug(operation_params.to_pretty_json())
     await CentralOperator(operation_params).execute()
     logging.info("Fabric Deployment complete.")
 
