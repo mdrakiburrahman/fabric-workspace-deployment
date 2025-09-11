@@ -35,6 +35,14 @@ def setup_logging() -> str:
     return log_filename
 
 
+def dump_env_vars() -> None:
+    """
+    Log all environment variables for debugging purposes.
+    """
+    for key, value in sorted(os.environ.items()):
+        logging.debug(f"{key}={value}")
+
+
 def parse_config() -> OperationParams:
     """
     Parse command line arguments and return an OperationParams object.
@@ -75,6 +83,7 @@ async def async_main() -> None:
     Async entry point.
     """
     logging.info(f"Starting Fabric Deployer with logs at: {setup_logging()}.")
+    dump_env_vars()
     operation_params = parse_config()
     await CentralOperator(operation_params).execute()
     logging.info("Fabric Deployment complete.")
