@@ -106,7 +106,11 @@ class FabricRbacManager(RbacManager):
 
                 item_rbac_infos = []
                 for workspace_item in workspace_items:
-                    item_rbac_infos.append(await self.get_fabric_workspace_item_rbac_info(workspace_item.id, workspace_item.type))
+                    if workspace_item.type not in ["Report", "SemanticModel"]:
+                        item_rbac_infos.append(await self.get_fabric_workspace_item_rbac_info(workspace_item.id, workspace_item.type))
+                    else:
+                        self.logger.warning(
+                            f"Skipping RBAC reconciliation for unsupported item type '{workspace_item.type}' with ID {workspace_item.id}")
 
                 await self._reconcile_role_assignments(rbac_params, workspace_rbac_info, item_rbac_infos)
 
@@ -247,7 +251,7 @@ class FabricRbacManager(RbacManager):
 
     async def get_fabric_workspace_item_rbac_info(self, item_id: str, item_type: str) -> FabricWorkspaceItemRbacInfo:
         self.logger.info(
-            f"Getting Fabric workspace item RBAC info for item {item_id}")
+            f"Getting Fabric workspace item RBAC info for {item_type}: {item_id}")
         try:
             response = requests.get(
                 f"{self.common_params.endpoint.analysis_service}/metadata/access/artifacts/{item_id}",
