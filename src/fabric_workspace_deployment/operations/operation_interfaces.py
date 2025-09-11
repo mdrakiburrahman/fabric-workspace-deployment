@@ -1251,34 +1251,23 @@ class OperationParams:
             if cleaned_alias:
                 return cleaned_alias
 
-        return self._get_user_alias_git()
+        return self._get_user_alias_from_email()
 
     # ---------------------------------------------------------------------------- #
 
     @functools.cache  # noqa: B019
-    def _get_user_alias_git(self) -> str:
+    def _get_user_alias_from_email(self) -> str:
         """
-        Gets the user's alias from their git config.
+        Gets the user's alias from email address.
 
         Returns:
-            str: The user's alias (part before @ in their git email)
+            str: The user's alias (part before @ in their email)
 
         Raises:
             RuntimeError: If no user email is found or email format is invalid
         """
-        err_str = "No user email found. Please set your email in git config using 'git config --global user.email <email>'"
-
-        try:
-            result = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True, check=True, timeout=10)  # fmt: skip # noqa: E501, S603, S607
-            user_email = result.stdout.strip()
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            self.logger.error(f"Failed to get git user email: {e}")
-            raise RuntimeError(err_str) from e
-
-        if not user_email:
-            self.logger.error("Git user email is empty")
-            raise RuntimeError(err_str)
-
+        err_str = "No user email found in upn"
+        user_email = self.az_cli.get_user_principal_name()
         email_parts = user_email.split("@")
         if len(email_parts) != 2:  # noqa: PLR2004
             self.logger.error(f"Invalid email format: {user_email}")
@@ -1343,7 +1332,7 @@ class OperationParams:
         return os.getenv("USER_APP_ID", self.az_cli.get_user_appid())
 
     def _get_user_display_name(self) -> str:
-        return os.getenv("USER_DISPLAY_NAME", f"{self.get_user_alias()}@microsoft.com")
+        return os.getenv("USER_DISPLAY_NAME", self.az_cli.get_user_principal_name())
 
     def _get_user_oid(self) -> str:
         return os.getenv("USER_OBJECT_ID", self.az_cli.get_user_oid())

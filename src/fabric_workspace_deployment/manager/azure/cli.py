@@ -270,3 +270,18 @@ class AzCli:
             RuntimeError: If the token cannot be retrieved, decoded, or appid claim is not found
         """
         return self.get_claim("appid")
+    
+    @functools.cache  # noqa: B019
+    def get_user_principal_name(self) -> str:
+        """
+        Get the user principal name (upn) from the access token.
+
+        >>> https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/plan-connect-userprincipalname
+
+        Returns:
+            str: The user's email
+
+        Raises:
+            RuntimeError: If the token cannot be retrieved, decoded, or upn claim is not found
+        """
+        return self.get_claim("upn")
