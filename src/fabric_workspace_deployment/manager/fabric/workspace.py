@@ -79,72 +79,28 @@ class FabricWorkspaceManager(WorkspaceManager):
         workspace_info = await self.get(workspace_params)
         as_capacity = await self.get_analysis_service_capacity(workspace_info.id)
 
-        updates_needed = []
-        fabric_updates_needed = {}
-        analysis_service_updates_needed = {}
+        self.logger.info(
+            f"Updating Fabric workspace properties for '{workspace_params.name}'")
+        await self.set(workspace_params, "displayName", workspace_params.name)
+        await self.set(workspace_params, "description", workspace_params.description)
+        self.logger.info(
+            f"Successfully updated Fabric workspace properties for '{workspace_params.name}'")
 
-        if workspace_info.display_name != workspace_params.name:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' display name mismatch. Current: {workspace_info.display_name}, Desired: {workspace_params.name}."
-            )
-            fabric_updates_needed["displayName"] = workspace_params.name
-            updates_needed.append("displayName")
+        self.logger.info(
+            f"Updating Capacity properties for '{workspace_params.name}'")
 
-        if workspace_info.description != workspace_params.description:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' description mismatch. Current: {workspace_info.description}, Desired: {workspace_params.description}."
-            )
-            fabric_updates_needed["description"] = workspace_params.description
-            updates_needed.append("description")
+        update_data = {
+            "displayName": workspace_params.name,
+            "capacityObjectId": as_capacity.capacity_object_id,
+            "datasetStorageMode": workspace_params.dataset_storage_mode,
+            "icon": workspace_params.get_icon_payload(
+                self.common_params.local.root_folder)
+        }
 
-        if as_capacity.default_dataset_storage_mode != workspace_params.dataset_storage_mode:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' datasetStorageMode mismatch. Current: {as_capacity.default_dataset_storage_mode}, Desired: {workspace_params.dataset_storage_mode}."
-            )
-            analysis_service_updates_needed["datasetStorageMode"] = workspace_params.dataset_storage_mode
-            updates_needed.append("datasetStorageMode")
-
-        desired_icon_payload = workspace_params.get_icon_payload(
-            self.common_params.local.root_folder)
-        current_icon = as_capacity.icon
-
-        if current_icon != desired_icon_payload:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' icon mismatch. Updating with new icon."
-            )
-            analysis_service_updates_needed["icon"] = desired_icon_payload
-            updates_needed.append("icon")
-
-        if fabric_updates_needed:
-            self.logger.info(
-                f"Updating Fabric workspace properties: {list(fabric_updates_needed.keys())}")
-            for property_name, value in fabric_updates_needed.items():
-                await self.set(workspace_params, property_name, value)
-            self.logger.info(
-                f"Successfully updated Fabric workspace properties for '{workspace_params.name}'")
-
-        if analysis_service_updates_needed:
-            self.logger.info(
-                f"Updating Analysis Service properties: {list(analysis_service_updates_needed.keys())}")
-            update_data = {
-                "displayName": workspace_info.display_name,
-                "capacityObjectId": as_capacity.capacity_object_id
-            }
-
-            if "datasetStorageMode" in analysis_service_updates_needed:
-                update_data["datasetStorageMode"] = analysis_service_updates_needed["datasetStorageMode"]
-
-            if "icon" in analysis_service_updates_needed:
-                update_data["icon"] = analysis_service_updates_needed["icon"]
-
-            update_json = json.dumps(update_data)
-            await self.set_analysis_service_capacity(workspace_info.id, update_json)
-            self.logger.info(
-                f"Successfully updated Analysis Service properties for '{workspace_params.name}'")
-
-        if not updates_needed:
-            self.logger.info(
-                f"Workspace '{workspace_params.name}' is already up to date")
+        update_json = json.dumps(update_data)
+        await self.set_analysis_service_capacity(workspace_info.id, update_json)
+        self.logger.info(
+            f"Successfully updated Analysis Service properties for '{workspace_params.name}'")
 
         if workspace_info.workspace_identity is None:
             self.logger.info(
