@@ -19,9 +19,9 @@
 
    git config --global user.name "Raki Rahman"
    git config --global user.email "mdrakiburrahman@gmail.com"
-   git clone https://github.com/mdrakiburrahman/data-playground.git
+   git clone https://github.com/mdrakiburrahman/fabric-workspace-deployment.git
 
-   cd data-playground/
+   cd fabric-workspace-deployment/
    code .
    ```
 
