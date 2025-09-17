@@ -496,12 +496,35 @@ class ItemRbacParams:
 
 
 @dataclass
+class SqlEndpointSecurity:
+    """SQL endpoint universal security configuration."""
+
+    enabled: bool
+
+
+@dataclass
+class UniversalSecurity:
+    """
+    Universal security configuration for the workspace - we currently enforce
+    the same setting across all items in a given workspace to keep things
+    simple, but note that OneSecurity can be configured at a per item level.
+
+    In general, it doesn't make a whole lot of sense to have different items
+    managed differently in a workspace deployment (but it's good Fabric has the
+    flexibility for those who need it).
+    """
+
+    sql_endpoint: SqlEndpointSecurity
+
+
+@dataclass
 class RbacParams:
     """RBAC configuration parameters."""
 
     purge_unmatched_role_assignments: bool
     workspace: list[WorkspaceRbacParams]
     items: list[ItemRbacParams]
+    universal_security: UniversalSecurity
 
     def get_identity_by_object_id(self, object_id: str, identities: list[Identity]) -> Identity:
         """
@@ -1673,6 +1696,9 @@ class OperationParams:
             if not self._validate_identity_params(identity, workspace_index, j):
                 return False
 
+        if not self._validate_universal_security_params(rbac.universal_security, workspace_index):
+            return False
+
         if rbac.workspace is None:
             self.logger.error(
                 f"Workspace rbac workspace at index {workspace_index} cannot be None")
@@ -1687,6 +1713,26 @@ class OperationParams:
                 item_rbac, workspace_index, k, identity_object_ids)
             for k, item_rbac in enumerate(rbac.items)
         )
+
+    def _validate_universal_security_params(self, universal_security: UniversalSecurity, workspace_index: int) -> bool:
+        """Validate universalSecurity settings parsed from configuration."""
+        if universal_security is None:
+            self.logger.error(
+                f"Workspace rbac universalSecurity block at index {workspace_index} is required and cannot be None")
+            return False
+
+        sql_endpoint = universal_security.sql_endpoint
+        if sql_endpoint is None:
+            self.logger.error(
+                f"Workspace rbac universalSecurity.SqlEndpointSecurity at index {workspace_index} is required and cannot be None")
+            return False
+
+        if not isinstance(sql_endpoint.enabled, bool):
+            self.logger.error(
+                f"Workspace rbac universalSecurity.SqlEndpointSecurity.enabled at index {workspace_index} must be a boolean (true/false)")
+            return False
+
+        return True
 
     def _validate_identity_params(self, identity: Identity, workspace_index: int, identity_index: int) -> bool:
         """Validate identity parameters."""
@@ -1982,11 +2028,82 @@ class OperationParams:
         for item_rbac_data in data["items"]:
             items_rbac.append(self._parse_item_rbac_params(item_rbac_data))
 
+        universal_security = self._parse_universal_security_params(
+            data["universalSecurity"])
+
         return RbacParams(
             purge_unmatched_role_assignments=data["purgeUnmatchedRoleAssignments"],
             workspace=self._deduplicate_list(workspace_rbac),
             items=self._deduplicate_list(items_rbac),
+            universal_security=universal_security,
         )
+
+    def _parse_universal_security_params(self, data: dict[str, Any]) -> UniversalSecurity:
+        """
+        Parse UniversalSecurity.
+
+        Args:
+            data: Dictionary containing universalSecurity configuration data
+
+        Returns:
+            UniversalSecurity: Dataclass instance with parsed configuration
+
+        Raises:
+            KeyError: If required keys are missing from the configuration
+        """
+        sql_endpoint = self._parse_sql_endpoint_params(
+            data["SqlEndpointSecurity"])
+        return UniversalSecurity(sql_endpoint=sql_endpoint)
+
+    def _parse_sql_endpoint_params(self, data: dict[str, Any]) -> SqlEndpointSecurity:
+        """
+        Parse the SqlEndpointSecurity block into SqlEndpointSecurity dataclass and require 'enabled'.
+
+        Args:
+            data: Dictionary containing SqlEndpointSecurity configuration parameters
+
+        Returns:
+            SqlEndpointSecurity: Dataclass instance with parsed enabled parameter
+
+        Raises:
+            KeyError: If 'enabled' key is not found in data
+            ValueError: If 'enabled' value is not a boolean
+        """
+        if "enabled" not in data:
+            raise KeyError(
+                "universalSecurity.SqlEndpointSecurity.enabled is required")
+
+        enabled = data["enabled"]
+        if not isinstance(enabled, bool):
+            raise ValueError(
+                "universalSecurity.SqlEndpointSecurity.enabled must be a boolean (true/false)")
+
+        return SqlEndpointSecurity(enabled=enabled)
+
+    def _parse_sql_endpoint_params(self, data: dict[str, Any]) -> SqlEndpointSecurity:
+        """
+        Parse the SqlEndpointSecurity block into SqlEndpointSecurity.
+
+        Args:
+            data: Dictionary containing SqlEndpointSecurity configuration data
+
+        Returns:
+            SqlEndpointSecurity object with parsed configuration
+
+        Raises:
+            KeyError: If 'enabled' key is not found in data
+            ValueError: If 'enabled' value is not a boolean
+        """
+        if "enabled" not in data:
+            raise KeyError(
+                "universalSecurity.SqlEndpointSecurity.enabled is required")
+
+        enabled = data["enabled"]
+        if not isinstance(enabled, bool):
+            raise ValueError(
+                "universalSecurity.SqlEndpointSecurity.enabled must be a boolean (true/false)")
+
+        return SqlEndpointSecurity(enabled=enabled)
 
     def _deduplicate_list(self, items: list[Any]) -> list[Any]:
         """
