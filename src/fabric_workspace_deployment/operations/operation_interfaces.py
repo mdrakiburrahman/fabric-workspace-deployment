@@ -1747,12 +1747,12 @@ class OperationParams:
         sql_endpoint = universal_security.sql_endpoint
         if sql_endpoint is None:
             self.logger.error(
-                f"Workspace rbac universalSecurity.SqlEndpointSecurity at index {workspace_index} is required and cannot be None")
+                f"Workspace rbac universalSecurity.sqlEndpoint at index {workspace_index} is required and cannot be None")
             return False
 
         if not isinstance(sql_endpoint.enabled, bool):
             self.logger.error(
-                f"Workspace rbac universalSecurity.SqlEndpointSecurity.enabled at index {workspace_index} must be a boolean (true/false)")
+                f"Workspace rbac universalSecurity.sqlEndpoint.enabled at index {workspace_index} must be a boolean (true/false)")
             return False
 
         return True
@@ -2070,13 +2070,8 @@ class OperationParams:
 
         Returns:
             UniversalSecurity: Dataclass instance with parsed configuration
-
-        Raises:
-            KeyError: If required keys are missing from the configuration
         """
-        sql_endpoint = self._parse_sql_endpoint_params(
-            data["SqlEndpointSecurity"])
-        return UniversalSecurity(sql_endpoint=sql_endpoint)
+        return UniversalSecurity(sql_endpoint=self._parse_sql_endpoint_params(data["sqlEndpoint"]))
 
     def _parse_sql_endpoint_params(self, data: dict[str, Any]) -> SqlEndpointSecurity:
         """
@@ -2087,46 +2082,8 @@ class OperationParams:
 
         Returns:
             SqlEndpointSecurity: Dataclass instance with parsed enabled parameter
-
-        Raises:
-            KeyError: If 'enabled' key is not found in data
-            ValueError: If 'enabled' value is not a boolean
         """
-        if "enabled" not in data:
-            raise KeyError(
-                "universalSecurity.SqlEndpointSecurity.enabled is required")
-
-        enabled = data["enabled"]
-        if not isinstance(enabled, bool):
-            raise ValueError(
-                "universalSecurity.SqlEndpointSecurity.enabled must be a boolean (true/false)")
-
-        return SqlEndpointSecurity(enabled=enabled)
-
-    def _parse_sql_endpoint_params(self, data: dict[str, Any]) -> SqlEndpointSecurity:
-        """
-        Parse the SqlEndpointSecurity block into SqlEndpointSecurity.
-
-        Args:
-            data: Dictionary containing SqlEndpointSecurity configuration data
-
-        Returns:
-            SqlEndpointSecurity object with parsed configuration
-
-        Raises:
-            KeyError: If 'enabled' key is not found in data
-            ValueError: If 'enabled' value is not a boolean
-        """
-        if "enabled" not in data:
-            raise KeyError(
-                "universalSecurity.SqlEndpointSecurity.enabled is required")
-
-        enabled = data["enabled"]
-        if not isinstance(enabled, bool):
-            raise ValueError(
-                "universalSecurity.SqlEndpointSecurity.enabled must be a boolean (true/false)")
-
-        return SqlEndpointSecurity(enabled=enabled)
+        return SqlEndpointSecurity(enabled=data["enabled"])
 
     def _deduplicate_list(self, items: list[Any]) -> list[Any]:
         """

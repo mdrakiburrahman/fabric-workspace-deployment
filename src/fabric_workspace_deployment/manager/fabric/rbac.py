@@ -466,15 +466,22 @@ class FabricRbacManager(RbacManager):
         Reconcile Universal/One Security for supported item types.
         """
         sql_endpoints = [
-            item for item in workspace_items if item.type == "SqlEndpoint"]
+            item for item in workspace_items if item.type == "SQLEndpoint"]
 
         if not sql_endpoints:
             self.logger.info(
-                "No SqlEndpoint items found for universal security reconciliation")
+                "No SQLEndpoint items found for universal security reconciliation")
             return
 
+        tasks = []
         for sql_item in sql_endpoints:
-            await self._reconcile_sql_endpoint_universal_security(sql_item, universal_security.sql_endpoint)
+            tasks.append(asyncio.create_task(self._reconcile_sql_endpoint_universal_security(
+                sql_item, universal_security.sql_endpoint), name=f"reconcile-universal-security-{sql_item.id}"))
+
+        if tasks:
+            self.logger.info(
+                f"Executing universal security reconciliation for {len(tasks)} SQL endpoints in parallel")
+            await asyncio.gather(*tasks)
 
     async def _reconcile_workspace_level_permissions(
         self, desired_state: RbacParams, current_state: FabricWorkspaceFolderRbacInfo
@@ -777,7 +784,7 @@ class FabricRbacManager(RbacManager):
 
             if poll_batch.progress_state == "success":
                 self.logger.info(
-                    f"Datamart batch completed successfully for {sql_ep_id} for batch {batch_id}")
+                    f"Datamart batch completed successfully for {sql_ep_id}")
                 return
             elif poll_batch.progress_state == "inProgress":
                 await asyncio.sleep(5)
