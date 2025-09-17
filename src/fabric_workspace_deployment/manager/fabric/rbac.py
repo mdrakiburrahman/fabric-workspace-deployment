@@ -13,6 +13,8 @@ from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     AccessSource,
     CommonParams,
+    DatamartBatchResponse,
+    DatamartParametersResponse,
     FabricWorkspaceFolderInfo,
     FabricWorkspaceFolderRbacDetail,
     FabricWorkspaceFolderRbacInfo,
@@ -26,6 +28,8 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     PrincipalType,
     RbacManager,
     RbacParams,
+    SqlEndpointSecurity,
+    UniversalSecurity,
     WorkspaceManager,
     WorkspaceRbacParams,
 )
@@ -113,6 +117,7 @@ class FabricRbacManager(RbacManager):
                             f"Skipping RBAC reconciliation for unsupported item type '{workspace_item.type}' with ID {workspace_item.id}")
 
                 await self._reconcile_role_assignments(rbac_params, workspace_rbac_info, item_rbac_infos)
+                await self._reconcile_one_security(rbac_params.universal_security, workspace_items)
 
                 break
             except Exception as e:
@@ -454,6 +459,23 @@ class FabricRbacManager(RbacManager):
 
         self.logger.info("Completed role assignment reconciliation")
 
+    async def _reconcile_one_security(
+        self, universal_security: "UniversalSecurity", workspace_items: list[FabricWorkspaceItem]
+    ) -> None:
+        """
+        Reconcile Universal/One Security for supported item types.
+        """
+        sql_endpoints = [
+            item for item in workspace_items if item.type == "SqlEndpoint"]
+
+        if not sql_endpoints:
+            self.logger.info(
+                "No SqlEndpoint items found for universal security reconciliation")
+            return
+
+        for sql_item in sql_endpoints:
+            await self._reconcile_sql_endpoint(sql_item, universal_security.sql_endpoint)
+
     async def _reconcile_workspace_level_permissions(
         self, desired_state: RbacParams, current_state: FabricWorkspaceFolderRbacInfo
     ) -> None:
@@ -664,3 +686,170 @@ class FabricRbacManager(RbacManager):
         current_val = current_artifact_permissions if current_artifact_permissions is not None else 0
         desired_val = desired_artifact_permissions if desired_artifact_permissions is not None else 0
         return current_val == desired_val
+
+    async def _reconcile_sql_endpoint(
+        self, sql_item: "FabricWorkspaceItem", security: SqlEndpointSecurity
+    ) -> None:
+        self.logger.info(
+            f"Reconciling universal security for SqlEndpoint {sql_item.display_name} (ID: {sql_item.id})")
+
+        try:
+            params_url = f"{self.common_params.endpoint.analysis_service}/v1.0/myorg/lhdatamarts/{sql_item.id}/parameters"
+            resp = requests.get(
+                params_url,
+                headers={
+                    "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
+                    "Content-Type": "application/json",
+                },
+                params={"name": "UniversalSecurityMode"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+            self.logger.debug(
+                f"Datamart parameters GET raw response for {sql_item.id}: {raw}")
+
+            datamart_params = dacite.from_dict(
+                data_class=DatamartParametersResponse,
+                data=StringTransformer.convert_keys_to_snake_case(raw),
+                config=dacite.Config(check_types=False, cast=[
+                    str, int, bool, float]),
+            )
+
+            us_param = None
+            for p in datamart_params.parameters:
+                if p.name == "UniversalSecurityMode":
+                    us_param = p
+                    break
+
+            if us_param is None:
+                self.logger.warning(
+                    f"UniversalSecurityMode parameter not found for SqlEndpoint {sql_item.id}, skipping reconcile"
+                )
+                return
+
+            current_enabled = final_param.value.lower() == "true"
+            if current_enabled == security.enabled:
+                self.logger.info(
+                    f"Universal security already set to {security.enabled} for SqlEndpoint {sql_item.id}"
+                )
+                return
+
+            payload = {
+                "commands": [
+                    {
+                        "$type": "ChangeUniversalSecurityModeCommand",
+                        "enableUniversalSecurityMode": security.enabled,
+                    }
+                ]
+            }
+
+            post_url = f"{self.common_params.endpoint.analysis_service}/v1.0/myorg/lhdatamarts/{sql_item.id}"
+            post_resp = requests.post(
+                post_url,
+                headers={
+                    "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60,
+            )
+            post_resp.raise_for_status()
+            post_raw = post_resp.json()
+            self.logger.debug(
+                f"Datamart changeUniversalSecurityMode POST raw response for {sql_item.id}: {post_raw}")
+
+            batch_resp = dacite.from_dict(
+                data_class=DatamartBatchResponse,
+                data=StringTransformer.convert_keys_to_snake_case(
+                    post_raw),
+                config=dacite.Config(check_types=False, cast=[
+                    str, int, bool, float]),
+            )
+
+            batch_id = batch_resp.batch_id
+            if not batch_id:
+                error_msg = f"Received empty batch id when changing universal security for {sql_item.id}: {post_raw}"
+                self.logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            batch_url = f"{self.common_params.endpoint.analysis_service}/v1.0/myorg/lhdatamarts/{sql_item.id}/batches/{batch_id}"
+            while True:
+                poll_resp = requests.get(
+                    batch_url,
+                    headers={
+                        "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=60,
+                )
+                poll_resp.raise_for_status()
+                poll_raw = poll_resp.json()
+                self.logger.debug(
+                    f"Datamart batch poll raw response for {sql_item.id} batch {batch_id}: {poll_raw}")
+
+                poll_batch = dacite.from_dict(
+                    data_class=DatamartBatchResponse,
+                    data=StringTransformer.convert_keys_to_snake_case(
+                        poll_raw),
+                    config=dacite.Config(check_types=False, cast=[
+                        str, int, bool, float]),
+                )
+
+                if poll_batch.progress_state == "success":
+                    final_resp = requests.get(
+                        params_url,
+                        headers={
+                            "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
+                            "Content-Type": "application/json",
+                        },
+                        params={"name": "UniversalSecurityMode"},
+                        timeout=60,
+                    )
+                    final_resp.raise_for_status()
+                    final_raw = final_resp.json()
+                    self.logger.debug(
+                        f"Datamart parameters final GET raw response for {sql_item.id}: {final_raw}")
+                    final_params = dacite.from_dict(
+                        data_class=DatamartParametersResponse,
+                        data=StringTransformer.convert_keys_to_snake_case(
+                            final_raw),
+                        config=dacite.Config(check_types=False, cast=[
+                            str, int, bool, float]),
+                    )
+
+                    final_param = None
+                    for p in final_params.parameters:
+                        if p.name == "UniversalSecurityMode":
+                            final_param = p
+                            break
+
+                    if final_param is None:
+                        error_msg = f"Final UniversalSecurityMode parameter missing after successful batch for {sql_item.id}: {final_raw}"
+                        self.logger.error(error_msg)
+                        raise RuntimeError(error_msg)
+
+                    final_enabled = final_param.value.lower() == "true"
+
+                    if final_enabled == security.enabled:
+                        self.logger.info(
+                            f"Successfully reconciled universal security for SqlEndpoint {sql_item.id} to {security.enabled}"
+                        )
+                        break
+                    else:
+                        error_msg = f"Desired universal security state not reached even after successful batch for {sql_item.id}, something went wrong and the GET is out of sync: {final_raw}"
+                        self.logger.error(error_msg)
+                        raise RuntimeError(error_msg)
+
+                elif poll_batch.progress_state == "inProgress":
+                    await asyncio.sleep(5)
+                    continue
+                else:
+                    error = f"Datamart batch failed or in unexpected state for {sql_item.id} batch {batch_id}: {poll_raw}"
+                    self.logger.error(error)
+                    raise RuntimeError(error)
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to reconcile universal security for SqlEndpoint {sql_item.id}: {e}")
+            raise

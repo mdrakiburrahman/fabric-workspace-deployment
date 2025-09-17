@@ -518,6 +518,29 @@ class UniversalSecurity:
 
 
 @dataclass
+class DatamartParameter:
+    """Datamart parameters."""
+
+    name: str
+    value: str
+
+
+@dataclass
+class DatamartParametersResponse:
+    """Response for datamart parameters."""
+    parameters: list[DatamartParameter]
+
+
+@dataclass
+class DatamartBatchResponse:
+    """Response for datamart batch polling."""
+
+    batch_id: str
+    progress_state: str
+    batch_type: str
+
+
+@dataclass
 class RbacParams:
     """RBAC configuration parameters."""
 
