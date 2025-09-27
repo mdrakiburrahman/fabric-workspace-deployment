@@ -503,6 +503,14 @@ class SqlEndpointSecurity:
 
 
 @dataclass
+class ModelParams:
+    """Model configuration parameters."""
+
+    display_name: str
+    direct_lake_auto_sync: bool
+
+
+@dataclass
 class UniversalSecurity:
     """
     Universal security configuration for the workspace - we currently enforce
@@ -618,6 +626,7 @@ class FabricWorkspaceParams:
     template: FabricWorkspaceTemplateParams
     capacity: FabricCapacityParams
     rbac: RbacParams
+    model: list[ModelParams]
     shortcut: ShortcutParams | None = None
 
     def get_icon_payload(self, root_folder: str) -> str:
@@ -1640,6 +1649,9 @@ class OperationParams:
                     f"Workspace capacity administrators at index {i} must contain at least one administrator")
                 return False
 
+            if not self._validate_model_params(workspace.model, i):
+                return False
+
             if workspace.shortcut is not None and not self._validate_shortcut_params(workspace.shortcut, i):
                 return False
 
@@ -1667,6 +1679,29 @@ class OperationParams:
                 f"tenantId={storage.tenant_id}"
             )
             return False
+        return True
+
+    def _validate_model_params(self, models: list[ModelParams], workspace_index: int) -> bool:
+        """Validate model parameters."""
+        if models is None:
+            self.logger.error(
+                f"Workspace model at index {workspace_index} cannot be None")
+            return False
+
+        if len(models) == 0:
+            return True
+
+        for j, model in enumerate(models):
+            if not model.display_name:
+                self.logger.error(
+                    f"Workspace model[{j}].displayName at index {workspace_index} cannot be empty")
+                return False
+
+            if model.direct_lake_auto_sync is None:
+                self.logger.error(
+                    f"Workspace model[{j}].directLakeAutoSync at index {workspace_index} cannot be None")
+                return False
+
         return True
 
     def _validate_shortcut_params(self, shortcut: ShortcutParams, workspace_index: int) -> bool:
@@ -1987,6 +2022,7 @@ class OperationParams:
             capacity=self._parse_fabric_capacity_params(data["capacity"]),
             shortcut=shortcut,
             rbac=self._parse_rbac_params(data["rbac"]),
+            model=self._parse_model_params(data["model"]),
         )
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any]) -> FabricWorkspaceTemplateParams:
@@ -2038,6 +2074,16 @@ class OperationParams:
             path=data["path"],
             query_acceleration_toggle=data["queryAccelerationToggle"],
         )
+
+    def _parse_model_params(self, data: list[dict[str, Any]]) -> list[ModelParams]:
+        """Parse model parameters."""
+        models = []
+        for model_data in data:
+            models.append(ModelParams(
+                display_name=model_data["displayName"],
+                direct_lake_auto_sync=model_data["directLakeAutoSync"],
+            ))
+        return models
 
     def _parse_rbac_params(self, data: dict[str, Any]) -> RbacParams:
         """Parse RBAC parameters."""
