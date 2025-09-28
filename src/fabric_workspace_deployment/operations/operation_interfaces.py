@@ -34,6 +34,7 @@ class Operation(Enum):
     DEPLOY_FABRIC_CAPACITY = "deployFabricCapacity"
     DEPLOY_FABRIC_WORKSPACE = "deployFabricWorkspace"
     DEPLOY_GIT_LINK = "deployGitLink"
+    DEPLOY_MODEL = "deployModel"
     DEPLOY_RBAC = "deployRbac"
     DEPLOY_SHORTCUT = "deployShortcut"
     DEPLOY_TEMPLATE = "deployTemplate"
@@ -142,6 +143,27 @@ class FabricWorkspaceTemplateParams:
     environment_key: str
     feature_flags: list[str]
     unpublish_orphans: bool
+
+
+@dataclass
+class FabricFolderArtifacts:
+    """Fabric folder artifact information."""
+
+    id: int
+    object_id: str
+    type: int
+    type_name: str
+    display_name: str
+    permissions: int
+    is_hidden: bool
+    artifact_permissions: int
+
+
+@dataclass
+class FabricFolder:
+    """Fabric folder containing artifacts."""
+
+    artifacts: list[FabricFolderArtifacts]
 
 
 @dataclass
@@ -854,6 +876,61 @@ class ShortcutManager(ABC):
         """
         pass
 
+
+class ModelManager(ABC):
+    """
+    Interface for managing Fabric Model operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Model manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute reconciliation for all workspaces in parallel.
+        """
+        pass
+
+    @abstractmethod
+    async def reconcile(self, workspace_id: str, model_params: "ModelParams") -> None:
+        """
+        Reconcile a single model to desired state.
+
+        Args:
+            workspace_id: The Fabric workspace id
+        """
+        pass
+
+    @abstractmethod
+    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
+        """
+        Get Fabric folder information.
+
+        Args:
+            workspace_id: The Fabric workspace id
+
+        Returns:
+            FabricFolder: Fabric workspace folder information
+        """
+        pass
+    
+    @abstractmethod
+    async def set_model(self, id: str, data: str) -> None:
+        """
+        Set Model properties for a given ID.
+
+        Args:
+            id: The id of the Model
+            data: JSON string containing the data to update (e.g., '{"directLakeAutoSync":false}')
+
+        Raises:
+            RuntimeError: If the API call fails
+        """
+        pass
 
 class RbacManager(ABC):
     """

@@ -14,6 +14,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     Operation,
     OperationParams,
     RbacManager,
+    ModelManager,
     ShortcutManager,
     WorkspaceManager,
 )
@@ -40,6 +41,7 @@ class CentralOperator(EntryPointOperator):
         self.cicd_manager: CicdManager = self.management_factory.create_fabric_cicd_manager()
         self.shortcut_manager: ShortcutManager = self.management_factory.create_fabric_shortcut_manager()
         self.rbac_manager: RbacManager = self.management_factory.create_fabric_rbac_manager()
+        self.model_manager: ModelManager = self.management_factory.create_semantic_model_manager()
 
     async def execute(self) -> None:
         """Execute the operation based on the operation type."""
@@ -69,6 +71,9 @@ class CentralOperator(EntryPointOperator):
 
                 case Operation.DEPLOY_SHORTCUT:
                     await self._execute_deploy_shortcut()
+                
+                case Operation.DEPLOY_MODEL:
+                    await self._execute_deploy_model()
 
                 case _:
                     error_message = f"Unknown operation: {self.operation}"
@@ -126,6 +131,12 @@ class CentralOperator(EntryPointOperator):
         Execute deploy shortcut operation.
         """
         await self.shortcut_manager.execute()
+    
+    async def _execute_deploy_model(self) -> None:
+        """
+        Execute deploy model operation.
+        """
+        await self.model_manager.execute()
 
     def _azure_set(self) -> None:
         self.azure_cli.run_command(

@@ -14,6 +14,7 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
@@ -74,6 +75,13 @@ class ManagementFactory(ABC):
         """
         pass
 
+    @abstractmethod
+    def create_semantic_model_manager(self) -> SemanticModelManager:
+        """
+        Create a Semantic Model Manager instance.
+        """
+        pass
+
 
 class ContainerizedManagementFactory(ManagementFactory):
     """Containerized implementation of the ManagementFactory."""
@@ -129,5 +137,12 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_cli(),
+            self.create_fabric_workspace_manager(),
+        )
+
+    def create_semantic_model_manager(self) -> SemanticModelManager:
+        return SemanticModelManager(
+            self.operation_params.common,
+            self.create_azure_cli(),
             self.create_fabric_workspace_manager(),
         )
