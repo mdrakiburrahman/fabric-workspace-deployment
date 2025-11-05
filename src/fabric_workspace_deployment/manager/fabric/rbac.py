@@ -473,8 +473,24 @@ class FabricRbacManager(RbacManager):
                 "No SQLEndpoint items found for universal security reconciliation")
             return
 
-        tasks = []
+        skip_list = universal_security.sql_endpoint.skip_reconcile
+        filtered_sql_endpoints = []
+        
         for sql_item in sql_endpoints:
+            if sql_item.display_name in skip_list:
+                self.logger.info(
+                    f"Skipping universal security reconciliation for SQL endpoint '{sql_item.display_name}' "
+                    f"as it is in the skipReconcile list")
+            else:
+                filtered_sql_endpoints.append(sql_item)
+
+        if not filtered_sql_endpoints:
+            self.logger.info(
+                "No SQL endpoints to reconcile after applying skipReconcile filter")
+            return
+
+        tasks = []
+        for sql_item in filtered_sql_endpoints:
             tasks.append(asyncio.create_task(self._reconcile_sql_endpoint_universal_security(
                 sql_item, universal_security.sql_endpoint), name=f"reconcile-universal-security-{sql_item.id}"))
 

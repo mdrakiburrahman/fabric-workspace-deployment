@@ -522,6 +522,7 @@ class SqlEndpointSecurity:
     """SQL endpoint universal security configuration."""
 
     enabled: bool
+    skip_reconcile: list[str]
 
 
 @dataclass
@@ -1867,6 +1868,17 @@ class OperationParams:
                 f"Workspace rbac universalSecurity.sqlEndpoint.enabled at index {workspace_index} must be a boolean (true/false)")
             return False
 
+        if not isinstance(sql_endpoint.skip_reconcile, list):
+            self.logger.error(
+                f"Workspace rbac universalSecurity.sqlEndpoint.skipReconcile at index {workspace_index} must be a list of strings")
+            return False
+
+        for i, item in enumerate(sql_endpoint.skip_reconcile):
+            if not isinstance(item, str):
+                self.logger.error(
+                    f"Workspace rbac universalSecurity.sqlEndpoint.skipReconcile[{i}] at index {workspace_index} must be a string")
+                return False
+
         return True
 
     def _validate_identity_params(self, identity: Identity, workspace_index: int, identity_index: int) -> bool:
@@ -2206,7 +2218,7 @@ class OperationParams:
         Returns:
             SqlEndpointSecurity: Dataclass instance with parsed enabled parameter
         """
-        return SqlEndpointSecurity(enabled=data["enabled"])
+        return SqlEndpointSecurity(enabled=data["enabled"], skip_reconcile=data.get("skipReconcile", []))
 
     def _deduplicate_list(self, items: list[Any]) -> list[Any]:
         """
