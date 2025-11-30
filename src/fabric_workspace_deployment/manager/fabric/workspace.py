@@ -17,6 +17,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricStorageParams,
     FabricWorkspaceInfo,
     FabricWorkspaceParams,
+    HttpRetryHandler,
     WorkspaceManager,
 )
 from fabric_workspace_deployment.static.transformers import StringTransformer
@@ -25,7 +26,7 @@ from fabric_workspace_deployment.static.transformers import StringTransformer
 class FabricWorkspaceManager(WorkspaceManager):
     """Concrete implementation of WorkspaceManager for Microsoft Fabric."""
 
-    def __init__(self, common_params: CommonParams, az_cli: AzCli, fabric_cli: FabricCli):
+    def __init__(self, common_params: CommonParams, az_cli: AzCli, fabric_cli: FabricCli, http_retry_handler: HttpRetryHandler):
         """
         Initialize the Fabric workspace manager.
         """
@@ -33,6 +34,7 @@ class FabricWorkspaceManager(WorkspaceManager):
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
         self.logger = logging.getLogger(__name__)
+        self.http_retry = http_retry_handler
 
     async def execute(self) -> None:
         self.logger.info("Executing FabricWorkspaceManager")
@@ -203,7 +205,8 @@ class FabricWorkspaceManager(WorkspaceManager):
     async def get_analysis_service_capacity(self, object_id: str) -> AnalysisServiceCapacity:
         self.logger.info(
             f"Getting Analysis Service capacity for object ID: {object_id}")
-        response = requests.get(
+        response = self.http_retry.execute(
+            requests.get,
             f"{self.common_params.endpoint.analysis_service}/metadata/folders/{object_id}",
             headers={
                 "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -211,7 +214,6 @@ class FabricWorkspaceManager(WorkspaceManager):
             },
             timeout=60,
         )
-        response.raise_for_status()
         capacity_data = response.json()
         capacity_data_snake_case = StringTransformer.convert_keys_to_snake_case(
             capacity_data)
@@ -249,7 +251,8 @@ class FabricWorkspaceManager(WorkspaceManager):
             self.logger.error(error_msg)
             raise ValueError(error_msg) from e
 
-        response = requests.put(
+        response = self.http_retry.execute(
+            requests.put,
             f"{self.common_params.endpoint.analysis_service}/metadata/folders/{object_id}",
             headers={
                 "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -258,7 +261,6 @@ class FabricWorkspaceManager(WorkspaceManager):
             data=data,
             timeout=60,
         )
-        response.raise_for_status()
         response_data = response.text
         self.logger.debug(
             f"Analysis Service capacity update response: {response_data}")

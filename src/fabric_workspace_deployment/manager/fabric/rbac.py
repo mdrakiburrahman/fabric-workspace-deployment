@@ -22,6 +22,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricWorkspaceItemRbacDetail,
     FabricWorkspaceItemRbacInfo,
     FolderRole,
+    HttpRetryHandler,
     Identity,
     ItemRbacDetailParams,
     ItemRbacParams,
@@ -45,6 +46,7 @@ class FabricRbacManager(RbacManager):
         az_cli: AzCli,
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
+        http_retry_handler: HttpRetryHandler,
     ):
         """
         Initialize the Fabric RBAC manager.
@@ -54,6 +56,7 @@ class FabricRbacManager(RbacManager):
         self.fabric_cli = fabric_cli
         self.workspace = workspace
         self.logger = logging.getLogger(__name__)
+        self.http_retry = http_retry_handler
 
     async def execute(self) -> None:
         self.logger.info("Executing FabricRbacManager")
@@ -137,7 +140,8 @@ class FabricRbacManager(RbacManager):
         self.logger.info(
             f"Getting Fabric workspace folder info for folder {workspace_id}")
         try:
-            response = requests.get(
+            response = self.http_retry.execute(
+                requests.get,
                 f"{self.common_params.endpoint.analysis_service}/metadata/folders/{workspace_id}",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -145,7 +149,6 @@ class FabricRbacManager(RbacManager):
                 },
                 timeout=60,
             )
-            response.raise_for_status()
             folder_data = response.json()
             folder_data_snake_case = StringTransformer.convert_keys_to_snake_case(
                 folder_data)
@@ -171,7 +174,8 @@ class FabricRbacManager(RbacManager):
         self.logger.info(
             f"Getting Fabric workspace items for workspace {workspace_id}")
         try:
-            response = requests.get(
+            response = self.http_retry.execute(
+                requests.get,
                 f"{self.common_params.endpoint.power_bi}/v1/workspaces/{workspace_id}/items",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -179,7 +183,6 @@ class FabricRbacManager(RbacManager):
                 },
                 timeout=60,
             )
-            response.raise_for_status()
             items_data = response.json()
             self.logger.debug(
                 f"Current State Workspace Items RBAC for {workspace_id}: {items_data}")
@@ -211,7 +214,8 @@ class FabricRbacManager(RbacManager):
         self.logger.info(
             f"Getting Fabric workspace folder RBAC info for workspace folder {folder_id}")
         try:
-            response = requests.get(
+            response = self.http_retry.execute(
+                requests.get,
                 f"{self.common_params.endpoint.analysis_service}/metadata/access/folders/{folder_id}",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -219,7 +223,6 @@ class FabricRbacManager(RbacManager):
                 },
                 timeout=60,
             )
-            response.raise_for_status()
             rbac_data = response.json()
             self.logger.debug(
                 f"Current State Workspace RBAC for {folder_id}: {rbac_data}")
@@ -258,7 +261,8 @@ class FabricRbacManager(RbacManager):
         self.logger.info(
             f"Getting Fabric workspace item RBAC info for {item_type}: {item_id}")
         try:
-            response = requests.get(
+            response = self.http_retry.execute(
+                requests.get,
                 f"{self.common_params.endpoint.analysis_service}/metadata/access/artifacts/{item_id}",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -267,7 +271,6 @@ class FabricRbacManager(RbacManager):
                 params={"includeRestrictedUsers": "true"},
                 timeout=60,
             )
-            response.raise_for_status()
             rbac_data = response.json()
             self.logger.debug(rbac_data)
             rbac_data_snake_case = StringTransformer.convert_keys_to_snake_case(
@@ -367,7 +370,8 @@ class FabricRbacManager(RbacManager):
         self.logger.debug(payload)
 
         try:
-            response = requests.put(
+            response = self.http_retry.execute(
+                requests.put,
                 f"{self.common_params.endpoint.analysis_service}/metadata/access",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -376,7 +380,6 @@ class FabricRbacManager(RbacManager):
                 json=payload,
                 timeout=60,
             )
-            response.raise_for_status()
             self.logger.info(
                 f"Successfully updated item role assignment for {identity.given_name} ({assignment.object_id}) on item {item_id}"
             )
@@ -421,7 +424,8 @@ class FabricRbacManager(RbacManager):
         self.logger.debug(payload)
 
         try:
-            response = requests.put(
+            response = self.http_retry.execute(
+                requests.put,
                 f"{self.common_params.endpoint.analysis_service}/metadata/access/folders/{folder_id}",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -430,7 +434,6 @@ class FabricRbacManager(RbacManager):
                 json=payload,
                 timeout=60,
             )
-            response.raise_for_status()
 
             self.logger.info(
                 f"Successfully updated role assignment for {identity.given_name} ({assignment.object_id})")
@@ -715,7 +718,8 @@ class FabricRbacManager(RbacManager):
         Retrieve a specific datamart parameter for a SQL endpoint.
         """
         params_url = f"{self.common_params.endpoint.analysis_service}/v1.0/myorg/lhdatamarts/{sql_ep_id}/parameters"
-        resp = requests.get(
+        resp = self.http_retry.execute(
+            requests.get,
             params_url,
             headers={
                 "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -724,7 +728,6 @@ class FabricRbacManager(RbacManager):
             params={"name": parameter_name},
             timeout=60,
         )
-        resp.raise_for_status()
         raw = resp.json()
         self.logger.debug(
             f"Datamart parameters GET raw response for {sql_ep_id}: {raw}")
@@ -742,7 +745,8 @@ class FabricRbacManager(RbacManager):
         """
 
         post_url = f"{self.common_params.endpoint.analysis_service}/v1.0/myorg/lhdatamarts/{sql_ep_id}"
-        post_resp = requests.post(
+        post_resp = self.http_retry.execute(
+            requests.post,
             post_url,
             headers={
                 "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -758,7 +762,6 @@ class FabricRbacManager(RbacManager):
             },
             timeout=60,
         )
-        post_resp.raise_for_status()
         post_raw = post_resp.json()
         self.logger.debug(
             f"Datamart changeUniversalSecurityMode POST raw response for {sql_ep_id}: {post_raw}")
@@ -778,7 +781,8 @@ class FabricRbacManager(RbacManager):
 
         batch_url = f"{self.common_params.endpoint.analysis_service}/v1.0/myorg/lhdatamarts/{sql_ep_id}/batches/{batch_id}"
         while True:
-            poll_resp = requests.get(
+            poll_resp = self.http_retry.execute(
+                requests.get,
                 batch_url,
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -786,7 +790,6 @@ class FabricRbacManager(RbacManager):
                 },
                 timeout=60,
             )
-            poll_resp.raise_for_status()
             poll_raw = poll_resp.json()
             self.logger.debug(
                 f"Datamart batch poll raw response for {sql_ep_id} batch {batch_id}: {poll_raw}")

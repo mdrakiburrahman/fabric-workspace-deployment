@@ -18,7 +18,7 @@ from fabric_workspace_deployment.manager.fabric.model import SemanticModelManage
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
-from fabric_workspace_deployment.operations.operation_interfaces import OperationParams
+from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, OperationParams
 
 
 class ManagementFactory(ABC):
@@ -95,6 +95,7 @@ class ContainerizedManagementFactory(ManagementFactory):
         """
         self.operation_params = operation_params
         self.logger = logging.getLogger(__name__)
+        self.http_retry_handler = HttpRetryHandler(logger=self.logger)
 
     def create_azure_cli(self) -> AzCli:
         return AzCli(exit_on_error=True, logger=self.logger)
@@ -106,7 +107,12 @@ class ContainerizedManagementFactory(ManagementFactory):
         return FabricCapacityManager(self.operation_params.common, self.create_azure_cli(), self.create_fabric_cli())
 
     def create_fabric_workspace_manager(self) -> FabricWorkspaceManager:
-        return FabricWorkspaceManager(self.operation_params.common, self.create_azure_cli(), self.create_fabric_cli())
+        return FabricWorkspaceManager(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.create_fabric_cli(),
+            self.http_retry_handler,
+        )
 
     def create_fabric_cicd_manager(self) -> FabricCicdManager:
         fab_token_cicd = os.getenv("FAB_TOKEN_CICD", "").strip()
@@ -130,6 +136,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
+            self.http_retry_handler,
         )
 
     def create_fabric_rbac_manager(self) -> FabricRbacManager:
@@ -138,6 +145,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
+            self.http_retry_handler,
         )
 
     def create_semantic_model_manager(self) -> SemanticModelManager:
@@ -145,4 +153,5 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_workspace_manager(),
+            self.http_retry_handler,
         )

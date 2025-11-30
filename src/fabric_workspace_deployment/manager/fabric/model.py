@@ -12,9 +12,10 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricFolder,
     CommonParams,
+    HttpRetryHandler,
     ModelManager,
     ModelParams,
-    WorkspaceManager
+    WorkspaceManager,
 )
 from fabric_workspace_deployment.static.transformers import StringTransformer
 
@@ -26,6 +27,7 @@ class SemanticModelManager(ModelManager):
         common_params: CommonParams,
         az_cli: AzCli,
         workspace: WorkspaceManager,
+        http_retry_handler: HttpRetryHandler,
     ):
         """
         Initialize the Fabric Model manager.
@@ -34,6 +36,7 @@ class SemanticModelManager(ModelManager):
         self.az_cli = az_cli
         self.workspace = workspace
         self.logger = logging.getLogger(__name__)
+        self.http_retry = http_retry_handler
 
     async def execute(self) -> None:
         """
@@ -127,7 +130,8 @@ class SemanticModelManager(ModelManager):
         self.logger.info(
             f"Getting Fabric folder info for workspace {workspace_id}")
         try:
-            response = requests.get(
+            response = self.http_retry.execute(
+                requests.get,
                 f"{self.common_params.endpoint.analysis_service}/metadata/relations/folder/{workspace_id}",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -136,7 +140,6 @@ class SemanticModelManager(ModelManager):
                 },
                 timeout=60,
             )
-            response.raise_for_status()
             folder_data = response.json()
             self.logger.debug(
                 f"Fabric folder info raw response for {workspace_id}: {folder_data}")
@@ -177,7 +180,8 @@ class SemanticModelManager(ModelManager):
         self.logger.debug(f"Model settings data: {data}")
         
         try:
-            response = requests.post(
+            response = self.http_retry.execute(
+                requests.post,
                 f"{self.common_params.endpoint.analysis_service}/metadata/models/{id}/settings",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -186,7 +190,6 @@ class SemanticModelManager(ModelManager):
                 data=data,
                 timeout=60,
             )
-            response.raise_for_status()
             
             self.logger.info(f"Successfully updated model settings for model {id}")
 

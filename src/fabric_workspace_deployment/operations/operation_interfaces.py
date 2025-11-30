@@ -7,9 +7,11 @@ import functools
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import tempfile
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,9 +21,154 @@ from pathlib import Path
 from typing import Any
 from PIL import Image
 
+import requests
 import yaml
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+
+# ---------------------------------------------------------------------------- #
+# --------------------------- HTTP RETRY CONSTANTS --------------------------- #
+# ---------------------------------------------------------------------------- #
+
+HTTP_RETRYABLE_STATUS_CODES = frozenset([
+    408,  # Request Timeout
+    429,  # Too Many Requests
+    500,  # Internal Server Error
+    502,  # Bad Gateway
+    503,  # Service Unavailable
+    504,  # Gateway Timeout
+])
+
+MAX_RETRY_ATTEMPTS = 10
+MAX_RETRY_DELAY_SECONDS = 60
+INITIAL_RETRY_DELAY_SECONDS = 1
+
+
+class HttpRetryHandler:
+    """
+    HTTP retry handler with exponential backoff for retryable errors.
+    
+    This class provides a reusable, dependency-injectable way to handle HTTP retries
+    with exponential backoff and jitter for transient failures.
+    """
+
+    def __init__(
+        self,
+        max_attempts: int = MAX_RETRY_ATTEMPTS,
+        max_delay_seconds: float = MAX_RETRY_DELAY_SECONDS,
+        initial_delay_seconds: float = INITIAL_RETRY_DELAY_SECONDS,
+        retryable_status_codes: frozenset[int] = HTTP_RETRYABLE_STATUS_CODES,
+        logger: logging.Logger | None = None,
+    ):
+        """
+        Initialize the HTTP retry handler.
+        
+        Args:
+            max_attempts: Maximum number of retry attempts
+            max_delay_seconds: Maximum retry delay in seconds
+            initial_delay_seconds: Initial retry delay in seconds
+            retryable_status_codes: Set of HTTP status codes that should trigger retries
+            logger: Optional logger for logging retry attempts
+        """
+        self.max_attempts = max_attempts
+        self.max_delay_seconds = max_delay_seconds
+        self.initial_delay_seconds = initial_delay_seconds
+        self.retryable_status_codes = retryable_status_codes
+        self.logger = logger or logging.getLogger(__name__)
+
+    def execute(
+        self,
+        func: Callable,
+        *args,
+        **kwargs
+    ) -> requests.Response:
+        """
+        Execute an HTTP request with retry logic.
+        
+        Args:
+            func: The requests function to call (e.g., requests.get, requests.post)
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+            
+        Returns:
+            requests.Response: The successful response
+            
+        Raises:
+            The last exception encountered if all retries are exhausted
+        """
+        last_exception = None
+        
+        for attempt in range(1, self.max_attempts + 1):
+
+            try:
+                response = func(*args, **kwargs)
+                response.raise_for_status()
+                return response
+
+            except requests.exceptions.HTTPError as e:
+                last_exception = e
+                if e.response is None or e.response.status_code not in self.retryable_status_codes:
+                    raise
+                
+                if attempt >= self.max_attempts:
+                    self.logger.error(
+                        f"Max retry attempts ({self.max_attempts}) exhausted for {func.__name__} "
+                        f"to {args[0] if args else 'unknown URL'}. Last error: {e}"
+                    )
+                    raise
+                
+                delay = self._calculate_delay(attempt)
+                
+                self.logger.warning(
+                    f"HTTP {e.response.status_code} error on attempt {attempt}/{self.max_attempts} "
+                    f"for {func.__name__} to {args[0] if args else 'unknown URL'}. "
+                    f"Retrying in {delay:.2f}s..."
+                )
+                
+                time.sleep(delay)
+                
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                
+                if attempt >= self.max_attempts:
+                    self.logger.error(
+                        f"Max retry attempts ({self.max_attempts}) exhausted for {func.__name__} "
+                        f"to {args[0] if args else 'unknown URL'}. Last error: {e}"
+                    )
+                    raise
+                
+                delay = self._calculate_delay(attempt)
+                
+                self.logger.warning(
+                    f"Network error ({type(e).__name__}) on attempt {attempt}/{self.max_attempts} "
+                    f"for {func.__name__} to {args[0] if args else 'unknown URL'}. "
+                    f"Retrying in {delay:.2f}s..."
+                )
+                
+                time.sleep(delay)
+        
+        if last_exception:
+            raise last_exception
+
+        raise RuntimeError("Unexpected retry loop exit")
+    
+    def _calculate_delay(self, attempt: int) -> float:
+        """
+        Calculate the delay for the next retry attempt with exponential backoff and jitter.
+        
+        Args:
+            attempt: The current attempt number (1-indexed)
+            
+        Returns:
+            float: The delay in seconds
+        """
+        delay = min(
+            self.initial_delay_seconds * (2 ** (attempt - 1)),
+            self.max_delay_seconds
+        )
+        jitter = random.uniform(0, delay * 0.25)
+        return delay + jitter
+
 
 # ---------------------------------------------------------------------------- #
 # ------------------------------ DATA CLASSES -------------------------------- #

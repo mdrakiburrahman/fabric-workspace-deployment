@@ -13,6 +13,7 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     CommonParams,
+    HttpRetryHandler,
     KqlDatabaseInfo,
     MwcScopedToken,
     ShortcutManager,
@@ -31,6 +32,7 @@ class FabricShortcutManager(ShortcutManager):
         az_cli: AzCli,
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
+        http_retry_handler: HttpRetryHandler,
     ):
         """
         Initialize the Fabric Shortcut manager.
@@ -40,6 +42,7 @@ class FabricShortcutManager(ShortcutManager):
         self.fabric_cli = fabric_cli
         self.workspace = workspace
         self.logger = logging.getLogger(__name__)
+        self.http_retry = http_retry_handler
 
     async def execute(self) -> None:
         self.logger.info("Executing FabricShortcutManager")
@@ -150,7 +153,8 @@ class FabricShortcutManager(ShortcutManager):
         self.logger.info(
             f"Getting MWC token for database {database_id} in workspace {workspace_id}")
         try:
-            response = requests.post(
+            response = self.http_retry.execute(
+                requests.post,
                 f"{self.common_params.endpoint.analysis_service}/metadata/v201606/generatemwctokenv2",
                 headers={
                     "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
@@ -163,7 +167,6 @@ class FabricShortcutManager(ShortcutManager):
                 },
                 timeout=60,
             )
-            response.raise_for_status()
             token_data = response.json()
             token_data_snake_case = StringTransformer.convert_keys_to_snake_case(
                 token_data)
@@ -218,7 +221,8 @@ class FabricShortcutManager(ShortcutManager):
                 f"artifacts/{database_id}/shortcuts/batchCreate"
             )
 
-            response = requests.post(
+            response = self.http_retry.execute(
+                requests.post,
                 batch_create_url,
                 headers={
                     "Authorization": f"MWCToken {mwc_token.token}",
@@ -227,7 +231,6 @@ class FabricShortcutManager(ShortcutManager):
                 json=shortcuts_data,
                 timeout=60,
             )
-            response.raise_for_status()
             self.logger.info(
                 f"Successfully created {len(shortcuts_data)} shortcuts for database {database_id}")
 
