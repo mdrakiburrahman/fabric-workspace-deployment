@@ -40,6 +40,9 @@ class FabricWorkspaceManager(WorkspaceManager):
         self.logger.info("Executing FabricWorkspaceManager")
         tasks = []
         for workspace in self.common_params.fabric.workspaces:
+            if workspace.skip_deploy:
+                self.logger.info(f"Skipping workspace '{workspace.name}' due to skipDeploy=true")
+                continue
             task = asyncio.create_task(self.reconcile(
                 workspace), name=f"reconcile-workspace-{workspace.name}")
             tasks.append(task)

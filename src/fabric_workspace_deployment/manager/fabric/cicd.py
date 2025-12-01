@@ -38,6 +38,9 @@ class FabricCicdManager(CicdManager):
         self.logger.info("Executing FabricCicdManager")
         tasks = []
         for workspace_params in self.common_params.fabric.workspaces:
+            if workspace_params.skip_deploy:
+                self.logger.info(f"Skipping CICD for workspace '{workspace_params.name}' due to skipDeploy=true")
+                continue
             workspace_info = await self.workspace.get(workspace_params)
             task = asyncio.create_task(
                 self.reconcile(workspace_info.id, workspace_params.template), name=f"reconcile-cicd-{workspace_params.name}"

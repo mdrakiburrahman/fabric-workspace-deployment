@@ -62,6 +62,9 @@ class FabricRbacManager(RbacManager):
         self.logger.info("Executing FabricRbacManager")
         tasks = []
         for workspace_params in self.common_params.fabric.workspaces:
+            if workspace_params.skip_deploy:
+                self.logger.info(f"Skipping RBAC for workspace '{workspace_params.name}' due to skipDeploy=true")
+                continue
             workspace_info = await self.workspace.get(workspace_params)
             if workspace_params.rbac is not None:
                 task = asyncio.create_task(

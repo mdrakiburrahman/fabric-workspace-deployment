@@ -808,6 +808,7 @@ class FabricWorkspaceParams:
     rbac: RbacParams
     model: list[ModelParams]
     shortcut_auth_z_role_name: str
+    skip_deploy: bool
     shortcut: ShortcutParams | None = None
 
     def get_icon_payload(self, root_folder: str) -> str:
@@ -1897,6 +1898,11 @@ class OperationParams:
                     f"got '{workspace.shortcut_auth_z_role_name}'")
                 return False
 
+            if workspace.skip_deploy is None:
+                self.logger.error(
+                    f"Workspace skipDeploy at index {i} cannot be None")
+                return False
+
             if not self._validate_model_params(workspace.model, i):
                 return False
 
@@ -2283,6 +2289,7 @@ class OperationParams:
             rbac=self._parse_rbac_params(data["rbac"]),
             model=self._parse_model_params(data["model"]),
             shortcut_auth_z_role_name=data["shortcutAuthZRoleName"],
+            skip_deploy=data["skipDeploy"],
         )
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any]) -> FabricWorkspaceTemplateParams:

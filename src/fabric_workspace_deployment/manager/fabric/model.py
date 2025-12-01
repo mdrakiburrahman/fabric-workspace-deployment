@@ -46,6 +46,9 @@ class SemanticModelManager(ModelManager):
         tasks = []
         
         for workspace_params in self.common_params.fabric.workspaces:
+            if workspace_params.skip_deploy:
+                self.logger.info(f"Skipping models for workspace '{workspace_params.name}' due to skipDeploy=true")
+                continue
             workspace_info = await self.workspace.get(workspace_params)
             
             if workspace_params.model and len(workspace_params.model) > 0:
