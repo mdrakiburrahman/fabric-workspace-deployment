@@ -115,7 +115,7 @@ class FabricWorkspaceManager(WorkspaceManager):
             self.logger.info(
                 f"Workspace '{workspace_params.name}' already has a managed identity '{workspace_info.workspace_identity}'")
 
-        await self.assign_workspace_storage_reader(workspace_info, self.common_params.fabric.storage)
+        await self.assign_workspace_storage_role(workspace_params, workspace_info, self.common_params.fabric.storage)
 
         self.logger.info(
             f"Completed reconciliation for workspace: {workspace_params.name}")
@@ -280,8 +280,8 @@ class FabricWorkspaceManager(WorkspaceManager):
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    async def assign_workspace_storage_reader(
-        self, workspace_info: FabricWorkspaceInfo, storage_params: FabricStorageParams
+    async def assign_workspace_storage_role(
+        self, workspace_params: FabricWorkspaceParams, workspace_info: FabricWorkspaceInfo, storage_params: FabricStorageParams
     ) -> None:
         if workspace_info.workspace_identity is None:
             error_msg = f"Workspace '{workspace_info.display_name}' has no managed identity"
@@ -290,7 +290,7 @@ class FabricWorkspaceManager(WorkspaceManager):
         app_id = workspace_info.workspace_identity.application_id
         object_id = workspace_info.workspace_identity.service_principal_id
         scope = f"/subscriptions/{storage_params.subscription_id}/resourceGroups/{storage_params.resource_group}/providers/Microsoft.Storage/storageAccounts/{storage_params.account}"  # noqa: E501
-        role = "Storage Blob Data Reader"
+        role = workspace_params.shortcut_auth_z_role_name
 
         self.logger.info(
             f"Assigning role '{role}' to workspace identity '{app_id}' for storage scope: {scope}")

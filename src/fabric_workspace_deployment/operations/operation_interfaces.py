@@ -43,6 +43,16 @@ MAX_RETRY_ATTEMPTS = 10
 MAX_RETRY_DELAY_SECONDS = 60
 INITIAL_RETRY_DELAY_SECONDS = 1
 
+# ---------------------------------------------------------------------------- #
+# ----------------------- STORAGE ROLE CONSTANTS ----------------------------- #
+# ---------------------------------------------------------------------------- #
+
+ALLOWED_STORAGE_ROLES = frozenset([
+    "Storage Blob Data Reader",
+    "Storage Blob Data Contributor",
+    "Storage Blob Data Owner"
+])
+
 
 class HttpRetryHandler:
     """
@@ -797,6 +807,7 @@ class FabricWorkspaceParams:
     capacity: FabricCapacityParams
     rbac: RbacParams
     model: list[ModelParams]
+    shortcut_auth_z_role_name: str
     shortcut: ShortcutParams | None = None
 
     def get_icon_payload(self, root_folder: str) -> str:
@@ -1430,13 +1441,14 @@ class WorkspaceManager(ABC):
         pass
 
     @abstractmethod
-    async def assign_workspace_storage_reader(
-        self, workspace_info: "FabricWorkspaceInfo", storage_params: "FabricStorageParams"
+    async def assign_workspace_storage_role(
+        self, workspace_params: "FabricWorkspaceParams", workspace_info: "FabricWorkspaceInfo", storage_params: "FabricStorageParams"
     ) -> None:
         """
-        Assign Storage Blob Data Contributor role to the workspace identity for the storage account.
+        Assign the configured role to the workspace identity for the storage account.
 
         Args:
+            workspace_params: Parameters for the fabric workspace
             workspace_info: Information about the fabric workspace
             storage_params: Parameters for the fabric storage
 
@@ -1874,6 +1886,17 @@ class OperationParams:
                     f"Workspace capacity administrators at index {i} must contain at least one administrator")
                 return False
 
+            if not workspace.shortcut_auth_z_role_name:
+                self.logger.error(
+                    f"Workspace shortcutAuthZRoleName at index {i} cannot be empty")
+                return False
+
+            if workspace.shortcut_auth_z_role_name not in ALLOWED_STORAGE_ROLES:
+                self.logger.error(
+                    f"Workspace shortcutAuthZRoleName at index {i} must be one of {ALLOWED_STORAGE_ROLES}, "
+                    f"got '{workspace.shortcut_auth_z_role_name}'")
+                return False
+
             if not self._validate_model_params(workspace.model, i):
                 return False
 
@@ -2259,6 +2282,7 @@ class OperationParams:
             shortcut=shortcut,
             rbac=self._parse_rbac_params(data["rbac"]),
             model=self._parse_model_params(data["model"]),
+            shortcut_auth_z_role_name=data["shortcutAuthZRoleName"],
         )
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any]) -> FabricWorkspaceTemplateParams:
