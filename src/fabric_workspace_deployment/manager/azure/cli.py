@@ -131,8 +131,7 @@ class AzCli:
             return os.getenv("FAB_TOKEN_AZURE")
 
         try:
-            token = self.run_command(
-                f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
+            token = self.run_command(f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
         except Exception as e:
             error = f"Failed to get access token for scope {scope}. Please ensure you are logged in with 'az login'"
             raise RuntimeError(error) from e
@@ -225,8 +224,7 @@ class AzCli:
 
         """
         try:
-            token = self.get_access_token(
-                "https://analysis.windows.net/powerbi/api")
+            token = self.get_access_token("https://analysis.windows.net/powerbi/api")
             parts = token.split(".")
             if len(parts) != 3:  # noqa: PLR2004
                 raise RuntimeError("Invalid JWT token format")  # noqa: EM101
@@ -270,7 +268,7 @@ class AzCli:
             RuntimeError: If the token cannot be retrieved, decoded, or appid claim is not found
         """
         return self.get_claim("appid")
-    
+
     @functools.cache  # noqa: B019
     def get_user_principal_name(self) -> str:
         """

@@ -51,18 +51,14 @@ def parse_config() -> OperationParams:
         OperationParams: The parsed operation parameters.
     """
     parser = argparse.ArgumentParser(description="Deploys Fabric Workspace.")
-    parser.add_argument("--config-file-absolute-path", type=str,
-                        help="Absolute path to the configuration file.")
-    parser.add_argument("--operation", type=str,
-                        help="The operation to execute.")
+    parser.add_argument("--config-file-absolute-path", type=str, help="Absolute path to the configuration file.")
+    parser.add_argument("--operation", type=str, help="The operation to execute.")
     args = parser.parse_args()
 
-    logging.info(
-        f"Config file absolute path: {args.config_file_absolute_path}")
+    logging.info(f"Config file absolute path: {args.config_file_absolute_path}")
     logging.info(f"Operation: {args.operation}")
 
-    operation_params = OperationParams(
-        args.config_file_absolute_path, args.operation)
+    operation_params = OperationParams(args.config_file_absolute_path, args.operation)
     if operation_params.validate():
         logging.info("Configuration validation passed")
     else:
