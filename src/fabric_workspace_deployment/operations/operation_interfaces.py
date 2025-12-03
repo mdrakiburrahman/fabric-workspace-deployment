@@ -170,6 +170,7 @@ class Operation(Enum):
     DEPLOY_MODEL = "deployModel"
     DEPLOY_RBAC = "deployRbac"
     DEPLOY_SHORTCUT = "deployShortcut"
+    DEPLOY_SPARK = "deploySpark"
     DEPLOY_TEMPLATE = "deployTemplate"
     DRY_RUN = "dryRun"
 
@@ -338,19 +339,12 @@ class DynamicExecutorAllocation:
 class PoolDetails:
     """Spark pool details configuration."""
 
+    id: str
     name: str
     node_size_family: NodeSizeFamily
     node_size: NodeSize
     auto_scale: AutoScale
     dynamic_executor_allocation: DynamicExecutorAllocation
-
-
-@dataclass
-class PoolConf:
-    """Spark pool configuration."""
-
-    id: str
-    details: PoolDetails
 
 
 @dataclass
@@ -384,7 +378,7 @@ class SparkPool:
     machine_learning_auto_log: MachineLearningAutoLog
     job_management: JobManagement
     high_concurrency: HighConcurrencyConfig
-    pool_conf: list[PoolConf]
+    details: PoolDetails
     runtime_version: SparkRuntimeVersion
 
 
@@ -1133,6 +1127,64 @@ class ShortcutManager(ABC):
             workspace_id: The workspace ID containing the database
             database_id: The KQL database ID
             shortcut_params: Parameters for the shortcuts to create
+        """
+        pass
+
+
+class SparkManager(ABC):
+    """
+    Interface for managing Fabric Spark operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Spark manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute reconciliation for all workspaces in parallel.
+        """
+        pass
+
+    @abstractmethod
+    async def reconcile(self, workspace_id: str, capacity_id: str, spark_params: "FabricSparkParams") -> None:
+        """
+        Reconcile a single workspace to desired state Spark configuration.
+
+        Args:
+            workspace_id: The Fabric workspace id
+            capacity_id: The Fabric capacity id
+            spark_params: Parameters for the fabric workspace Spark configuration
+        """
+        pass
+
+    @abstractmethod
+    async def get_mwc_token(self, workspace_id: str, capacity_id: str) -> MwcScopedToken:
+        """
+        Get MWC scoped token for Spark operations.
+
+        Args:
+            workspace_id: The workspace ID
+            capacity_id: The capacity ID
+
+        Returns:
+            MwcScopedToken: MWC scoped token information
+        """
+        pass
+
+    @abstractmethod
+    async def create_spark_pools(self, workspace_id: str, capacity_id: str, spark_params: "FabricSparkParams", mwc_token: str) -> None:
+        """
+        Create Spark pools using MWC token.
+
+        Args:
+            workspace_id: The workspace ID
+            capacity_id: The capacity ID
+            spark_params: Parameters for the Spark pools to create
+            mwc_token: MWC authentication token
         """
         pass
 
@@ -2035,83 +2087,78 @@ class OperationParams:
                 self.logger.error(f"Workspace spark pools[{j}].highConcurrency.notebookPipelineRunEnabled at index {workspace_index} cannot be None")
                 return False
 
-            if pool.pool_conf is None or len(pool.pool_conf) == 0:
-                self.logger.error(f"Workspace spark pools[{j}].poolConf at index {workspace_index} must contain at least one pool configuration")
+            if pool.details is None:
+                self.logger.error(f"Workspace spark pools[{j}].details at index {workspace_index} cannot be None")
                 return False
 
-            for k, conf in enumerate(pool.pool_conf):
-                if not conf.id:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].id at index {workspace_index} cannot be empty")
-                    return False
+            if not pool.details.id:
+                self.logger.error(f"Workspace spark pools[{j}].details.id at index {workspace_index} cannot be empty")
+                return False
 
-                try:
-                    import uuid
+            try:
+                import uuid
 
-                    uuid.UUID(conf.id)
-                except ValueError:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].id at index {workspace_index} must be a valid GUID: {conf.id}")
-                    return False
+                uuid.UUID(pool.details.id)
+            except ValueError:
+                self.logger.error(f"Workspace spark pools[{j}].details.id at index {workspace_index} must be a valid GUID: {pool.details.id}")
+                return False
 
-                if conf.id in pool_ids:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].id at index {workspace_index} is not unique: {conf.id}")
-                    return False
-                pool_ids.add(conf.id)
+            if pool.details.id in pool_ids:
+                self.logger.error(f"Workspace spark pools[{j}].details.id at index {workspace_index} is not unique: {pool.details.id}")
+                return False
+            pool_ids.add(pool.details.id)
 
-                if conf.details is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details at index {workspace_index} cannot be None")
-                    return False
+            if not pool.details.name:
+                self.logger.error(f"Workspace spark pools[{j}].details.name at index {workspace_index} cannot be empty")
+                return False
 
-                if not conf.details.name:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.name at index {workspace_index} cannot be empty")
-                    return False
+            if pool.details.node_size_family is None:
+                self.logger.error(f"Workspace spark pools[{j}].details.nodeSizeFamily at index {workspace_index} cannot be None")
+                return False
 
-                if conf.details.node_size_family is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.nodeSizeFamily at index {workspace_index} cannot be None")
-                    return False
+            if pool.details.node_size is None:
+                self.logger.error(f"Workspace spark pools[{j}].details.nodeSize at index {workspace_index} cannot be None")
+                return False
 
-                if conf.details.node_size is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.nodeSize at index {workspace_index} cannot be None")
-                    return False
+            if pool.details.auto_scale is None:
+                self.logger.error(f"Workspace spark pools[{j}].details.autoScale at index {workspace_index} cannot be None")
+                return False
 
-                if conf.details.auto_scale is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.autoScale at index {workspace_index} cannot be None")
-                    return False
+            if pool.details.auto_scale.enabled is None:
+                self.logger.error(f"Workspace spark pools[{j}].details.autoScale.enabled at index {workspace_index} cannot be None")
+                return False
 
-                if conf.details.auto_scale.enabled is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.autoScale.enabled at index {workspace_index} cannot be None")
-                    return False
+            if pool.details.auto_scale.min_node_count is None or pool.details.auto_scale.min_node_count <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].details.autoScale.minNodeCount at index {workspace_index} must be greater than 0")
+                return False
 
-                if conf.details.auto_scale.min_node_count is None or conf.details.auto_scale.min_node_count <= 0:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.autoScale.minNodeCount at index {workspace_index} must be greater than 0")
-                    return False
+            if pool.details.auto_scale.max_node_count is None or pool.details.auto_scale.max_node_count <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].details.autoScale.maxNodeCount at index {workspace_index} must be greater than 0")
+                return False
 
-                if conf.details.auto_scale.max_node_count is None or conf.details.auto_scale.max_node_count <= 0:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.autoScale.maxNodeCount at index {workspace_index} must be greater than 0")
-                    return False
+            if pool.details.auto_scale.min_node_count > pool.details.auto_scale.max_node_count:
+                self.logger.error(f"Workspace spark pools[{j}].details.autoScale.minNodeCount at index {workspace_index} cannot be greater than maxNodeCount")
+                return False
 
-                if conf.details.auto_scale.min_node_count > conf.details.auto_scale.max_node_count:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.autoScale.minNodeCount at index {workspace_index} cannot be greater than maxNodeCount")
-                    return False
+            if pool.details.dynamic_executor_allocation is None:
+                self.logger.error(f"Workspace spark pools[{j}].details.dynamicExecutorAllocation at index {workspace_index} cannot be None")
+                return False
 
-                if conf.details.dynamic_executor_allocation is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.dynamicExecutorAllocation at index {workspace_index} cannot be None")
-                    return False
+            if pool.details.dynamic_executor_allocation.enabled is None:
+                self.logger.error(f"Workspace spark pools[{j}].details.dynamicExecutorAllocation.enabled at index {workspace_index} cannot be None")
+                return False
 
-                if conf.details.dynamic_executor_allocation.enabled is None:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.dynamicExecutorAllocation.enabled at index {workspace_index} cannot be None")
-                    return False
+            if pool.details.dynamic_executor_allocation.min_executors is None or pool.details.dynamic_executor_allocation.min_executors <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].details.dynamicExecutorAllocation.minExecutors at index {workspace_index} must be greater than 0")
+                return False
 
-                if conf.details.dynamic_executor_allocation.min_executors is None or conf.details.dynamic_executor_allocation.min_executors <= 0:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.dynamicExecutorAllocation.minExecutors at index {workspace_index} must be greater than 0")
-                    return False
+            if pool.details.dynamic_executor_allocation.max_executors is None or pool.details.dynamic_executor_allocation.max_executors <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].details.dynamicExecutorAllocation.maxExecutors at index {workspace_index} must be greater than 0")
+                return False
 
-                if conf.details.dynamic_executor_allocation.max_executors is None or conf.details.dynamic_executor_allocation.max_executors <= 0:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.dynamicExecutorAllocation.maxExecutors at index {workspace_index} must be greater than 0")
-                    return False
-
-                if conf.details.dynamic_executor_allocation.min_executors > conf.details.dynamic_executor_allocation.max_executors:
-                    self.logger.error(f"Workspace spark pools[{j}].poolConf[{k}].details.dynamicExecutorAllocation.minExecutors at index {workspace_index} cannot be greater than maxExecutors")
-                    return False
+            if pool.details.dynamic_executor_allocation.min_executors > pool.details.dynamic_executor_allocation.max_executors:
+                self.logger.error(f"Workspace spark pools[{j}].details.dynamicExecutorAllocation.minExecutors at index {workspace_index} cannot be greater than maxExecutors")
+                return False
 
             if pool.runtime_version is None:
                 self.logger.error(f"Workspace spark pools[{j}].runtimeVersion at index {workspace_index} cannot be None")
@@ -2500,7 +2547,7 @@ class OperationParams:
             machine_learning_auto_log=self._parse_machine_learning_auto_log(data["machineLearningAutoLog"]),
             job_management=self._parse_job_management(data["jobManagement"]),
             high_concurrency=self._parse_high_concurrency_params(data["highConcurrency"]),
-            pool_conf=[self._parse_pool_conf(conf_data) for conf_data in data["poolConf"]],
+            details=self._parse_pool_details(data["details"]),
             runtime_version=SparkRuntimeVersion(data["runtimeVersion"]),
         )
 
@@ -2522,16 +2569,10 @@ class OperationParams:
             notebook_pipeline_run_enabled=data["notebookPipelineRunEnabled"],
         )
 
-    def _parse_pool_conf(self, data: dict[str, Any]) -> PoolConf:
-        """Parse pool configuration."""
-        return PoolConf(
-            id=data["id"],
-            details=self._parse_pool_details(data["details"]),
-        )
-
     def _parse_pool_details(self, data: dict[str, Any]) -> PoolDetails:
         """Parse pool details configuration."""
         return PoolDetails(
+            id=data["id"],
             name=data["name"],
             node_size_family=NodeSizeFamily(data["nodeSizeFamily"]),
             node_size=NodeSize(data["nodeSize"]),

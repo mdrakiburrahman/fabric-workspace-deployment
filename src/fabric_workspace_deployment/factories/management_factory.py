@@ -17,6 +17,7 @@ from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
+from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
 from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, OperationParams
 
@@ -65,6 +66,13 @@ class ManagementFactory(ABC):
     def create_fabric_shortcut_manager(self) -> FabricShortcutManager:
         """
         Create a Fabric Shortcut Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_spark_manager(self) -> FabricSparkOperations:
+        """
+        Create a Fabric Spark Manager instance.
         """
         pass
 
@@ -135,6 +143,15 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_cli(),
+            self.create_fabric_workspace_manager(),
+            self.http_retry_handler,
+        )
+
+    def create_fabric_spark_manager(self) -> FabricSparkOperations:
+        return FabricSparkOperations(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.create_fabric_capacity_manager(),
             self.create_fabric_workspace_manager(),
             self.http_retry_handler,
         )
