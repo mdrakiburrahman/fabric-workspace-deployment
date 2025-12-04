@@ -417,6 +417,17 @@ class FabricFolderArtifacts:
 
 
 @dataclass
+class FabricSubfolderArtifacts:
+    """Fabric subfolder artifact information."""
+
+    id: int
+    display_name: str
+    object_id: str
+    folder_id: int
+    last_updated_date: str
+
+
+@dataclass
 class FabricFolder:
     """Fabric folder containing artifacts."""
 
@@ -1218,19 +1229,6 @@ class ModelManager(ABC):
         pass
 
     @abstractmethod
-    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
-        """
-        Get Fabric folder information.
-
-        Args:
-            workspace_id: The Fabric workspace id
-
-        Returns:
-            FabricFolder: Fabric workspace folder information
-        """
-        pass
-
-    @abstractmethod
     async def set_model(self, id: str, data: str) -> None:
         """
         Set Model properties for a given ID.
@@ -1606,6 +1604,36 @@ class WorkspaceManager(ABC):
 
         Raises:
             RuntimeError: If the role assignment fails
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class FolderClient(ABC):
+    """
+    Interface for managing Fabric folder operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the folder client with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
+        """
+        Get Fabric folder information for a workspace.
+
+        Args:
+            workspace_id: The Fabric workspace id
+
+        Returns:
+            FabricFolder: Fabric workspace folder information
         """
         pass
 

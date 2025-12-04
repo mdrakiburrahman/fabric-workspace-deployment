@@ -5,19 +5,17 @@
 import asyncio
 import logging
 
-import dacite
 import requests
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
-    FabricFolder,
     CommonParams,
+    FolderClient,
     HttpRetryHandler,
     ModelManager,
     ModelParams,
     WorkspaceManager,
 )
-from fabric_workspace_deployment.static.transformers import StringTransformer
 
 
 class SemanticModelManager(ModelManager):
@@ -28,6 +26,7 @@ class SemanticModelManager(ModelManager):
         common_params: CommonParams,
         az_cli: AzCli,
         workspace: WorkspaceManager,
+        folder_client: FolderClient,
         http_retry_handler: HttpRetryHandler,
     ):
         """
@@ -36,6 +35,7 @@ class SemanticModelManager(ModelManager):
         super().__init__(common_params)
         self.az_cli = az_cli
         self.workspace = workspace
+        self.folder_client = folder_client
         self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
 
@@ -90,7 +90,7 @@ class SemanticModelManager(ModelManager):
         self.logger.info(f"Reconciling model '{model_params.display_name}' in workspace {workspace_id}")
 
         try:
-            folder_info = await self.get_fabric_folder_info(workspace_id)
+            folder_info = await self.folder_client.get_fabric_folder_info(workspace_id)
             matching_model = None
             for artifact in folder_info.artifacts:
                 if artifact.type_name == "Model" and artifact.display_name == model_params.display_name:
@@ -108,50 +108,6 @@ class SemanticModelManager(ModelManager):
 
         except Exception as e:
             error_msg = f"Failed to reconcile model '{model_params.display_name}' in workspace {workspace_id}: {e}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
-
-    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
-        """
-        Get Fabric folder information for a workspace.
-
-        Args:
-            workspace_id: The Fabric workspace id
-
-        Returns:
-            FabricFolder: Fabric workspace folder information
-        """
-        self.logger.info(f"Getting Fabric folder info for workspace {workspace_id}")
-        try:
-            response = self.http_retry.execute(
-                requests.get,
-                f"{self.common_params.endpoint.analysis_service}/metadata/relations/folder/{workspace_id}",
-                headers={
-                    "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
-                    "Content-Type": "application/json",
-                    "X-Consuming-Feature": "ListView",
-                },
-                timeout=60,
-            )
-            folder_data = response.json()
-            self.logger.debug(f"Fabric folder info raw response for {workspace_id}: {folder_data}")
-
-            folder_data_snake_case = StringTransformer.convert_keys_to_snake_case(folder_data)
-
-            fabric_folder = dacite.from_dict(
-                data_class=FabricFolder,
-                data=folder_data_snake_case,
-                config=dacite.Config(
-                    check_types=False,
-                    cast=[str, int, bool, float],
-                ),
-            )
-
-            self.logger.info(f"Successfully retrieved Fabric folder info for workspace {workspace_id}")
-            return fabric_folder
-
-        except Exception as e:
-            error_msg = f"Failed to get Fabric folder info for workspace '{workspace_id}': {e}"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 

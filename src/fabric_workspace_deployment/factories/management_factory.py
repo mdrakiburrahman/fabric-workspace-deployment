@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 
 from azure.identity import AzureCliCredential
 
+from fabric_workspace_deployment.client.folder import FabricFolderClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
@@ -170,5 +171,10 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_workspace_manager(),
+            FabricFolderClient(
+                self.operation_params.common,
+                self.create_azure_cli(),
+                self.http_retry_handler,
+            ),
             self.http_retry_handler,
         )
