@@ -428,7 +428,7 @@ class FabricSubfolderArtifacts:
 
 
 @dataclass
-class FabricFolder:
+class FabricFolderCollection:
     """Fabric folder containing artifacts."""
 
     artifacts: list[FabricFolderArtifact]
@@ -1625,7 +1625,7 @@ class FolderClient(ABC):
         self.common_params = common_params
 
     @abstractmethod
-    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
+    async def get_fabric_folder_collection(self, workspace_id: str) -> FabricFolderCollection:
         """
         Get Fabric folder information for a workspace.
 
@@ -1633,7 +1633,7 @@ class FolderClient(ABC):
             workspace_id: The Fabric workspace id
 
         Returns:
-            FabricFolder: Fabric workspace folder information
+            FabricFolderCollection: Fabric workspace folder information
         """
         pass
 

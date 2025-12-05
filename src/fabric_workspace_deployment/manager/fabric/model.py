@@ -90,7 +90,7 @@ class SemanticModelManager(ModelManager):
         self.logger.info(f"Reconciling model '{model_params.display_name}' in workspace {workspace_id}")
 
         try:
-            folder_info = await self.folder_client.get_fabric_folder_info(workspace_id)
+            folder_info = await self.folder_client.get_fabric_folder_collection(workspace_id)
             matching_model = None
             for artifact in folder_info.artifacts:
                 if artifact.type_name == "Model" and artifact.display_name == model_params.display_name:

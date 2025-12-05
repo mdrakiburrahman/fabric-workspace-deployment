@@ -10,7 +10,7 @@ import requests
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     CommonParams,
-    FabricFolder,
+    FabricFolderCollection,
     FolderClient,
     HttpRetryHandler,
 )
@@ -39,7 +39,7 @@ class FabricFolderClient(FolderClient):
         self.http_retry = http_retry_handler
         self.logger = logging.getLogger(__name__)
 
-    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
+    async def get_fabric_folder_collection(self, workspace_id: str) -> FabricFolderCollection:
         """
         Get Fabric folder information for a workspace.
 
@@ -47,7 +47,7 @@ class FabricFolderClient(FolderClient):
             workspace_id: The Fabric workspace id
 
         Returns:
-            FabricFolder: Fabric workspace folder information
+            FabricFolderCollection: Fabric workspace folder information
 
         Raises:
             RuntimeError: If the API call fails or response parsing fails
@@ -70,7 +70,7 @@ class FabricFolderClient(FolderClient):
             folder_data_snake_case = StringTransformer.convert_keys_to_snake_case(folder_data)
 
             fabric_folder = dacite.from_dict(
-                data_class=FabricFolder,
+                data_class=FabricFolderCollection,
                 data=folder_data_snake_case,
                 config=dacite.Config(
                     check_types=False,
