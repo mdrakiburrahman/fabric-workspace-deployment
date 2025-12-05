@@ -403,7 +403,7 @@ class FabricWorkspaceTemplateParams:
 
 
 @dataclass
-class FabricFolderArtifacts:
+class FabricFolderArtifact:
     """Fabric folder artifact information."""
 
     id: int
@@ -431,7 +431,7 @@ class FabricSubfolderArtifacts:
 class FabricFolder:
     """Fabric folder containing artifacts."""
 
-    artifacts: list[FabricFolderArtifacts]
+    artifacts: list[FabricFolderArtifact]
 
 
 @dataclass
