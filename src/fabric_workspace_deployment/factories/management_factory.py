@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 
 from azure.identity import AzureCliCredential
 
-from fabric_workspace_deployment.client.folder import FabricFolderClient
+from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
