@@ -212,6 +212,7 @@ class SparkRuntimeVersion(Enum):
 class ArtifactType(Enum):
     """Enumeration of Fabric artifact types."""
 
+    LAKEHOUSE = "Lakehouse"
     MODEL = "Model"
     SPARK_JOB_DEFINITION = "SparkJobDefinition"
 
@@ -1769,6 +1770,29 @@ class SparkJobDefinitionClient(ABC):
         Raises:
             RuntimeError: If the API calls fail
             ValueError: If nested_folder_path is empty or invalid
+        """
+        pass
+
+    @abstractmethod
+    async def update_spark_job_definition_config(
+        self,
+        workspace_id: str,
+        spark_job_definition_id: str,
+        lakehouse_name: str,
+        config: "SparkJobDefinitionV1Config",
+    ) -> None:
+        """
+        Update a Spark Job Definition's configuration using PATCH.
+
+        Args:
+            workspace_id: The workspace ID containing the artifacts
+            spark_job_definition_id: The Spark Job Definition artifact ID
+            lakehouse_name: The display name of the default Lakehouse to resolve
+            config: The SparkJobDefinitionV1Config containing the workload payload
+
+        Raises:
+            RuntimeError: If the API call fails
+            ValueError: If the lakehouse is not found in the workspace
         """
         pass
 

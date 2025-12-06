@@ -154,6 +154,11 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
             self.create_fabric_spark_job_definition_client(),
+            FabricFolderClient(
+                self.operation_params.common,
+                self.create_azure_cli(),
+                self.http_retry_handler,
+            ),
         )
 
     def create_fabric_shortcut_manager(self) -> FabricShortcutManager:

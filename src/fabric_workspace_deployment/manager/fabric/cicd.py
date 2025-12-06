@@ -12,10 +12,12 @@ from azure.core.credentials import TokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
+    ArtifactType,
     CicdManager,
     CommonParams,
     CustomLibrary,
     FabricWorkspaceTemplateParams,
+    FolderClient,
     SparkJobDefinitionClient,
     WorkspaceManager,
 )
@@ -32,6 +34,7 @@ class FabricCicdManager(CicdManager):
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
         spark_job_definition_client: SparkJobDefinitionClient,
+        folder_client: FolderClient,
     ):
         """
         Initialize the Fabric CICD manager.
@@ -42,6 +45,7 @@ class FabricCicdManager(CicdManager):
         self.fabric_cli = fabric_cli
         self.workspace = workspace
         self.spark_job_definition_client = spark_job_definition_client
+        self.folder_client = folder_client
         self.logger = logging.getLogger(__name__)
 
     async def execute(self) -> None:
@@ -124,6 +128,12 @@ class FabricCicdManager(CicdManager):
         if template_params.unpublish_orphans:
             self.logger.info("Unpublishing orphan items")
             fabric_cicd.unpublish_all_orphan_items(target_workspace)
+
+        self.logger.info("Updating Spark Job Definition configurations")
+        if template_params.spark_job_definitions:
+            await self._update_spark_job_definition_configs(workspace_id, template_params)
+        else:
+            self.logger.info("No Spark Job Definitions configured, skipping config update")
 
         self.logger.info(f"Completed CICD reconciliation for workspace ID: {workspace_id}")
 
@@ -213,3 +223,57 @@ class FabricCicdManager(CicdManager):
                 raise Exception(f"Failed to create some Spark Job Definitions: {'; '.join(errors)}")
 
         self.logger.info("Completed Spark Job Definition creation")
+
+    async def _update_spark_job_definition_configs(self, workspace_id: str, template_params: FabricWorkspaceTemplateParams) -> None:
+        """
+        Update all Spark Job Definition configurations with correct Lakehouse artifact IDs.
+
+        Args:
+            workspace_id: The workspace id
+            template_params: Template parameters containing Spark Job Definitions
+        """
+        self.logger.info(f"Updating configurations for {len(template_params.spark_job_definitions)} Spark Job Definition(s)")
+        artifact_collection = await self.folder_client.get_fabric_folder_collection(workspace_id)
+        sjd_map = {artifact.display_name: artifact.object_id for artifact in artifact_collection.artifacts if artifact.type_name == ArtifactType.SPARK_JOB_DEFINITION.value}
+
+        self.logger.info(f"Found {len(sjd_map)} Spark Job Definition(s) in workspace: {list(sjd_map.keys())}")
+
+        tasks = []
+        for sjd in template_params.spark_job_definitions:
+            if sjd.display_name not in sjd_map:
+                error_msg = f"Spark Job Definition '{sjd.display_name}' not found in workspace. " f"Available: {list(sjd_map.keys())}"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            sjd_artifact_id = sjd_map[sjd.display_name]
+            lakehouse_name = sjd.default_lakehouse_artifact_name
+
+            self.logger.info(f"Updating Spark Job Definition '{sjd.display_name}' " f"(ID: {sjd_artifact_id}) with default Lakehouse '{lakehouse_name}'")
+
+            task = asyncio.create_task(
+                self.spark_job_definition_client.update_spark_job_definition_config(
+                    workspace_id,
+                    sjd_artifact_id,
+                    lakehouse_name,
+                    sjd.spark_job_definition_v1_config,
+                ),
+                name=f"update-sjd-config-{sjd.display_name}",
+            )
+            tasks.append(task)
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            errors = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    sjd_name = template_params.spark_job_definitions[i].display_name
+                    error_msg = f"Failed to update Spark Job Definition config for '{sjd_name}': {result}"
+                    self.logger.error(error_msg)
+                    errors.append(error_msg)
+                else:
+                    self.logger.info(f"Successfully updated config for Spark Job Definition: " f"{template_params.spark_job_definitions[i].display_name}")
+
+            if errors:
+                raise Exception(f"Failed to update some Spark Job Definition configs: {'; '.join(errors)}")
+
+        self.logger.info("Completed Spark Job Definition configuration updates")
