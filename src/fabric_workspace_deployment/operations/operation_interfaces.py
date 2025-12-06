@@ -113,6 +113,7 @@ class HttpRetryHandler:
             except requests.exceptions.HTTPError as e:
                 last_exception = e
                 if e.response is None or e.response.status_code not in self.retryable_status_codes:
+                    self.logger.debug(f"Non-retryable HTTP error response: {e.response.text if e.response else 'No response'}")
                     raise
 
                 if attempt >= self.max_attempts:
