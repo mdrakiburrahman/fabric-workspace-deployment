@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 
+import requests
+
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.operations.operation_interfaces import CapacityManager, CommonParams, FabricCapacityInfo, FabricCapacityParams
+from fabric_workspace_deployment.operations.operation_interfaces import CapacityManager, CommonParams, FabricCapacityInfo, FabricCapacityParams, CapacityAutoscale, HttpRetryHandler
 
 
 class FabricCapacityManager(CapacityManager):
@@ -27,6 +29,9 @@ class FabricCapacityManager(CapacityManager):
         self.logger.info("Executing FabricCapacityManager")
         tasks = []
         for workspace in self.common_params.fabric.workspaces:
+            if workspace.skip_deploy:
+                self.logger.info(f"Skipping capacity '{workspace.capacity.name}' for workspace '{workspace.name}' due to skipDeploy=true")
+                continue
             task = asyncio.create_task(self.reconcile(workspace.capacity), name=f"reconcile-capacity-{workspace.capacity.name}")
             tasks.append(task)
 
@@ -84,6 +89,8 @@ class FabricCapacityManager(CapacityManager):
             self.logger.info(f"Successfully updated administrators for capacity '{capacity_params.name}'")
         else:
             self.logger.info(f"Capacity '{capacity_params.name}' administrators are already correct")
+
+        await self.reconcile_autoscale(capacity_params, capacity_info.fabric_id)
 
         self.logger.info(f"Completed reconciliation for capacity: {capacity_params.name}")
 
@@ -158,3 +165,80 @@ class FabricCapacityManager(CapacityManager):
 
     async def unassign(self, capacity_params: "FabricCapacityParams", workspace_name: str) -> None:
         self.fabric_cli.run_command(f"unassign .capacities/{capacity_params.name}.Capacity -W {workspace_name}.Workspace -f")
+
+    async def reconcile_autoscale(self, capacity_params: FabricCapacityParams, capacity_id: str) -> None:
+        self.logger.info(f"Reconciling autoscale for capacity '{capacity_params.name}' (ID: {capacity_id})")
+
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        retry_handler = HttpRetryHandler(logger=self.logger)
+
+        spark_limit = capacity_params.autoscale.spark_core.workload_autoscale_limit
+        spark_url = f"{self.common_params.endpoint.analysis_service}/capacities/{capacity_id}/workloads/SparkCore/workloadAutoscaleLimit"
+
+        self.logger.info(f"Checking current SparkCore workloadAutoscaleLimit for capacity '{capacity_params.name}'")
+        try:
+            get_response = retry_handler.execute(
+                requests.get,
+                spark_url,
+                headers=headers,
+                timeout=30,
+            )
+            current_spark_config = get_response.json()
+            current_spark_limit = current_spark_config.get("workloadAutoscaleLimit")
+
+            if current_spark_limit == spark_limit:
+                self.logger.info(f"SparkCore workloadAutoscaleLimit is already {spark_limit}, skipping update")
+            else:
+                self.logger.info(f"SparkCore workloadAutoscaleLimit mismatch. Current: {current_spark_limit}, Desired: {spark_limit}. Updating.")
+                spark_payload = {"workloadAutoscaleLimit": spark_limit}
+                response = retry_handler.execute(
+                    requests.post,
+                    spark_url,
+                    headers=headers,
+                    json=spark_payload,
+                    timeout=30,
+                )
+                self.logger.info(f"Successfully set SparkCore autoscale limit to {spark_limit}")
+        except Exception as e:
+            error_msg = f"Failed to reconcile SparkCore autoscale limit for capacity '{capacity_params.name}': {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+        warehouse_limit = capacity_params.autoscale.warehouse.workload_autoscale_limit
+        warehouse_url = f"{self.common_params.endpoint.analysis_service}/capacities/{capacity_id}/workloads/DMS/workloadAutoscaleLimit"
+
+        self.logger.info(f"Checking current DMS (warehouse) workloadAutoscaleLimit for capacity '{capacity_params.name}'")
+        try:
+            get_response = retry_handler.execute(
+                requests.get,
+                warehouse_url,
+                headers=headers,
+                timeout=30,
+            )
+            current_warehouse_config = get_response.json()
+            current_warehouse_limit = current_warehouse_config.get("workloadAutoscaleLimit")
+
+            if current_warehouse_limit == warehouse_limit:
+                self.logger.info(f"DMS (warehouse) workloadAutoscaleLimit is already {warehouse_limit}, skipping update")
+            else:
+                self.logger.info(f"DMS (warehouse) workloadAutoscaleLimit mismatch. Current: {current_warehouse_limit}, Desired: {warehouse_limit}. Updating.")
+                warehouse_payload = {"workloadAutoscaleLimit": warehouse_limit}
+                response = retry_handler.execute(
+                    requests.post,
+                    warehouse_url,
+                    headers=headers,
+                    json=warehouse_payload,
+                    timeout=30,
+                )
+                self.logger.info(f"Successfully set DMS autoscale limit to {warehouse_limit}")
+        except Exception as e:
+            error_msg = f"Failed to reconcile DMS autoscale limit for capacity '{capacity_params.name}': {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+        self.logger.info(f"Completed autoscale reconciliation for capacity '{capacity_params.name}'")
