@@ -51,6 +51,7 @@ INITIAL_RETRY_DELAY_SECONDS = 1
 
 ALLOWED_STORAGE_ROLES = frozenset(["Storage Blob Data Reader", "Storage Blob Data Contributor", "Storage Blob Data Owner"])
 SPARK_JOB_DEFINITION_PLATFORM_FILE = ".platform"
+SPARK_JOB_DEFINITION_V1_FILE = "SparkJobDefinitionV1.json"
 
 
 class HttpRetryHandler:
@@ -398,12 +399,29 @@ class FabricSparkParams:
 
 
 @dataclass
+class SparkJobDefinitionV1Config:
+    """Spark Job Definition V1 configuration file content."""
+
+    executable_file: str
+    default_lakehouse_artifact_id: str
+    main_class: str
+    additional_lakehouse_ids: list[str]
+    retry_policy: str | None
+    command_line_arguments: str
+    additional_library_uris: list[str]
+    language: str
+    environment_artifact_id: str | None
+
+
+@dataclass
 class SparkJobDefinition:
     """Spark Job Definition configuration."""
 
     display_name: str
     description: str
     nested_folder_path: str
+    default_lakehouse_artifact_name: str
+    spark_job_definition_v1_config: SparkJobDefinitionV1Config
 
 
 @dataclass
@@ -2217,8 +2235,17 @@ class OperationParams:
                 self.logger.error(f"Spark Job Definition description at workspace index {workspace_index}, definition index {j} cannot be empty")
                 return False
 
+            if not sjd.default_lakehouse_artifact_name:
+                self.logger.error(f"Spark Job Definition default_lakehouse_artifact_name at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
             if not sjd.nested_folder_path:
                 self.logger.error(f"Spark Job Definition nested_folder_path at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            spark_job_def_v1_file = os.path.join(self.common.local.root_folder, sjd.nested_folder_path, SPARK_JOB_DEFINITION_V1_FILE)
+            if not os.path.exists(spark_job_def_v1_file):
+                self.logger.error(f"Spark Job Definition file '{SPARK_JOB_DEFINITION_V1_FILE}' not found at workspace index {workspace_index}, definition index {j}: {spark_job_def_v1_file}")
                 return False
 
             if sjd.nested_folder_path in seen_nested_paths:
@@ -2681,8 +2708,9 @@ class OperationParams:
         return CustomLibrary(source=source, dest=dest)
 
     def _parse_spark_job_definition(self, data: dict[str, Any], root_folder: str) -> SparkJobDefinition:
-        """Parse Spark Job Definition configuration by reading from .platform file."""
+        """Parse Spark Job Definition configuration by reading from .platform and SparkJobDefinitionV1.json files."""
         nested_folder_path = data["nestedFolderPath"]
+
         platform_file_path = os.path.join(root_folder, nested_folder_path, SPARK_JOB_DEFINITION_PLATFORM_FILE)
         if not os.path.exists(platform_file_path):
             msg = f"Required file '{SPARK_JOB_DEFINITION_PLATFORM_FILE}' not found in path: {platform_file_path}"
@@ -2724,10 +2752,61 @@ class OperationParams:
             self.logger.error(msg)
             raise ValueError(msg)
 
+        v1_file_path = os.path.join(root_folder, nested_folder_path, SPARK_JOB_DEFINITION_V1_FILE)
+        if not os.path.exists(v1_file_path):
+            msg = f"Required file '{SPARK_JOB_DEFINITION_V1_FILE}' not found in path: {v1_file_path}"
+            self.logger.error(msg)
+            raise FileNotFoundError(msg)
+        try:
+            with open(v1_file_path, encoding="utf-8") as f:
+                v1_data = json.load(f)
+        except json.JSONDecodeError as e:
+            msg = f"Invalid JSON in {SPARK_JOB_DEFINITION_V1_FILE} file at {v1_file_path}: {e}"
+            self.logger.error(msg)
+            raise ValueError(msg) from e
+        except Exception as e:
+            msg = f"Failed to read {SPARK_JOB_DEFINITION_V1_FILE} file at {v1_file_path}: {e}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+
+        spark_job_definition_v1_config = self._parse_spark_job_definition_v1_config(v1_data, v1_file_path)
+
         return SparkJobDefinition(
             display_name=metadata["displayName"],
             description=metadata["description"],
             nested_folder_path=nested_folder_path,
+            default_lakehouse_artifact_name=data["defaultLakehouseArtifactName"],
+            spark_job_definition_v1_config=spark_job_definition_v1_config,
+        )
+
+    def _parse_spark_job_definition_v1_config(self, data: dict[str, Any], file_path: str) -> SparkJobDefinitionV1Config:
+        """Parse SparkJobDefinitionV1Config from JSON data."""
+        required_fields = [
+            "executableFile",
+            "defaultLakehouseArtifactId",
+            "mainClass",
+            "additionalLakehouseIds",
+            "commandLineArguments",
+            "additionalLibraryUris",
+            "language",
+        ]
+
+        for field in required_fields:
+            if field not in data:
+                msg = f"Missing required field '{field}' in {SPARK_JOB_DEFINITION_V1_FILE} at {file_path}"
+                self.logger.error(msg)
+                raise KeyError(msg)
+
+        return SparkJobDefinitionV1Config(
+            executable_file=data["executableFile"],
+            default_lakehouse_artifact_id=data["defaultLakehouseArtifactId"],
+            main_class=data["mainClass"],
+            additional_lakehouse_ids=data["additionalLakehouseIds"],
+            retry_policy=data.get("retryPolicy"),
+            command_line_arguments=data["commandLineArguments"],
+            additional_library_uris=data["additionalLibraryUris"],
+            language=data["language"],
+            environment_artifact_id=data.get("environmentArtifactId"),
         )
 
     def _parse_fabric_capacity_params(self, data: dict[str, Any]) -> FabricCapacityParams:
