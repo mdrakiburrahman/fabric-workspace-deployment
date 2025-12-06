@@ -50,6 +50,7 @@ INITIAL_RETRY_DELAY_SECONDS = 1
 # ---------------------------------------------------------------------------- #
 
 ALLOWED_STORAGE_ROLES = frozenset(["Storage Blob Data Reader", "Storage Blob Data Contributor", "Storage Blob Data Owner"])
+SPARK_JOB_DEFINITION_PLATFORM_FILE = ".platform"
 
 
 class HttpRetryHandler:
@@ -205,6 +206,13 @@ class SparkRuntimeVersion(Enum):
     VERSION_1_2 = "1.2"
     VERSION_1_3 = "1.3"
     VERSION_2_0 = "2.0"
+
+
+class ArtifactType(Enum):
+    """Enumeration of Fabric artifact types."""
+
+    MODEL = "Model"
+    SPARK_JOB_DEFINITION = "SparkJobDefinition"
 
 
 @dataclass
@@ -390,6 +398,15 @@ class FabricSparkParams:
 
 
 @dataclass
+class SparkJobDefinition:
+    """Spark Job Definition configuration."""
+
+    display_name: str
+    description: str
+    nested_folder_path: str
+
+
+@dataclass
 class FabricWorkspaceTemplateParams:
     """Fabric workspace template parameters."""
 
@@ -400,6 +417,7 @@ class FabricWorkspaceTemplateParams:
     feature_flags: list[str]
     unpublish_orphans: bool
     custom_libraries: list[CustomLibrary]
+    spark_job_definitions: list[SparkJobDefinition]
 
 
 @dataclass
@@ -432,6 +450,25 @@ class FabricFolderCollection:
     """Fabric folder containing artifacts."""
 
     artifacts: list[FabricFolderArtifact]
+
+
+@dataclass
+class ArtifactRequest:
+    """Request payload for creating a Fabric artifact."""
+
+    artifact_type: str
+    description: str
+    display_name: str
+
+
+@dataclass
+class FabricArtifact:
+    """Fabric artifact information returned from creation."""
+
+    object_id: str
+    artifact_type: str
+    display_name: str
+    description: str
 
 
 @dataclass
@@ -1643,6 +1680,86 @@ class FolderClient(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class ArtifactClient(ABC):
+    """
+    Interface for managing Fabric artifact operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the artifact client with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def post_definition(
+        self,
+        workspace_id: str,
+        artifact_request: "ArtifactRequest",
+    ) -> "FabricArtifact":
+        """
+        Create a new Fabric artifact definition.
+
+        Args:
+            workspace_id: The Fabric workspace ID
+            artifact_request: The artifact creation request payload
+
+        Returns:
+            FabricArtifact: The created artifact information
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class SparkJobDefinitionClient(ABC):
+    """
+    Interface for managing Spark Job Definition operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Spark Job Definition client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def create_spark_job_definition_artifact(
+        self,
+        workspace_id: str,
+        spark_job_definition: "SparkJobDefinition",
+    ) -> "FabricArtifact":
+        """
+        Create or retrieve a Spark Job Definition artifact.
+
+        This method checks if a SparkJobDefinition with the given display name already exists.
+        If it exists, returns the existing artifact. Otherwise, creates a new one.
+
+        Args:
+            workspace_id: The Fabric workspace id
+            spark_job_definition: The Spark Job Definition configuration
+
+        Returns:
+            FabricArtifact: The existing or newly created artifact information
+
+        Raises:
+            RuntimeError: If the API calls fail
+            ValueError: If nested_folder_path is empty or invalid
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class OperationParams:
     """
     Main operation parameters container with parsing and validation capabilities.
@@ -2029,6 +2146,9 @@ class OperationParams:
             if not self._validate_model_params(workspace.model, i):
                 return False
 
+            if not self._validate_spark_job_definition_params(workspace.template.spark_job_definitions, i):
+                return False
+
             if workspace.spark is None:
                 self.logger.error(f"Workspace spark at index {i} cannot be None")
                 return False
@@ -2069,6 +2189,42 @@ class OperationParams:
             if model.direct_lake_auto_sync is None:
                 self.logger.error(f"Workspace model[{j}].directLakeAutoSync at index {workspace_index} cannot be None")
                 return False
+
+        return True
+
+    def _validate_spark_job_definition_params(self, spark_job_definitions: list[SparkJobDefinition], workspace_index: int) -> bool:
+        """Validate Spark Job Definition parameters."""
+        if spark_job_definitions is None:
+            self.logger.error(f"Workspace spark_job_definitions at index {workspace_index} cannot be None")
+            return False
+
+        if len(spark_job_definitions) == 0:
+            return True
+
+        seen_display_names = set()
+        seen_nested_paths = set()
+        for j, sjd in enumerate(spark_job_definitions):
+            if not sjd.display_name:
+                self.logger.error(f"Spark Job Definition display_name at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            if sjd.display_name in seen_display_names:
+                self.logger.error(f"Duplicate Spark Job Definition display_name '{sjd.display_name}' at workspace index {workspace_index}, definition index {j}")
+                return False
+            seen_display_names.add(sjd.display_name)
+
+            if not sjd.description:
+                self.logger.error(f"Spark Job Definition description at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            if not sjd.nested_folder_path:
+                self.logger.error(f"Spark Job Definition nested_folder_path at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            if sjd.nested_folder_path in seen_nested_paths:
+                self.logger.error(f"Duplicate Spark Job Definition nested_folder_path '{sjd.nested_folder_path}' at workspace index {workspace_index}, definition index {j}")
+                return False
+            seen_nested_paths.add(sjd.nested_folder_path)
 
         return True
 
@@ -2409,12 +2565,13 @@ class OperationParams:
 
     def _parse_common_params(self, data: dict[str, Any]) -> CommonParams:
         """Parse common parameters."""
+        root_folder = data["local"]["rootFolder"]
         return CommonParams(
             local=self._parse_local_params(data["local"]),
             endpoint=self._parse_endpoint_params(data["endpoint"]),
             scope=self._parse_scope_params(data["scope"]),
             arm=self._parse_arm_params(data["arm"]),
-            fabric=self._parse_fabric_params(data["fabric"]),
+            fabric=self._parse_fabric_params(data["fabric"], root_folder),
             identities=self._parse_identities_params(data.get("identities", [])),
         )
 
@@ -2446,21 +2603,21 @@ class OperationParams:
             tenant_id=data["tenantId"],
         )
 
-    def _parse_fabric_params(self, data: dict[str, Any]) -> FabricParams:
+    def _parse_fabric_params(self, data: dict[str, Any], root_folder: str) -> FabricParams:
         """Parse Fabric parameters."""
         return FabricParams(
-            workspaces=self._parse_fabric_workspaces(data["workspaces"]),
+            workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
             storage=self._parse_fabric_storage_params(data["storage"]),
         )
 
-    def _parse_fabric_workspaces(self, data: list[dict[str, Any]]) -> list[FabricWorkspaceParams]:
+    def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
         """Parse Fabric workspaces."""
         workspaces = []
         for workspace_data in data:
-            workspaces.append(self._parse_fabric_workspace_params(workspace_data))
+            workspaces.append(self._parse_fabric_workspace_params(workspace_data, root_folder))
         return workspaces
 
-    def _parse_fabric_workspace_params(self, data: dict[str, Any]) -> FabricWorkspaceParams:
+    def _parse_fabric_workspace_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceParams:
         """Parse a single Fabric workspace."""
         shortcut = None
         if "shortcut" in data:
@@ -2471,7 +2628,7 @@ class OperationParams:
             description=data["description"],
             icon_path=data["iconPath"],
             dataset_storage_mode=data["datasetStorageMode"],
-            template=self._parse_fabric_workspace_template_params(data["template"]),
+            template=self._parse_fabric_workspace_template_params(data["template"], root_folder),
             capacity=self._parse_fabric_capacity_params(data["capacity"]),
             shortcut=shortcut,
             rbac=self._parse_rbac_params(data["rbac"]),
@@ -2481,12 +2638,23 @@ class OperationParams:
             spark=self._parse_spark_params(data["spark"]),
         )
 
-    def _parse_fabric_workspace_template_params(self, data: dict[str, Any]) -> FabricWorkspaceTemplateParams:
+    def _parse_fabric_workspace_template_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceTemplateParams:
         """Parse Fabric workspace template parameters."""
+        if "customLibraries" not in data:
+            msg = "Missing required field 'customLibraries' in template configuration"
+            raise KeyError(msg)
+
+        if "sparkJobDefinitions" not in data:
+            msg = "Missing required field 'sparkJobDefinitions' in template configuration"
+            raise KeyError(msg)
+
         custom_libraries = []
-        if "customLibraries" in data:
-            for lib_data in data["customLibraries"]:
-                custom_libraries.append(self._parse_custom_library(lib_data))
+        for lib_data in data["customLibraries"]:
+            custom_libraries.append(self._parse_custom_library(lib_data))
+
+        spark_job_definitions = []
+        for sjd_data in data["sparkJobDefinitions"]:
+            spark_job_definitions.append(self._parse_spark_job_definition(sjd_data, root_folder))
 
         return FabricWorkspaceTemplateParams(
             artifacts_folder=data["artifactsFolder"],
@@ -2496,6 +2664,7 @@ class OperationParams:
             feature_flags=data["featureFlags"],
             unpublish_orphans=data["unpublishOrphans"],
             custom_libraries=custom_libraries,
+            spark_job_definitions=spark_job_definitions,
         )
 
     def _parse_custom_library(self, data: dict[str, Any]) -> CustomLibrary:
@@ -2510,6 +2679,56 @@ class OperationParams:
             folder_path=data["dest"]["folderPath"],
         )
         return CustomLibrary(source=source, dest=dest)
+
+    def _parse_spark_job_definition(self, data: dict[str, Any], root_folder: str) -> SparkJobDefinition:
+        """Parse Spark Job Definition configuration by reading from .platform file."""
+        nested_folder_path = data["nestedFolderPath"]
+        platform_file_path = os.path.join(root_folder, nested_folder_path, SPARK_JOB_DEFINITION_PLATFORM_FILE)
+        if not os.path.exists(platform_file_path):
+            msg = f"Required file '{SPARK_JOB_DEFINITION_PLATFORM_FILE}' not found in path: {platform_file_path}"
+            self.logger.error(msg)
+            raise FileNotFoundError(msg)
+        try:
+            with open(platform_file_path, encoding="utf-8") as f:
+                platform_data = json.load(f)
+        except json.JSONDecodeError as e:
+            msg = f"Invalid JSON in {SPARK_JOB_DEFINITION_PLATFORM_FILE} file at {platform_file_path}: {e}"
+            self.logger.error(msg)
+            raise ValueError(msg) from e
+        except Exception as e:
+            msg = f"Failed to read {SPARK_JOB_DEFINITION_PLATFORM_FILE} file at {platform_file_path}: {e}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+        if "metadata" not in platform_data:
+            msg = f"Missing required field 'metadata' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+
+        metadata = platform_data["metadata"]
+        if "displayName" not in metadata:
+            msg = f"Missing required field 'metadata.displayName' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+        if "description" not in metadata:
+            msg = f"Missing required field 'metadata.description' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+        if "type" not in metadata:
+            msg = f"Missing required field 'metadata.type' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+
+        artifact_type = metadata["type"]
+        if artifact_type != ArtifactType.SPARK_JOB_DEFINITION.value:
+            msg = f"Invalid artifact type '{artifact_type}' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}. " f"Expected '{ArtifactType.SPARK_JOB_DEFINITION.value}'"
+            self.logger.error(msg)
+            raise ValueError(msg)
+
+        return SparkJobDefinition(
+            display_name=metadata["displayName"],
+            description=metadata["description"],
+            nested_folder_path=nested_folder_path,
+        )
 
     def _parse_fabric_capacity_params(self, data: dict[str, Any]) -> FabricCapacityParams:
         """Parse Fabric capacity parameters."""

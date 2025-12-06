@@ -9,6 +9,7 @@ import requests
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
+    ArtifactType,
     CommonParams,
     FolderClient,
     HttpRetryHandler,
@@ -93,7 +94,7 @@ class SemanticModelManager(ModelManager):
             folder_info = await self.folder_client.get_fabric_folder_collection(workspace_id)
             matching_model = None
             for artifact in folder_info.artifacts:
-                if artifact.type_name == "Model" and artifact.display_name == model_params.display_name:
+                if artifact.type_name == ArtifactType.MODEL.value and artifact.display_name == model_params.display_name:
                     matching_model = artifact
                     break
 

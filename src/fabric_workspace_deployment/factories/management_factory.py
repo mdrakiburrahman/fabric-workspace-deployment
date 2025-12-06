@@ -9,7 +9,9 @@ from abc import ABC, abstractmethod
 
 from azure.identity import AzureCliCredential
 
+from fabric_workspace_deployment.client.fabric_artifact import FabricArtifactClient
 from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
+from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
@@ -91,6 +93,20 @@ class ManagementFactory(ABC):
         """
         pass
 
+    @abstractmethod
+    def create_fabric_artifact_client(self) -> "FabricArtifactClient":
+        """
+        Create a Fabric Artifact Client instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_spark_job_definition_client(self) -> "FabricSparkJobDefinitionClient":
+        """
+        Create a Fabric Spark Job Definition Client instance.
+        """
+        pass
+
 
 class ContainerizedManagementFactory(ManagementFactory):
     """Containerized implementation of the ManagementFactory."""
@@ -137,6 +153,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
+            self.create_fabric_spark_job_definition_client(),
         )
 
     def create_fabric_shortcut_manager(self) -> FabricShortcutManager:
@@ -177,4 +194,19 @@ class ContainerizedManagementFactory(ManagementFactory):
                 self.http_retry_handler,
             ),
             self.http_retry_handler,
+        )
+
+    def create_fabric_artifact_client(self) -> FabricArtifactClient:
+        return FabricArtifactClient(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.http_retry_handler,
+        )
+
+    def create_fabric_spark_job_definition_client(self) -> FabricSparkJobDefinitionClient:
+        return FabricSparkJobDefinitionClient(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.http_retry_handler,
+            self.create_fabric_artifact_client(),
         )

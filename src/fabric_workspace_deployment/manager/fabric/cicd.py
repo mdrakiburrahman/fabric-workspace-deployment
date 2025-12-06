@@ -16,6 +16,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     CommonParams,
     CustomLibrary,
     FabricWorkspaceTemplateParams,
+    SparkJobDefinitionClient,
     WorkspaceManager,
 )
 
@@ -30,6 +31,7 @@ class FabricCicdManager(CicdManager):
         az_cli: AzCli,
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
+        spark_job_definition_client: SparkJobDefinitionClient,
     ):
         """
         Initialize the Fabric CICD manager.
@@ -39,6 +41,7 @@ class FabricCicdManager(CicdManager):
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
         self.workspace = workspace
+        self.spark_job_definition_client = spark_job_definition_client
         self.logger = logging.getLogger(__name__)
 
     async def execute(self) -> None:
@@ -79,6 +82,12 @@ class FabricCicdManager(CicdManager):
         """
         current_level = logging.getLogger().level
         current_handlers = logging.getLogger().handlers[:]
+
+        self.logger.info("Processing Spark Job Definitions")
+        if template_params.spark_job_definitions:
+            await self._create_spark_job_definition_artifacts(workspace_id, template_params)
+        else:
+            self.logger.info("No Spark Job Definitions configured, skipping")
 
         self.logger.info("Processing custom library manifests")
         if template_params.custom_libraries:
@@ -173,3 +182,34 @@ class FabricCicdManager(CicdManager):
                     self.logger.info(f"Copying {source_file} to {dest_file}")
                     shutil.copy2(source_file, dest_file)
                     self.logger.info(f"Successfully copied {source_file.name} to {dest_folder}")
+
+    async def _create_spark_job_definition_artifacts(self, workspace_id: str, template_params: FabricWorkspaceTemplateParams) -> None:
+        """
+        Create all Spark Job Definitions for the workspace.
+
+        Args:
+            workspace_id: The workspace id
+            template_params: Template parameters containing Spark Job Definitions
+        """
+        self.logger.info(f"Creating {len(template_params.spark_job_definitions)} Spark Job Definition(s)")
+        tasks = []
+        for sjd in template_params.spark_job_definitions:
+            task = asyncio.create_task(self.spark_job_definition_client.create_spark_job_definition_artifact(workspace_id, sjd), name=f"create-sjd-{sjd.display_name}")
+            tasks.append(task)
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            errors = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    sjd_name = template_params.spark_job_definitions[i].display_name
+                    error_msg = f"Failed to create Spark Job Definition '{sjd_name}': {result}"
+                    self.logger.error(error_msg)
+                    errors.append(error_msg)
+                else:
+                    self.logger.info(f"Successfully created/retrieved Spark Job Definition: {result.display_name}")
+
+            if errors:
+                raise Exception(f"Failed to create some Spark Job Definitions: {'; '.join(errors)}")
+
+        self.logger.info("Completed Spark Job Definition creation")
