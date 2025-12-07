@@ -185,6 +185,18 @@ class FabricCicdManager(CicdManager):
                     dest_folder = Path(self.common_params.local.root_folder) / dest_path_str
 
                 dest_folder.mkdir(parents=True, exist_ok=True)
+
+                if custom_lib.dest.clean_folder_path:
+                    self.logger.info(f"Cleaning destination folder: {dest_folder}")
+                    for item in dest_folder.iterdir():
+                        if item.is_file():
+                            item.unlink()
+                            self.logger.debug(f"Deleted file: {item}")
+                        elif item.is_dir():
+                            shutil.rmtree(item)
+                            self.logger.debug(f"Deleted directory: {item}")
+                    self.logger.info(f"Successfully cleaned {dest_folder}")
+
                 self.logger.info(f"Copying to destination: {dest_folder}")
 
                 for source_file in matching_files:

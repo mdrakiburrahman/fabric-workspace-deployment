@@ -318,6 +318,7 @@ class CustomLibraryDest:
     """Destination configuration for custom library files."""
 
     folder_path: list[str]
+    clean_folder_path: bool
 
 
 @dataclass
@@ -2785,6 +2786,7 @@ class OperationParams:
         )
         dest = CustomLibraryDest(
             folder_path=data["dest"]["folderPath"],
+            clean_folder_path=data["dest"]["cleanFolderPath"],
         )
         return CustomLibrary(source=source, dest=dest)
 

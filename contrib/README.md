@@ -37,3 +37,12 @@
    ```
 
 1. `Ctrl + Shift + P` > `Reopen in Container`
+
+1. If ADO gives you a hard time, generate a PAT:
+
+   ```bash
+   export TWINE_USERNAME="msdata"
+   export TWINE_PASSWORD="..."
+
+   npx nx publish
+   ```
