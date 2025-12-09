@@ -137,6 +137,25 @@ class FabricCicdManager(CicdManager):
 
         self.logger.info(f"Completed CICD reconciliation for workspace ID: {workspace_id}")
 
+    def _clean_path(self, dest_folder: Path) -> None:
+        """
+        Clean all contents from a destination folder.
+
+        Args:
+            dest_folder: The folder path to clean
+
+        """
+        if dest_folder.exists():
+            self.logger.info(f"Cleaning destination folder: {dest_folder}")
+            for item in dest_folder.iterdir():
+                if item.is_file():
+                    item.unlink()
+                    self.logger.debug(f"Deleted file: {item}")
+                elif item.is_dir():
+                    shutil.rmtree(item)
+                    self.logger.debug(f"Deleted directory: {item}")
+            self.logger.info(f"Successfully cleaned {dest_folder}")
+
     def _copy_all_custom_libraries(self, custom_libraries: list[CustomLibrary]) -> None:
         """
         Copy custom library files based on the configuration.
@@ -152,6 +171,18 @@ class FabricCicdManager(CicdManager):
             AssertionError: If errorOnMultiple is True and multiple files match the pattern
             FileNotFoundError: If no files match the pattern
         """
+        folders_to_clean = set()
+        for custom_lib in custom_libraries:
+            if custom_lib.dest.clean_folder_path:
+                for dest_path_str in custom_lib.dest.folder_path:
+                    dest_folder = Path(dest_path_str)
+                    if not dest_folder.is_absolute():
+                        dest_folder = Path(self.common_params.local.root_folder) / dest_path_str
+                    folders_to_clean.add(dest_folder)
+
+        for dest_folder in folders_to_clean:
+            self._clean_path(dest_folder)
+
         for idx, custom_lib in enumerate(custom_libraries):
             self.logger.info(f"Processing custom library {idx + 1}/{len(custom_libraries)}")
 
@@ -185,17 +216,6 @@ class FabricCicdManager(CicdManager):
                     dest_folder = Path(self.common_params.local.root_folder) / dest_path_str
 
                 dest_folder.mkdir(parents=True, exist_ok=True)
-
-                if custom_lib.dest.clean_folder_path:
-                    self.logger.info(f"Cleaning destination folder: {dest_folder}")
-                    for item in dest_folder.iterdir():
-                        if item.is_file():
-                            item.unlink()
-                            self.logger.debug(f"Deleted file: {item}")
-                        elif item.is_dir():
-                            shutil.rmtree(item)
-                            self.logger.debug(f"Deleted directory: {item}")
-                    self.logger.info(f"Successfully cleaned {dest_folder}")
 
                 self.logger.info(f"Copying to destination: {dest_folder}")
 
