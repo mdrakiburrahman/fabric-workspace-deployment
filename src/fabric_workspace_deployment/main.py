@@ -45,7 +45,7 @@ def dump_env_vars() -> None:
 
 def parse_config() -> OperationParams:
     """
-    Parse command line arguments and return an OperationParams object.
+    Parse command line arguments.
 
     Returns:
         OperationParams: The parsed operation parameters.
