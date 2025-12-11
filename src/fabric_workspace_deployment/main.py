@@ -58,7 +58,7 @@ def parse_config() -> OperationParams:
     logging.info(f"Config file absolute path: {args.config_file_absolute_path}")
     logging.info(f"Operation: {args.operation}")
 
-    operation_params = OperationParams(args.config_file_absolute_path, args.operation)
+    operation_params = OperationParams(args.config_file_absolute_path, args.operation, replace_placeholders=True)
     if operation_params.validate():
         logging.info("Configuration validation passed")
     else:

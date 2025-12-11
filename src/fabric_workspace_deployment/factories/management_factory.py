@@ -11,6 +11,8 @@ from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.client.fabric_artifact import FabricArtifactClient
 from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
+from fabric_workspace_deployment.client.fabric_pipeline import FabricPipelineClient
+from fabric_workspace_deployment.client.fabric_pipeline_run import FabricPipelineRunClient
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
@@ -113,6 +115,20 @@ class ManagementFactory(ABC):
     def create_fabric_spark_job_definition_client(self) -> "FabricSparkJobDefinitionClient":
         """
         Create a Fabric Spark Job Definition Client instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_pipeline_client(self) -> "FabricPipelineClient":
+        """
+        Create a Fabric Pipeline Client instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_pipeline_run_client(self) -> "FabricPipelineRunClient":
+        """
+        Create a Fabric Pipeline Run Client instance.
         """
         pass
 
@@ -234,4 +250,21 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.http_retry_handler,
             self.create_fabric_artifact_client(),
+        )
+
+    def create_fabric_pipeline_client(self) -> FabricPipelineClient:
+        return FabricPipelineClient(
+            self.operation_params.common,
+            FabricFolderClient(
+                self.operation_params.common,
+                self.create_azure_cli(),
+                self.http_retry_handler,
+            ),
+        )
+
+    def create_fabric_pipeline_run_client(self) -> FabricPipelineRunClient:
+        return FabricPipelineRunClient(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.http_retry_handler,
         )

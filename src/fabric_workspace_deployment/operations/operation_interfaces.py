@@ -216,6 +216,7 @@ class ArtifactType(Enum):
 
     LAKEHOUSE = "Lakehouse"
     MODEL = "Model"
+    PIPELINE = "Pipeline"
     SPARK_JOB_DEFINITION = "SparkJobDefinition"
 
 
@@ -1820,6 +1821,191 @@ class ArtifactClient(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class PipelineClient(ABC):
+    """
+    Interface for interacting with Fabric Pipeline artifacts.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Pipeline client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def list_pipelines(self, workspace_object_id: str) -> list[Any]:
+        """
+        List all pipelines in a workspace.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+
+        Returns:
+            List of Pipeline objects
+        """
+        pass
+
+    @abstractmethod
+    async def get_pipeline(self, workspace_object_id: str, pipeline_display_name: str) -> Any | None:
+        """
+        Get a specific pipeline by display name.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_display_name: The display name of the pipeline
+
+        Returns:
+            Pipeline object if found, None otherwise
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class PipelineRunClient(ABC):
+    """
+    Interface for interacting with Fabric Pipeline runs.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Pipeline Run client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    def get_non_terminal_statuses(self) -> list[str]:
+        """
+        Get the list of non-terminal pipeline statuses.
+
+        Returns:
+            List of status codes that represent non-terminal states
+        """
+        pass
+
+    @abstractmethod
+    async def list_non_terminal_runs(self, workspace_object_id: str, pipeline_id: str) -> list[Any]:
+        """
+        List all non-terminal pipeline runs.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+
+        Returns:
+            List of PipelineRun objects in non-terminal states
+        """
+        pass
+
+    @abstractmethod
+    async def list_runs(self, workspace_object_id: str, pipeline_id: str, statuses: list[str], limit: int, days_back: int) -> list[Any]:
+        """
+        List pipeline runs filtered by status.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            statuses: List of status codes to filter by
+            limit: Maximum number of runs to return
+            days_back: Number of days to look back
+
+        Returns:
+            List of PipelineRun objects matching the status filter
+        """
+        pass
+
+    @abstractmethod
+    async def start_run(self, workspace_object_id: str, pipeline_id: str, parameters: dict[str, Any] | None) -> Any:
+        """
+        Start a pipeline run.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            parameters: Optional pipeline parameters as a dictionary
+
+        Returns:
+            StartPipelineResponse with the run details
+        """
+        pass
+
+    @abstractmethod
+    async def start_run_idempotently(self, workspace_object_id: str, pipeline_id: str, parameters: dict[str, Any] | None) -> Any | None:
+        """
+        Start a pipeline run only if no runs are in NOT_STARTED or IN_PROGRESS state.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            parameters: Optional pipeline parameters as a dictionary
+
+        Returns:
+            StartPipelineResponse if a new run was started, None if a run is already in progress
+        """
+        pass
+
+    @abstractmethod
+    async def cancel_run(self, workspace_object_id: str, pipeline_id: str, run_instance_id: str) -> bool:
+        """
+        Cancel a running pipeline.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            run_instance_id: The artifact job instance ID to cancel
+
+        Returns:
+            True if cancellation was accepted
+        """
+        pass
+
+    @abstractmethod
+    async def get_run(self, workspace_object_id: str, pipeline_id: str, run_instance_id: str) -> Any | None:
+        """
+        Get a specific pipeline run by instance ID.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            run_instance_id: The artifact job instance ID
+
+        Returns:
+            PipelineRun object if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def wait_for_completion(self, workspace_object_id: str, pipeline_id: str, run_instance_id: str, poll_interval_seconds: int, timeout_seconds: int) -> Any:
+        """
+        Wait for a pipeline run to complete (reach a terminal state).
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            run_instance_id: The artifact job instance ID to wait for
+            poll_interval_seconds: Seconds to wait between status checks
+            timeout_seconds: Maximum seconds to wait before timing out
+
+        Returns:
+            PipelineRun object in terminal state
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class SparkJobDefinitionClient(ABC):
     """
     Interface for managing Spark Job Definition operations.
@@ -1948,13 +2134,15 @@ class OperationParams:
     Main operation parameters container with parsing and validation capabilities.
     """
 
-    def __init__(self, config_file_absolute_path: str, operation: str, logger: logging.Logger | None = None):
+    def __init__(self, config_file_absolute_path: str, operation: str, replace_placeholders: bool = False, logger: logging.Logger | None = None):
         """
         Initialize OperationParams by parsing the configuration file.
 
         Args:
             config_file_absolute_path: Absolute path to the configuration file
             operation: The operation to execute
+            replace_placeholders: Whether to replace magic placeholders in the config
+            logger: Optional logger instance
 
         Raises:
             FileNotFoundError: If the config file doesn't exist
@@ -1965,7 +2153,7 @@ class OperationParams:
         self.az_cli = AzCli(exit_on_error=True, logger=self.logger)
 
         try:
-            self.config_data = self._load_and_process_config(config_file_absolute_path)
+            self.config_data = self._load_and_process_config(config_file_absolute_path, replace_placeholders)
             self.operation = Operation(operation)
             self.common = self._parse_common_params(self.config_data["common"])
 
@@ -2149,15 +2337,16 @@ class OperationParams:
         else:
             return value
 
-    def _load_and_process_config(self, config_file_absolute_path: str) -> dict[str, Any]:
+    def _load_and_process_config(self, config_file_absolute_path: str, replace_placeholders: bool) -> dict[str, Any]:
         """
-        Load configuration from file and replace magic placeholders.
+        Load configuration from file and optionally replace magic placeholders.
 
         Args:
             config_file_absolute_path: Absolute path to the configuration file
+            replace_placeholders: Whether to replace magic placeholders in the config
 
         Returns:
-            dict[str, Any]: Configuration data with placeholders replaced
+            dict[str, Any]: Configuration data with placeholders optionally replaced
 
         Raises:
             FileNotFoundError: If the config file doesn't exist
@@ -2165,7 +2354,10 @@ class OperationParams:
         """
         with open(config_file_absolute_path, encoding="utf-8") as file:
             config_data = json.load(file)
-        return self._replace_placeholders_in_value(config_data)
+
+        if replace_placeholders:
+            return self._replace_placeholders_in_value(config_data)
+        return config_data
 
     def _validate_operation(self) -> bool:
         """Validate the operation parameter."""
