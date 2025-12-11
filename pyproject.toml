@@ -14,7 +14,7 @@ authors = [
   { name = "Raki Rahman", email = "mdrakiburrahman@gmail.com" },
 ]
 dependencies = [
-  "azure-identity===1.19.0",
+  "azure-identity===1.25.1",
   "dacite==1.9.2",
   "fabric-cicd==0.1.32",
   "pillow==11.3.0",
