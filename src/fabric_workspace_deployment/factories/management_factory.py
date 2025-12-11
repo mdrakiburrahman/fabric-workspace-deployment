@@ -14,11 +14,13 @@ from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.azure.storage import AzStorageManager
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
+from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
@@ -62,6 +64,13 @@ class ManagementFactory(ABC):
     def create_fabric_cicd_manager(self) -> FabricCicdManager:
         """
         Create a Fabric CICD Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_seed_manager(self) -> FabricSeedManager:
+        """
+        Create a Fabric Seed Manager instance.
         """
         pass
 
@@ -159,6 +168,17 @@ class ContainerizedManagementFactory(ManagementFactory):
                 self.create_azure_cli(),
                 self.http_retry_handler,
             ),
+        )
+
+    def create_fabric_seed_manager(self) -> FabricSeedManager:
+        return FabricSeedManager(
+            self.operation_params.common,
+            AzStorageManager(
+                self.operation_params.common,
+                self.create_azure_cli(),
+                self.logger,
+            ),
+            self.logger,
         )
 
     def create_fabric_shortcut_manager(self) -> FabricShortcutManager:

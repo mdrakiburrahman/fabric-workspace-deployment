@@ -172,6 +172,7 @@ class Operation(Enum):
     DEPLOY_GIT_LINK = "deployGitLink"
     DEPLOY_MODEL = "deployModel"
     DEPLOY_RBAC = "deployRbac"
+    DEPLOY_SEED = "deploySeed"
     DEPLOY_SHORTCUT = "deployShortcut"
     DEPLOY_SPARK = "deploySpark"
     DEPLOY_TEMPLATE = "deployTemplate"
@@ -1060,6 +1061,28 @@ class FabricWorkspaceParams:
 
 
 @dataclass
+class LocalConcreteFile:
+    """Local concrete file reference."""
+
+    file_path: str
+
+
+@dataclass
+class StorageAccountFile:
+    """Storage account file reference."""
+
+    file_path: str
+
+
+@dataclass
+class SeedFile:
+    """Seed file mapping between local and storage account."""
+
+    local_concrete_file: LocalConcreteFile
+    storage_account_file: StorageAccountFile
+
+
+@dataclass
 class FabricStorageParams:
     """Fabric storage parameters."""
 
@@ -1070,6 +1093,7 @@ class FabricStorageParams:
     subscription_id: str
     tenant_id: str
     shortcut_data_connection_id: str
+    seed_files: list[SeedFile]
 
 
 @dataclass
@@ -1150,6 +1174,32 @@ class CicdManager(ABC):
         Args:
             workspace_id: The Fabric workspace id
             template_params: Parameters for the fabric workspace template
+        """
+        pass
+
+
+class SeedManager(ABC):
+    """
+    Interface for managing seed file uploads to Azure Storage.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Seed manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute seed file upload operations.
+
+        Uploads all configured seed files from local storage to Azure Storage
+        based on the configuration in FabricStorageParams.seed_files.
+
+        Raises:
+            FileNotFoundError: If a local seed file does not exist
+            RuntimeError: If blob upload fails
         """
         pass
 
@@ -1838,6 +1888,61 @@ class SparkJobDefinitionClient(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class AzureStorageManager(ABC):
+    """
+    Interface for managing Azure Storage operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Azure Storage manager.
+
+        Args:
+            common_params: Common parameters containing storage configuration
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    def generate_user_delegated_sas_token(self, account: str, container: str, duration_in_minutes: int = 5) -> str:
+        """
+        Generate a User Delegated SAS token.
+
+        Args:
+            account: The storage account name
+            container: The storage container name
+            duration_in_minutes: The duration of the SAS token in minutes (default: 5)
+
+        Returns:
+            str: The SAS token string with leading '?'
+
+        Raises:
+            RuntimeError: If SAS token generation fails
+        """
+        pass
+
+    @abstractmethod
+    def upload_blob(self, account: str, container: str, absolute_local_file_path: str, azure_file_path: str) -> None:
+        """
+        Upload a blob to Azure Storage.
+
+        Args:
+            account: The storage account name
+            container: The storage container name
+            absolute_local_file_path: The absolute local file path
+            azure_file_path: The Azure file path (relative path in container)
+
+        Raises:
+            FileNotFoundError: If the local file does not exist
+            RuntimeError: If blob upload fails
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class OperationParams:
     """
     Main operation parameters container with parsing and validation capabilities.
@@ -2270,6 +2375,29 @@ class OperationParams:
         if not storage.account or not storage.container or not storage.location or not storage.resource_group or not storage.subscription_id or not storage.tenant_id or not storage.shortcut_data_connection_id:
             self.logger.error(f"FabricStorageParams members cannot be empty: account={storage.account}, " f"container={storage.container}, location={storage.location}, " f"resourceGroup={storage.resource_group}, subscriptionId={storage.subscription_id}, " f"tenantId={storage.tenant_id}")
             return False
+
+        if storage.seed_files is None:
+            self.logger.error("FabricStorageParams seedFiles cannot be None")
+            return False
+
+        for i, seed_file in enumerate(storage.seed_files):
+            if not seed_file.local_concrete_file.file_path:
+                self.logger.error(f"Seed file localConcreteFile.filePath at index {i} cannot be empty")
+                return False
+
+            local_file_full_path = Path(self.common.local.root_folder) / seed_file.local_concrete_file.file_path
+            if not local_file_full_path.exists():
+                self.logger.error(f"Seed file localConcreteFile does not exist at index {i}: {local_file_full_path}")
+                return False
+
+            if not local_file_full_path.is_file():
+                self.logger.error(f"Seed file localConcreteFile is not a file at index {i}: {local_file_full_path}")
+                return False
+
+            if not seed_file.storage_account_file.file_path:
+                self.logger.error(f"Seed file storageAccountFile.filePath at index {i} cannot be empty")
+                return False
+
         return True
 
     def _validate_model_params(self, models: list[ModelParams], workspace_index: int) -> bool:
@@ -2910,6 +3038,11 @@ class OperationParams:
 
     def _parse_fabric_storage_params(self, data: dict[str, Any]) -> FabricStorageParams:
         """Parse Fabric Storage parameters."""
+        seed_files = []
+        if "seedFiles" in data:
+            for seed_file_data in data["seedFiles"]:
+                seed_files.append(self._parse_seed_file(seed_file_data))
+
         return FabricStorageParams(
             account=data["account"],
             container=data["container"],
@@ -2918,6 +3051,16 @@ class OperationParams:
             subscription_id=data["subscriptionId"],
             tenant_id=data["tenantId"],
             shortcut_data_connection_id=data["shortcutDataConnectionId"],
+            seed_files=seed_files,
+        )
+
+    def _parse_seed_file(self, data: dict[str, Any]) -> SeedFile:
+        """Parse seed file configuration."""
+        local_concrete_file = LocalConcreteFile(file_path=data["localConcreteFile"]["filePath"])
+        storage_account_file = StorageAccountFile(file_path=data["storageAccountFile"]["filePath"])
+        return SeedFile(
+            local_concrete_file=local_concrete_file,
+            storage_account_file=storage_account_file,
         )
 
     def _parse_shortcut_params(self, data: dict[str, Any]) -> ShortcutParams:

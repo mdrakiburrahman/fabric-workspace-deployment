@@ -15,6 +15,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     OperationParams,
     RbacManager,
     ModelManager,
+    SeedManager,
     ShortcutManager,
     SparkManager,
     WorkspaceManager,
@@ -39,6 +40,7 @@ class CentralOperator(EntryPointOperator):
         self.capacity_manager: CapacityManager = self.management_factory.create_fabric_capacity_manager()
         self.workspace_manager: WorkspaceManager = self.management_factory.create_fabric_workspace_manager()
         self.cicd_manager: CicdManager = self.management_factory.create_fabric_cicd_manager()
+        self.seed_manager: SeedManager = self.management_factory.create_fabric_seed_manager()
         self.shortcut_manager: ShortcutManager = self.management_factory.create_fabric_shortcut_manager()
         self.spark_manager: SparkManager = self.management_factory.create_fabric_spark_manager()
         self.rbac_manager: RbacManager = self.management_factory.create_fabric_rbac_manager()
@@ -68,6 +70,9 @@ class CentralOperator(EntryPointOperator):
 
                 case Operation.DEPLOY_RBAC:
                     await self._execute_deploy_rbac()
+
+                case Operation.DEPLOY_SEED:
+                    await self._execute_deploy_seed()
 
                 case Operation.DEPLOY_SHORTCUT:
                     await self._execute_deploy_shortcut()
@@ -126,6 +131,12 @@ class CentralOperator(EntryPointOperator):
         Execute deploy RBAC operation.
         """
         await self.rbac_manager.execute()
+
+    async def _execute_deploy_seed(self) -> None:
+        """
+        Execute deploy seed operation.
+        """
+        await self.seed_manager.execute()
 
     async def _execute_deploy_shortcut(self) -> None:
         """
