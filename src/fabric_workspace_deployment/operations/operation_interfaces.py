@@ -220,6 +220,155 @@ class ArtifactType(Enum):
     SPARK_JOB_DEFINITION = "SparkJobDefinition"
 
 
+class CicdArtifactType(Enum):
+    """Enumeration of Fabric artifact types."""
+
+    DATA_PIPELINE = "DataPipeline"
+    ENVIRONMENT = "Environment"
+    EVENTHOUSE = "Eventhouse"
+    KQL_DATABASE = "KQLDatabase"
+    KQL_QUERYSET = "KQLQueryset"
+    LAKEHOUSE = "Lakehouse"
+    MIRRORED_DATABASE = "MirroredDatabase"
+    NOTEBOOK = "Notebook"
+    REFLEX = "Reflex"
+    REPORT = "Report"
+    SEMANTIC_MODEL = "SemanticModel"
+    SPARK_JOB_DEFINITION = "SparkJobDefinition"
+    USER_DATA_FUNCTION = "UserDataFunction"
+
+
+class CicdDirectedAcyclicGraph:
+    """Directed Acyclic Graph for CICD deployment ordering based on artifact dependencies."""
+
+    def __init__(self):
+        """
+        Initialize the DAG with predefined artifact type dependencies.
+
+        The dependencies map defines which artifact types must be deployed before others.
+        Key: artifact type that has dependencies
+        Value: list of artifact types that must be deployed first
+        """
+        self._dependencies: dict[str, list[str]] = {
+            "Reflex": ["DataPipeline"],
+            # All other artifact types have no dependencies
+        }
+
+    def get_dependencies(self, artifact_type: str) -> list[str]:
+        """
+        Get the direct dependencies for a given artifact type.
+
+        Args:
+            artifact_type: The artifact type to get dependencies for
+
+        Returns:
+            list[str]: List of artifact types that must be deployed before this one
+        """
+        return self._dependencies.get(artifact_type, [])
+
+    def has_dependencies(self, artifact_type: str) -> bool:
+        """
+        Check if an artifact type has any dependencies.
+
+        Args:
+            artifact_type: The artifact type to check
+
+        Returns:
+            bool: True if the artifact type has dependencies, False otherwise
+        """
+        return artifact_type in self._dependencies and len(self._dependencies[artifact_type]) > 0
+
+    def get_deployment_batches(self, artifact_types: list[str]) -> list[list[str]]:
+        """
+        Get deployment order in batches using topological sort.
+
+        Returns a list of batches where each batch contains artifact types that can be
+        deployed in parallel (they don't depend on each other). Items in later batches
+        depend on items in earlier batches.
+
+        Args:
+            artifact_types: List of artifact types to deploy
+
+        Returns:
+            list[list[str]]: List of batches, each batch is a list of artifact types
+                           that can be deployed in parallel
+
+        Raises:
+            ValueError: If a circular dependency is detected
+        """
+        if not artifact_types:
+            return []
+
+        # Create a working set of remaining items
+        remaining = set(artifact_types)
+        batches = []
+
+        # Track items we've already deployed across all batches
+        deployed = set()
+
+        # Keep processing until all items are deployed
+        max_iterations = len(artifact_types) + 1  # Prevent infinite loop
+        iteration = 0
+
+        while remaining and iteration < max_iterations:
+            iteration += 1
+
+            # Find all items whose dependencies have been deployed (or have no dependencies)
+            current_batch = []
+            for artifact_type in remaining:
+                dependencies = self.get_dependencies(artifact_type)
+                # Check if all dependencies are already deployed
+                if all(dep in deployed or dep not in artifact_types for dep in dependencies):
+                    current_batch.append(artifact_type)
+
+            if not current_batch:
+                # No progress made - either circular dependency or missing dependency
+                unresolved = list(remaining)
+                raise ValueError(f"Circular dependency or missing dependency detected. " f"Cannot resolve deployment order for: {unresolved}")
+
+            # Add this batch and mark items as deployed
+            batches.append(sorted(current_batch))  # Sort for deterministic output
+            for artifact_type in current_batch:
+                remaining.remove(artifact_type)
+                deployed.add(artifact_type)
+
+        if remaining:
+            raise ValueError(f"Failed to resolve deployment order for: {list(remaining)}")
+
+        return batches
+
+    def get_dependency_summary(self, artifact_types: list[str]) -> str:
+        """
+        Get a human-readable summary of the DAG for the given artifact types.
+
+        Args:
+            artifact_types: List of artifact types to summarize
+
+        Returns:
+            str: A formatted string describing the dependency graph
+        """
+        lines = ["CICD Deployment DAG:"]
+        lines.append("  Artifact Types in Scope:")
+        for artifact_type in sorted(artifact_types):
+            lines.append(f"    - {artifact_type}")
+
+        lines.append("  Dependencies:")
+        has_any_deps = False
+        for artifact_type in sorted(artifact_types):
+            deps = self.get_dependencies(artifact_type)
+            if deps:
+                has_any_deps = True
+                # Only show dependencies that are in scope
+                relevant_deps = [d for d in deps if d in artifact_types]
+                if relevant_deps:
+                    lines.append(f"    - {artifact_type} depends on: {', '.join(relevant_deps)}")
+
+        if not has_any_deps:
+            lines.append("    - No dependencies (all items can be deployed in parallel)")
+
+        return "\n".join(lines)
+
+
 @dataclass
 class LocalParams:
     """Local configuration parameters."""

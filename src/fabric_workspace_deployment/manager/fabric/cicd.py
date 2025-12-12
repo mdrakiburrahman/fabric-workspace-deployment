@@ -13,6 +13,7 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
+    CicdDirectedAcyclicGraph,
     CicdManager,
     CommonParams,
     CustomLibrary,
@@ -109,25 +110,46 @@ class FabricCicdManager(CicdManager):
         self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 
         fabric_cicd.constants.DEFAULT_API_ROOT_URL = self.common_params.endpoint.cicd
-        target_workspace = fabric_cicd.FabricWorkspace(
-            workspace_id=workspace_id,
-            environment=template_params.environment_key,
-            repository_directory=str(Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
-            item_type_in_scope=template_params.item_types_in_scope,
-            token_credential=self.token_credential,
-        )
 
-        self.logger.info(f"Adding {len(template_params.feature_flags)} feature flags")
-        for feature_flag in template_params.feature_flags:
-            self.logger.debug(f"Adding feature flag: {feature_flag}")
-            fabric_cicd.append_feature_flag(feature_flag)
+        dag = CicdDirectedAcyclicGraph()
+        dag_summary = dag.get_dependency_summary(template_params.item_types_in_scope)
+        self.logger.info(f"\n{dag_summary}")
 
-        self.logger.info("Publishing all items")
-        fabric_cicd.publish_all_items(target_workspace)
+        deployment_batches = dag.get_deployment_batches(template_params.item_types_in_scope)
+        self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
+
+        for batch_idx, batch in enumerate(deployment_batches, start=1):
+            self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
+
+            target_workspace = fabric_cicd.FabricWorkspace(
+                workspace_id=workspace_id,
+                environment=template_params.environment_key,
+                repository_directory=str(Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
+                item_type_in_scope=batch,
+                token_credential=self.token_credential,
+            )
+
+            if batch_idx == 1:  # Only add feature flags once
+                self.logger.info(f"Adding {len(template_params.feature_flags)} feature flags")
+                for feature_flag in template_params.feature_flags:
+                    self.logger.debug(f"Adding feature flag: {feature_flag}")
+                    fabric_cicd.append_feature_flag(feature_flag)
+
+            self.logger.info(f"Publishing items in batch {batch_idx}")
+            fabric_cicd.publish_all_items(target_workspace)
+            self.logger.info(f"Completed batch {batch_idx}/{len(deployment_batches)}")
 
         if template_params.unpublish_orphans:
             self.logger.info("Unpublishing orphan items")
-            fabric_cicd.unpublish_all_orphan_items(target_workspace)
+            # Use full scope for unpublishing orphans
+            target_workspace_full = fabric_cicd.FabricWorkspace(
+                workspace_id=workspace_id,
+                environment=template_params.environment_key,
+                repository_directory=str(Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
+                item_type_in_scope=template_params.item_types_in_scope,
+                token_credential=self.token_credential,
+            )
+            fabric_cicd.unpublish_all_orphan_items(target_workspace_full)
 
         self.logger.info("Updating Spark Job Definition configurations")
         if template_params.spark_job_definitions:
