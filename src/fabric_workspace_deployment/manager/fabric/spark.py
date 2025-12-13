@@ -213,88 +213,77 @@ class FabricSparkOperations(SparkManager):
             "x-ms-workload-resource-moniker": workspace_id,
         }
 
-        for pool in spark_params.pools:
-            try:
-                spark_settings = self._build_spark_settings_payload(pool)
+        try:
+            spark_settings = self._build_spark_settings_payload(spark_params)
 
-                self.logger.info(f"Sending Spark configuration for pool to workspace: {workspace_id}")
-                self.logger.debug(f"Spark settings payload: {json.dumps(spark_settings, indent=2)}")
+            self.logger.info(f"Sending Spark configuration for {len(spark_params.pools)} pool(s) to workspace: {workspace_id}")
+            self.logger.debug(f"Spark settings payload: {json.dumps(spark_settings, indent=2)}")
 
-                response = self.http_retry.execute(
-                    requests.put,
-                    url,
-                    headers=headers,
-                    json=spark_settings,
-                )
+            response = self.http_retry.execute(
+                requests.put,
+                url,
+                headers=headers,
+                json=spark_settings,
+            )
 
-                self.logger.info(f"Successfully configured Spark pool for workspace: {workspace_id}")
-                self.logger.debug(f"Response status: {response.status_code}")
+            self.logger.info(f"Successfully configured {len(spark_params.pools)} Spark pool(s) for workspace: {workspace_id}")
+            self.logger.debug(f"Response status: {response.status_code}")
 
-            except requests.exceptions.RequestException as e:
-                error_msg = f"Failed to create Spark pool for workspace {workspace_id}: {e}"
-                self.logger.error(error_msg)
-                raise RuntimeError(error_msg) from e
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Failed to create Spark pools for workspace {workspace_id}: {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
 
-    def _build_spark_settings_payload(self, pool) -> dict:
+    def _build_spark_settings_payload(self, spark_params: FabricSparkParams) -> dict:
         """
-        Build the Spark settings payload from a single SparkPool.
+        Build the Spark settings payload from all SparkPools.
 
         Args:
-            pool: A single SparkPool configuration
+            spark_params: Parameters containing all Spark pool configurations
 
         Returns:
-            dict: Spark settings payload for API
-
-        Raises:
-            ValueError: If pool details or pool ID is missing
+            dict: Spark settings payload for API with all pools
         """
-        if not pool.details:
-            error_msg = "Cannot build Spark settings payload: pool details are required"
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        if not pool.details.id:
-            error_msg = "Cannot build Spark settings payload: pool ID is required"
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        pool_conf_item = {
-            "id": pool.details.id,
-            "details": {
-                "name": pool.details.name,
-                "nodeSizeFamily": pool.details.node_size_family.value,
-                "nodeSize": pool.details.node_size.value,
-                "autoScale": {
-                    "enabled": pool.details.auto_scale.enabled,
-                    "minNodeCount": pool.details.auto_scale.min_node_count,
-                    "maxNodeCount": pool.details.auto_scale.max_node_count,
+        pool_conf_items = []
+        for pool_details in spark_params.pools:
+            pool_conf_item = {
+                "id": pool_details.id,
+                "details": {
+                    "name": pool_details.name,
+                    "nodeSizeFamily": pool_details.node_size_family.value,
+                    "nodeSize": pool_details.node_size.value,
+                    "autoScale": {
+                        "enabled": pool_details.auto_scale.enabled,
+                        "minNodeCount": pool_details.auto_scale.min_node_count,
+                        "maxNodeCount": pool_details.auto_scale.max_node_count,
+                    },
+                    "dynamicExecutorAllocation": {
+                        "enabled": pool_details.dynamic_executor_allocation.enabled,
+                        "minExecutors": pool_details.dynamic_executor_allocation.min_executors,
+                        "maxExecutors": pool_details.dynamic_executor_allocation.max_executors,
+                    },
                 },
-                "dynamicExecutorAllocation": {
-                    "enabled": pool.details.dynamic_executor_allocation.enabled,
-                    "minExecutors": pool.details.dynamic_executor_allocation.min_executors,
-                    "maxExecutors": pool.details.dynamic_executor_allocation.max_executors,
-                },
-            },
-        }
+            }
+            pool_conf_items.append(pool_conf_item)
 
         payload = {
             "mountPoints": {},
-            "enableCustomizedComputeConf": pool.enable_customized_compute_conf,
+            "enableCustomizedComputeConf": spark_params.enable_customized_compute_conf,
             "machineLearningAutoLog": {
-                "enabled": pool.machine_learning_auto_log.enabled,
+                "enabled": spark_params.machine_learning_auto_log.enabled,
             },
             "jobManagement": {
-                "conservativeJobAdmissionEnabled": pool.job_management.conservative_job_admission_enabled,
-                "sessionTimeoutInMinutes": pool.job_management.session_timeout_in_minutes,
+                "conservativeJobAdmissionEnabled": spark_params.job_management.conservative_job_admission_enabled,
+                "sessionTimeoutInMinutes": spark_params.job_management.session_timeout_in_minutes,
             },
             "highConcurrency": {
-                "enabled": pool.high_concurrency.enabled,
-                "notebookPipelineRunEnabled": pool.high_concurrency.notebook_pipeline_run_enabled,
+                "enabled": spark_params.high_concurrency.enabled,
+                "notebookPipelineRunEnabled": spark_params.high_concurrency.notebook_pipeline_run_enabled,
             },
-            "currentPoolId": pool.details.id,
-            "poolConf": [pool_conf_item],
+            "currentPoolId": spark_params.current_pool_id,
+            "poolConf": pool_conf_items,
             "sparkConf": {},
-            "runtimeVersion": pool.runtime_version.value,
+            "runtimeVersion": spark_params.runtime_version.value,
         }
 
         return payload
