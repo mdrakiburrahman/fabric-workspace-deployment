@@ -52,6 +52,9 @@ INITIAL_RETRY_DELAY_SECONDS = 1
 ALLOWED_STORAGE_ROLES = frozenset(["Storage Blob Data Reader", "Storage Blob Data Contributor", "Storage Blob Data Owner"])
 SPARK_JOB_DEFINITION_PLATFORM_FILE = ".platform"
 SPARK_JOB_DEFINITION_V1_FILE = "SparkJobDefinitionV1.json"
+PARAMETER_FILE_NAME = "parameter.yml"
+PARAMETER_FILE_TEMPLATE_NAME = "parameter.yml.tmpl"
+ALLOWED_PARAMETER_FILE_NAMES = frozenset([PARAMETER_FILE_NAME, PARAMETER_FILE_TEMPLATE_NAME])
 
 
 class HttpRetryHandler:
@@ -2480,6 +2483,43 @@ class OperationParams:
         else:
             return value
 
+    def _replace_placeholders_in_file(self, in_file: str, out_file: str) -> None:
+        """
+        Replace placeholders in a file and write to output file.
+
+        Performs text-based replacement of placeholders like {unique-env-id} in the file content.
+        This works with any text format (YAML, JSON, etc.) including cases where placeholders
+        are used as keys or in positions that wouldn't be valid in the parsed format.
+
+        Args:
+            in_file: Absolute path to input file
+            out_file: Absolute path to output file
+
+        Raises:
+            FileNotFoundError: If input file doesn't exist
+        """
+        if not os.path.exists(in_file):
+            error_msg = f"Input file does not exist: {in_file}"
+            self.logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+        with open(in_file, encoding="utf-8") as f:
+            content = f.read()
+
+        resolvers = self._get_placeholder_resolvers()
+        for placeholder_name, resolver_func in resolvers.items():
+            placeholder_pattern = f"{{{placeholder_name}}}"
+            if placeholder_pattern in content:
+                replacement_value = resolver_func()
+                content = content.replace(placeholder_pattern, replacement_value)
+                self.logger.info(f"Replaced {placeholder_pattern} with {replacement_value} in {in_file}")
+
+        os.makedirs(os.path.dirname(out_file), exist_ok=True)
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        self.logger.info(f"Replaced placeholders in {in_file} and wrote to {out_file}")
+
     def _load_and_process_config(self, config_file_absolute_path: str, replace_placeholders: bool) -> dict[str, Any]:
         """
         Load configuration from file and optionally replace magic placeholders.
@@ -2604,6 +2644,11 @@ class OperationParams:
                 self.logger.error(f"Workspace template parameter_file_path at index {i} cannot be empty")
                 return False
 
+            param_file_basename = os.path.basename(workspace.template.parameter_file_path)
+            if param_file_basename not in ALLOWED_PARAMETER_FILE_NAMES:
+                self.logger.error(f"Workspace template parameter_file_path at index {i} must be one of {ALLOWED_PARAMETER_FILE_NAMES}, got: {param_file_basename}")
+                return False
+
             if not workspace.template.item_types_in_scope or len(workspace.template.item_types_in_scope) < 1:
                 self.logger.error(f"Workspace template item_types_in_scope at index {i} cannot be empty")
                 return False
@@ -2620,7 +2665,8 @@ class OperationParams:
                 self.logger.error(f"Workspace template unpublish_orphans at index {i} cannot be empty")
                 return False
 
-            if self._is_yaml_file_invalid(str(Path(self.common.local.root_folder) / workspace.template.parameter_file_path)):
+            param_file_full_path = str(Path(self.common.local.root_folder) / workspace.template.parameter_file_path)
+            if param_file_basename == PARAMETER_FILE_NAME and self._is_yaml_file_invalid(param_file_full_path):
                 self.logger.error(f"Workspace template parameter_file_path at index {i} is invalid: {workspace.template.parameter_file_path}")  # fmt: skip  # noqa: E501
                 return False
 
@@ -3235,9 +3281,26 @@ class OperationParams:
         for sjd_data in data["sparkJobDefinitions"]:
             spark_job_definitions.append(self._parse_spark_job_definition(sjd_data, root_folder))
 
+        param_file_path = data["parameterFilePath"]
+        param_file_basename = os.path.basename(param_file_path)
+
+        if param_file_basename == PARAMETER_FILE_TEMPLATE_NAME:
+            original_param_file = os.path.join(root_folder, param_file_path)
+            param_file_dir = os.path.dirname(original_param_file)
+            processed_param_file = os.path.join(param_file_dir, PARAMETER_FILE_NAME)
+
+            self.logger.debug(f"Processing template file: {original_param_file}")
+            self._replace_placeholders_in_file(original_param_file, processed_param_file)
+            self.logger.debug(f"Processed parameter file written to: {processed_param_file}")
+
+            relative_param_path = os.path.relpath(processed_param_file, root_folder)
+        else:
+            relative_param_path = param_file_path
+            self.logger.debug(f"Using parameter file as-is: {param_file_path}")
+
         return FabricWorkspaceTemplateParams(
             artifacts_folder=data["artifactsFolder"],
-            parameter_file_path=data["parameterFilePath"],
+            parameter_file_path=relative_param_path,
             item_types_in_scope=data["itemTypesInScope"],
             environment_key=data["environmentKey"],
             feature_flags=data["featureFlags"],

@@ -4,6 +4,7 @@
 
 import asyncio
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -109,11 +110,16 @@ class FabricCicdManager(CicdManager):
 
         self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 
+        param_file_full_path = os.path.join(self.common_params.local.root_folder, template_params.parameter_file_path)
+        with open(param_file_full_path, encoding="utf-8") as f:
+            param_content = f.read()
+        self.logger.debug(f"Parameter file content ({param_file_full_path}):\n{param_content}")
+
         fabric_cicd.constants.DEFAULT_API_ROOT_URL = self.common_params.endpoint.cicd
 
         dag = CicdDirectedAcyclicGraph()
         dag_summary = dag.get_dependency_summary(template_params.item_types_in_scope)
-        self.logger.info(f"\n{dag_summary}")
+        self.logger.debug(f"\n{dag_summary}")
 
         deployment_batches = dag.get_deployment_batches(template_params.item_types_in_scope)
         self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
