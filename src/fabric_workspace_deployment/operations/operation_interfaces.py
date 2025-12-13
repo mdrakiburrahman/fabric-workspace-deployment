@@ -54,7 +54,8 @@ SPARK_JOB_DEFINITION_PLATFORM_FILE = ".platform"
 SPARK_JOB_DEFINITION_V1_FILE = "SparkJobDefinitionV1.json"
 PARAMETER_FILE_NAME = "parameter.yml"
 PARAMETER_FILE_TEMPLATE_NAME = "parameter.yml.tmpl"
-ALLOWED_PARAMETER_FILE_NAMES = frozenset([PARAMETER_FILE_NAME, PARAMETER_FILE_TEMPLATE_NAME])
+PARAMETER_FILE_EXTENSION_YML = ".yml"
+PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
 
 
 class HttpRetryHandler:
@@ -2645,8 +2646,8 @@ class OperationParams:
                 return False
 
             param_file_basename = os.path.basename(workspace.template.parameter_file_path)
-            if param_file_basename not in ALLOWED_PARAMETER_FILE_NAMES:
-                self.logger.error(f"Workspace template parameter_file_path at index {i} must be one of {ALLOWED_PARAMETER_FILE_NAMES}, got: {param_file_basename}")
+            if not (param_file_basename.endswith(PARAMETER_FILE_EXTENSION_YML) or param_file_basename.endswith(PARAMETER_FILE_EXTENSION_TMPL)):
+                self.logger.error(f"Workspace template parameter_file_path at index {i} must end with {PARAMETER_FILE_EXTENSION_YML} or {PARAMETER_FILE_EXTENSION_TMPL}, got: {param_file_basename}")
                 return False
 
             if not workspace.template.item_types_in_scope or len(workspace.template.item_types_in_scope) < 1:
@@ -3284,7 +3285,7 @@ class OperationParams:
         param_file_path = data["parameterFilePath"]
         param_file_basename = os.path.basename(param_file_path)
 
-        if param_file_basename == PARAMETER_FILE_TEMPLATE_NAME:
+        if param_file_basename.endswith(PARAMETER_FILE_EXTENSION_TMPL):
             original_param_file = os.path.join(root_folder, param_file_path)
             param_file_dir = os.path.dirname(original_param_file)
             processed_param_file = os.path.join(param_file_dir, PARAMETER_FILE_NAME)
