@@ -11,6 +11,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     CapacityManager,
     CicdManager,
     EntryPointOperator,
+    MonitoringManager,
     Operation,
     OperationParams,
     RbacManager,
@@ -45,6 +46,7 @@ class CentralOperator(EntryPointOperator):
         self.spark_manager: SparkManager = self.management_factory.create_fabric_spark_manager()
         self.rbac_manager: RbacManager = self.management_factory.create_fabric_rbac_manager()
         self.model_manager: ModelManager = self.management_factory.create_semantic_model_manager()
+        self.monitoring_manager: MonitoringManager = self.management_factory.create_fabric_monitoring_manager()
 
     async def execute(self) -> None:
         """Execute the operation based on the operation type."""
@@ -82,6 +84,9 @@ class CentralOperator(EntryPointOperator):
 
                 case Operation.DEPLOY_MODEL:
                     await self._execute_deploy_model()
+
+                case Operation.DEPLOY_MONITORING:
+                    await self._execute_deploy_monitoring()
 
                 case _:
                     error_message = f"Unknown operation: {self.operation}"
@@ -155,6 +160,12 @@ class CentralOperator(EntryPointOperator):
         Execute deploy model operation.
         """
         await self.model_manager.execute()
+
+    async def _execute_deploy_monitoring(self) -> None:
+        """
+        Execute deploy monitoring operation.
+        """
+        await self.monitoring_manager.execute()
 
     def _azure_set(self) -> None:
         self.azure_cli.run_command(f"account set --subscription {self.operation_params.common.arm.subscription_id}")

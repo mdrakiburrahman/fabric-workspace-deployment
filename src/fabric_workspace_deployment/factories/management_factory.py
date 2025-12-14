@@ -21,6 +21,7 @@ from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityMa
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
+from fabric_workspace_deployment.manager.fabric.monitoring import FabricMonitoringManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
 from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
@@ -101,6 +102,13 @@ class ManagementFactory(ABC):
     def create_semantic_model_manager(self) -> SemanticModelManager:
         """
         Create a Semantic Model Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_monitoring_manager(self) -> FabricMonitoringManager:
+        """
+        Create a Fabric Monitoring Manager instance.
         """
         pass
 
@@ -234,6 +242,14 @@ class ContainerizedManagementFactory(ManagementFactory):
                 self.create_azure_cli(),
                 self.http_retry_handler,
             ),
+            self.http_retry_handler,
+        )
+
+    def create_fabric_monitoring_manager(self) -> FabricMonitoringManager:
+        return FabricMonitoringManager(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.create_fabric_workspace_manager(),
             self.http_retry_handler,
         )
 

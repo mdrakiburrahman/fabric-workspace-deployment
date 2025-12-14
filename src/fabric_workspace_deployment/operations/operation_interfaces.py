@@ -175,6 +175,7 @@ class Operation(Enum):
     DEPLOY_FABRIC_WORKSPACE = "deployFabricWorkspace"
     DEPLOY_GIT_LINK = "deployGitLink"
     DEPLOY_MODEL = "deployModel"
+    DEPLOY_MONITORING = "deployMonitoring"
     DEPLOY_RBAC = "deployRbac"
     DEPLOY_SEED = "deploySeed"
     DEPLOY_SHORTCUT = "deployShortcut"
@@ -331,7 +332,8 @@ class CicdDirectedAcyclicGraph:
                 raise ValueError(f"Circular dependency or missing dependency detected. " f"Cannot resolve deployment order for: {unresolved}")
 
             # Add this batch and mark items as deployed
-            batches.append(sorted(current_batch))  # Sort for deterministic output
+            # Sort for deterministic output
+            batches.append(sorted(current_batch))
             for artifact_type in current_batch:
                 remaining.remove(artifact_type)
                 deployed.add(artifact_type)
@@ -1071,6 +1073,21 @@ class DatamartBatchResponse:
 
 
 @dataclass
+class KustoMonitoring:
+    """Kusto monitoring configuration parameters."""
+
+    database_enabled: bool
+    ingestion_enabled: bool
+
+
+@dataclass
+class MonitoringParams:
+    """Monitoring configuration parameters."""
+
+    kusto: KustoMonitoring
+
+
+@dataclass
 class RbacParams:
     """RBAC configuration parameters."""
 
@@ -1148,6 +1165,7 @@ class FabricWorkspaceParams:
     shortcut_auth_z_role_name: str
     skip_deploy: bool
     spark: FabricSparkParams
+    monitoring: MonitoringParams
     shortcut: ShortcutParams | None = None
 
     def get_icon_payload(self, root_folder: str) -> str:
@@ -1322,6 +1340,27 @@ class CicdManager(ABC):
         Args:
             workspace_id: The Fabric workspace id
             template_params: Parameters for the fabric workspace template
+        """
+        pass
+
+
+class MonitoringManager(ABC):
+    """
+    Interface for managing monitoring operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Monitoring manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute monitoring deployment operations.
+
+        Configures monitoring resources based on the configuration in MonitoringParams.
         """
         pass
 
@@ -2618,6 +2657,18 @@ class OperationParams:
 
         return True
 
+    def _validate_monitoring_params(self, monitoring: MonitoringParams, workspace_index: int) -> bool:
+        """Validate monitoring parameters."""
+        if monitoring is None:
+            self.logger.error(f"Workspace monitoring configuration at index {workspace_index} cannot be None")
+            return False
+
+        if not monitoring.kusto.database_enabled and monitoring.kusto.ingestion_enabled:
+            self.logger.error(f"Workspace monitoring at index {workspace_index}: Kusto ingestion cannot be enabled when database is disabled")
+            return False
+
+        return True
+
     def _validate_fabric_params(self) -> bool:
         """Validate Fabric parameters."""
         if not self.common.fabric.workspaces or len(self.common.fabric.workspaces) == 0:
@@ -2747,6 +2798,9 @@ class OperationParams:
                 return False
 
             if workspace.rbac is not None and not self._validate_rbac_params(workspace.rbac, i, self.common.identities):
+                return False
+
+            if not self._validate_monitoring_params(workspace.monitoring, i):
                 return False
 
         return self._validate_fabric_storage_params()
@@ -3262,6 +3316,7 @@ class OperationParams:
             shortcut_auth_z_role_name=data["shortcutAuthZRoleName"],
             skip_deploy=data["skipDeploy"],
             spark=self._parse_spark_params(data["spark"]),
+            monitoring=self._parse_monitoring_params(data["monitoring"]),
         )
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceTemplateParams:
@@ -3662,6 +3717,19 @@ class OperationParams:
 
         else:
             return obj1 == obj2
+
+    def _parse_monitoring_params(self, data: dict[str, Any]) -> MonitoringParams:
+        """Parse monitoring parameters."""
+        return MonitoringParams(
+            kusto=self._parse_kusto_monitoring(data["kusto"]),
+        )
+
+    def _parse_kusto_monitoring(self, data: dict[str, Any]) -> KustoMonitoring:
+        """Parse Kusto monitoring parameters."""
+        return KustoMonitoring(
+            database_enabled=data["databaseEnabled"],
+            ingestion_enabled=data["ingestionEnabled"],
+        )
 
     def _parse_identity_params(self, data: dict[str, Any]) -> Identity:
         """Parse identity parameters."""
