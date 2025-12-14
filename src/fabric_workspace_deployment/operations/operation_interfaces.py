@@ -203,8 +203,8 @@ class NodeSize(Enum):
     SMALL = "Small"
     MEDIUM = "Medium"
     LARGE = "Large"
-    X_LARGE = "X-Large"
-    XX_LARGE = "XX-Large"
+    X_LARGE = "XLarge"
+    XX_LARGE = "XXLarge"
 
 
 class SparkRuntimeVersion(Enum):
