@@ -18,8 +18,10 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     CicdManager,
     CommonParams,
     CustomLibrary,
+    FabricWorkspaceParams,
     FabricWorkspaceTemplateParams,
     FolderClient,
+    MonitoringManager,
     SparkJobDefinitionClient,
     WorkspaceManager,
 )
@@ -37,6 +39,7 @@ class FabricCicdManager(CicdManager):
         workspace: WorkspaceManager,
         spark_job_definition_client: SparkJobDefinitionClient,
         folder_client: FolderClient,
+        monitoring_manager: MonitoringManager,
     ):
         """
         Initialize the Fabric CICD manager.
@@ -48,6 +51,7 @@ class FabricCicdManager(CicdManager):
         self.workspace = workspace
         self.spark_job_definition_client = spark_job_definition_client
         self.folder_client = folder_client
+        self.monitoring_manager = monitoring_manager
         self.logger = logging.getLogger(__name__)
 
     async def execute(self) -> None:
@@ -100,6 +104,24 @@ class FabricCicdManager(CicdManager):
             self._copy_all_custom_libraries(template_params.custom_libraries)
         else:
             self.logger.info("No custom libraries configured, skipping custom library copy")
+
+        self.logger.info("Processing monitoring template generation")
+        if template_params.generator.monitoring:
+            workspace_params = None
+            for wp in self.common_params.fabric.workspaces:
+                workspace_info = await self.workspace.get(wp)
+                if workspace_info.id == workspace_id:
+                    workspace_params = wp
+                    break
+
+            if workspace_params:
+                await self._generate_template(workspace_id, workspace_params, template_params)
+            else:
+                error_msg = f"Could not find workspace params for workspace ID: {workspace_id}"
+                self.logger.error(error_msg)
+                raise RuntimeError(error_msg)
+        else:
+            self.logger.info("No monitoring templates configured, skipping template generation")
 
         import fabric_cicd
 
@@ -252,6 +274,72 @@ class FabricCicdManager(CicdManager):
                     self.logger.info(f"Copying {source_file} to {dest_file}")
                     shutil.copy2(source_file, dest_file)
                     self.logger.info(f"Successfully copied {source_file.name} to {dest_folder}")
+
+    async def _generate_template(
+        self,
+        workspace_id: str,
+        workspace_params: FabricWorkspaceParams,
+        template_params: FabricWorkspaceTemplateParams,
+    ) -> None:
+        """
+        Generate monitoring template files by replacing placeholders with actual values.
+
+        Args:
+            workspace_id: The workspace ID
+            workspace_params: Workspace parameters containing capacity information
+            template_params: Template parameters containing monitoring generator config
+
+        Raises:
+            FileNotFoundError: If source file doesn't exist
+            RuntimeError: If monitoring metadata cannot be retrieved
+        """
+        self.logger.info(f"Generating {len(template_params.generator.monitoring)} monitoring template file(s)")
+        monitoring_metadata = await self.monitoring_manager.get_monitoring_metadata(workspace_id, workspace_params)
+
+        cluster_uri = monitoring_metadata.kusto.query_service_uri
+        database_id = monitoring_metadata.kusto.database_id
+
+        self.logger.info(f"Retrieved monitoring metadata - Cluster URI: {cluster_uri}, Database ID: {database_id}")
+
+        for idx, monitoring_file in enumerate(template_params.generator.monitoring):
+            self.logger.info(f"Processing monitoring template {idx + 1}/{len(template_params.generator.monitoring)}: " f"{monitoring_file.source} -> {monitoring_file.dest}")
+
+            source_path = Path(monitoring_file.source)
+            if not source_path.is_absolute():
+                source_path = Path(self.common_params.local.root_folder) / monitoring_file.source
+
+            if not source_path.exists():
+                error_msg = f"Source template file does not exist: {source_path}"
+                self.logger.error(error_msg)
+                raise FileNotFoundError(error_msg)
+
+            self.logger.debug(f"Reading source file: {source_path}")
+            with open(source_path, encoding="utf-8") as f:
+                content = f.read()
+
+            original_content = content
+            content = content.replace("{monitoring_kql_cluster_uri}", cluster_uri)
+            content = content.replace("{monitoring_kql_database_id}", database_id)
+
+            replacements_made = content != original_content
+            if replacements_made:
+                self.logger.debug(f"Replaced placeholders in {source_path.name}: " f"{{monitoring_kql_cluster_uri}} -> {cluster_uri}, " f"{{monitoring_kql_database_id}} -> {database_id}")
+            else:
+                self.logger.debug(f"No placeholders found in {source_path.name}")
+
+            dest_path = Path(monitoring_file.dest)
+            if not dest_path.is_absolute():
+                dest_path = Path(self.common_params.local.root_folder) / monitoring_file.dest
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            self.logger.debug(f"Ensured destination directory exists: {dest_path.parent}")
+            self.logger.info(f"Writing generated file to: {dest_path}")
+            with open(dest_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            self.logger.info(f"Successfully generated monitoring template {idx + 1}/{len(template_params.generator.monitoring)}")
+
+        self.logger.info("Completed monitoring template generation")
 
     async def _create_spark_job_definition_artifacts(self, workspace_id: str, template_params: FabricWorkspaceTemplateParams) -> None:
         """

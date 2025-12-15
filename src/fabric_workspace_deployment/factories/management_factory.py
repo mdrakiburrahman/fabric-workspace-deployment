@@ -202,6 +202,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_workspace_manager(),
             self.create_fabric_spark_job_definition_client(),
             self.create_fabric_folder_client(),
+            self.create_fabric_monitoring_manager(),
         )
 
     def create_fabric_seed_manager(self) -> FabricSeedManager:

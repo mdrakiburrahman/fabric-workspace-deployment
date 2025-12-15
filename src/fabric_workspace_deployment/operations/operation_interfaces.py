@@ -589,6 +589,21 @@ class SparkJobDefinition:
 
 
 @dataclass
+class MonitoringGeneratorFile:
+    """Monitoring generator file mapping."""
+
+    source: str
+    dest: str
+
+
+@dataclass
+class Generator:
+    """Generator configuration for template files."""
+
+    monitoring: list[MonitoringGeneratorFile]
+
+
+@dataclass
 class FabricWorkspaceTemplateParams:
     """Fabric workspace template parameters."""
 
@@ -600,6 +615,7 @@ class FabricWorkspaceTemplateParams:
     unpublish_orphans: bool
     custom_libraries: list[CustomLibrary]
     spark_job_definitions: list[SparkJobDefinition]
+    generator: Generator
 
 
 @dataclass
@@ -2877,6 +2893,22 @@ class OperationParams:
             if not self._validate_spark_job_definition_params(workspace.template.spark_job_definitions, i):
                 return False
 
+            if not hasattr(workspace.template, "generator") or workspace.template.generator is None:
+                self.logger.error(f"fabric.workspaces[{i}].template.generator is required when template is specified")
+                return False
+
+            if not hasattr(workspace.template.generator, "monitoring") or workspace.template.generator.monitoring is None:
+                self.logger.error(f"fabric.workspaces[{i}].template.generator.monitoring is required (can be empty array)")
+                return False
+
+            for monitoring_idx, monitoring_file in enumerate(workspace.template.generator.monitoring):
+                if not monitoring_file.source:
+                    self.logger.error(f"fabric.workspaces[{i}].template.generator.monitoring[{monitoring_idx}].source is required")
+                    return False
+                if not monitoring_file.dest:
+                    self.logger.error(f"fabric.workspaces[{i}].template.generator.monitoring[{monitoring_idx}].dest is required")
+                    return False
+
             if workspace.spark is None:
                 self.logger.error(f"Workspace spark at index {i} cannot be None")
                 return False
@@ -3444,6 +3476,13 @@ class OperationParams:
             relative_param_path = param_file_path
             self.logger.debug(f"Using parameter file as-is: {param_file_path}")
 
+        # Parse generator
+        if "generator" not in data:
+            msg = "Missing required field 'generator' in template configuration"
+            raise KeyError(msg)
+
+        generator = self._parse_generator(data["generator"])
+
         return FabricWorkspaceTemplateParams(
             artifacts_folder=data["artifactsFolder"],
             parameter_file_path=relative_param_path,
@@ -3453,6 +3492,33 @@ class OperationParams:
             unpublish_orphans=data["unpublishOrphans"],
             custom_libraries=custom_libraries,
             spark_job_definitions=spark_job_definitions,
+            generator=generator,
+        )
+
+    def _parse_generator(self, data: dict[str, Any]) -> Generator:
+        """Parse generator configuration."""
+        if "monitoring" not in data:
+            msg = "Missing required field 'monitoring' in generator configuration"
+            raise KeyError(msg)
+
+        monitoring_files = []
+        for monitoring_data in data["monitoring"]:
+            monitoring_files.append(self._parse_monitoring_generator_file(monitoring_data))
+
+        return Generator(monitoring=monitoring_files)
+
+    def _parse_monitoring_generator_file(self, data: dict[str, Any]) -> MonitoringGeneratorFile:
+        """Parse monitoring generator file configuration."""
+        if "source" not in data:
+            msg = "Missing required field 'source' in monitoring generator file configuration"
+            raise KeyError(msg)
+        if "dest" not in data:
+            msg = "Missing required field 'dest' in monitoring generator file configuration"
+            raise KeyError(msg)
+
+        return MonitoringGeneratorFile(
+            source=data["source"],
+            dest=data["dest"],
         )
 
     def _parse_custom_library(self, data: dict[str, Any]) -> CustomLibrary:
