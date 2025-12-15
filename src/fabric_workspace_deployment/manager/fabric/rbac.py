@@ -111,7 +111,7 @@ class FabricRbacManager(RbacManager):
 
                 item_rbac_infos = []
                 for workspace_item in workspace_items:
-                    if workspace_item.type not in ["Report", "SemanticModel"]:
+                    if workspace_item.type not in ["EventStream", "Report", "SemanticModel"]:
                         item_rbac_infos.append(await self.get_fabric_workspace_item_rbac_info(workspace_item.id, workspace_item.type))
                     else:
                         self.logger.warning(f"Skipping RBAC reconciliation for unsupported item type '{workspace_item.type}' with ID {workspace_item.id}")
