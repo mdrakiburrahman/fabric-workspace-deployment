@@ -12,6 +12,7 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     AccessSource,
+    CicdArtifactType,
     CommonParams,
     DatamartBatchResponse,
     DatamartParametersResponse,
@@ -26,6 +27,8 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     Identity,
     ItemRbacDetailParams,
     ItemRbacParams,
+    MONITORING_KUSTO_DATABASE,
+    MONITORING_KUSTO_EVENTHOUSE,
     PrincipalType,
     RbacManager,
     RbacParams,
@@ -111,7 +114,21 @@ class FabricRbacManager(RbacManager):
 
                 item_rbac_infos = []
                 for workspace_item in workspace_items:
-                    if workspace_item.type not in ["EventStream", "Report", "SemanticModel"]:
+                    items_not_scanned = {
+                        CicdArtifactType.EVENTHOUSE.value: MONITORING_KUSTO_EVENTHOUSE,
+                        CicdArtifactType.KQL_DATABASE.value: MONITORING_KUSTO_DATABASE,
+                    }
+
+                    if workspace_item.type in items_not_scanned and workspace_item.display_name == items_not_scanned[workspace_item.type]:
+                        self.logger.info(f"Skipping RBAC reconciliation for monitoring item '{workspace_item.display_name}' with ID {workspace_item.id}")
+                        continue
+
+                    if workspace_item.type in [
+                        CicdArtifactType.KQL_DATABASE.value,
+                        CicdArtifactType.EVENTHOUSE.value,
+                        CicdArtifactType.SQL_ENDPOINT.value,
+                        CicdArtifactType.LAKEHOUSE.value,
+                    ]:
                         item_rbac_infos.append(await self.get_fabric_workspace_item_rbac_info(workspace_item.id, workspace_item.type))
                     else:
                         self.logger.warning(f"Skipping RBAC reconciliation for unsupported item type '{workspace_item.type}' with ID {workspace_item.id}")

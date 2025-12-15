@@ -250,6 +250,7 @@ class CicdArtifactType(Enum):
     REPORT = "Report"
     SEMANTIC_MODEL = "SemanticModel"
     SPARK_JOB_DEFINITION = "SparkJobDefinition"
+    SQL_ENDPOINT = "SQLEndpoint"
     USER_DATA_FUNCTION = "UserDataFunction"
 
 
