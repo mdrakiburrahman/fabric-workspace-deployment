@@ -27,7 +27,7 @@ from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
-from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, OperationParams
+from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, MwcTokenClient, OperationParams
 
 
 class ManagementFactory(ABC):
@@ -140,6 +140,13 @@ class ManagementFactory(ABC):
         """
         pass
 
+    @abstractmethod
+    def create_fabric_mwc_token_client(self) -> "MwcTokenClient":
+        """
+        Create a Fabric MWC Token Client instance.
+        """
+        pass
+
 
 class ContainerizedManagementFactory(ManagementFactory):
     """Containerized implementation of the ManagementFactory."""
@@ -212,6 +219,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
             self.http_retry_handler,
+            self.create_fabric_mwc_token_client(),
         )
 
     def create_fabric_spark_manager(self) -> FabricSparkOperations:
@@ -221,6 +229,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_capacity_manager(),
             self.create_fabric_workspace_manager(),
             self.http_retry_handler,
+            self.create_fabric_mwc_token_client(),
         )
 
     def create_fabric_rbac_manager(self) -> FabricRbacManager:
@@ -280,6 +289,15 @@ class ContainerizedManagementFactory(ManagementFactory):
 
     def create_fabric_pipeline_run_client(self) -> FabricPipelineRunClient:
         return FabricPipelineRunClient(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.http_retry_handler,
+        )
+
+    def create_fabric_mwc_token_client(self) -> "MwcTokenClient":
+        from fabric_workspace_deployment.client.fabric_mwc_token_client import FabricMwcTokenClient
+
+        return FabricMwcTokenClient(
             self.operation_params.common,
             self.create_azure_cli(),
             self.http_retry_handler,

@@ -15,6 +15,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricSparkParams,
     HttpRetryHandler,
     MwcScopedToken,
+    MwcTokenClient,
     SparkManager,
     WorkspaceManager,
 )
@@ -32,6 +33,7 @@ class FabricSparkOperations(SparkManager):
         capacity_manager: CapacityManager,
         workspace_manager: WorkspaceManager,
         http_retry_handler: HttpRetryHandler,
+        mwc_token_client: MwcTokenClient,
     ):
         """
         Initialize the Spark manager with common parameters.
@@ -42,6 +44,7 @@ class FabricSparkOperations(SparkManager):
             capacity_manager: Capacity manager instance
             workspace_manager: Workspace manager instance
             http_retry_handler: HTTP retry handler instance
+            mwc_token_client: MWC token client instance
         """
         super().__init__(common_params)
         self.logger = logging.getLogger(__name__)
@@ -49,6 +52,7 @@ class FabricSparkOperations(SparkManager):
         self.capacity_manager = capacity_manager
         self.workspace_manager = workspace_manager
         self.http_retry = http_retry_handler
+        self.mwc_token_client = mwc_token_client
 
     async def execute(self) -> None:
         """
@@ -104,7 +108,7 @@ class FabricSparkOperations(SparkManager):
                 self.logger.info(f"No Spark pools configured for workspace: {workspace_id}, skipping")
                 return
 
-            mwc_token_info = await self.get_mwc_token(workspace_id, capacity_id)
+            mwc_token_info = await self.mwc_token_client.get_spark_core_mwc_token(workspace_id, capacity_id)
             await self.create_spark_pools(
                 workspace_id=workspace_id,
                 capacity_id=capacity_id,
@@ -117,67 +121,6 @@ class FabricSparkOperations(SparkManager):
         except Exception as e:
             self.logger.error(f"Failed to reconcile Spark configuration for workspace {workspace_id}: {e}")
             raise
-
-    async def get_mwc_token(self, workspace_id: str, capacity_id: str) -> MwcScopedToken:
-        """
-        Get MWC scoped token for Spark operations.
-
-        Args:
-            workspace_id: The workspace ID
-            capacity_id: The capacity ID
-
-        Returns:
-            MwcScopedToken: MWC scoped token information
-
-        Raises:
-            RuntimeError: If the API call fails or response cannot be parsed
-        """
-        self.logger.info(f"Getting MWC token for workspace: {workspace_id}, capacity: {capacity_id}")
-        normalized_capacity_id = capacity_id.lower().replace("-", "")
-        url = f"{self.common_params.endpoint.analysis_service}/metadata/v201606/generatemwctoken"
-
-        headers = {
-            "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
-            "Content-Type": "application/json",
-        }
-
-        payload = {
-            "type": "[Start] GetMWCToken",
-            "workloadType": "SparkCore",
-            "workspaceObjectId": workspace_id,
-            "capacityObjectId": normalized_capacity_id,
-        }
-
-        try:
-            response = self.http_retry.execute(
-                requests.post,
-                url,
-                headers=headers,
-                json=payload,
-            )
-
-            response_data = response.json()
-
-            if "Token" not in response_data:
-                error_msg = f"MWC token not found in response: {response_data}"
-                self.logger.error(error_msg)
-                raise RuntimeError(error_msg)
-
-            mwc_token = response_data["Token"]
-            target_uri_host = f"{normalized_capacity_id}.pbidedicated.windows.net"
-
-            self.logger.info(f"Successfully obtained MWC token for workspace: {workspace_id}")
-
-            return MwcScopedToken(
-                token=mwc_token,
-                target_uri_host=target_uri_host,
-                capacity_object_id=normalized_capacity_id,
-            )
-
-        except requests.exceptions.RequestException as e:
-            error_msg = f"Failed to get MWC token for workspace {workspace_id}: {e}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
 
     async def create_spark_pools(
         self,

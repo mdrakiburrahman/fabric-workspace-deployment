@@ -16,6 +16,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     HttpRetryHandler,
     KqlDatabaseInfo,
     MwcScopedToken,
+    MwcTokenClient,
     ShortcutManager,
     ShortcutParams,
     WorkspaceManager,
@@ -33,6 +34,7 @@ class FabricShortcutManager(ShortcutManager):
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
         http_retry_handler: HttpRetryHandler,
+        mwc_token_client: MwcTokenClient,
     ):
         """
         Initialize the Fabric Shortcut manager.
@@ -43,6 +45,7 @@ class FabricShortcutManager(ShortcutManager):
         self.workspace = workspace
         self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
+        self.mwc_token_client = mwc_token_client
 
     async def execute(self) -> None:
         self.logger.info("Executing FabricShortcutManager")
@@ -129,57 +132,11 @@ class FabricShortcutManager(ShortcutManager):
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    async def get_kusto_database_mwc_token(self, workspace_id: str, database_id: str) -> MwcScopedToken:
-        """
-        Get MWC scoped token for a KQL database.
-
-        Args:
-            workspace_id: The workspace ID containing the database
-            database_id: The KQL database ID
-
-        Returns:
-            MwcScopedToken: MWC scoped token information
-        """
-        self.logger.info(f"Getting MWC token for database {database_id} in workspace {workspace_id}")
-        try:
-            response = self.http_retry.execute(
-                requests.post,
-                f"{self.common_params.endpoint.analysis_service}/metadata/v201606/generatemwctokenv2",
-                headers={
-                    "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "workloadType": "Kusto",
-                    "workspaceObjectId": workspace_id,
-                    "artifacts": [{"artifactType": "KustoDatabase", "artifactObjectId": database_id}],
-                },
-                timeout=60,
-            )
-            token_data = response.json()
-            token_data_snake_case = StringTransformer.convert_keys_to_snake_case(token_data)
-            mwc_token = dacite.from_dict(
-                data_class=MwcScopedToken,
-                data=token_data_snake_case,
-                config=dacite.Config(
-                    check_types=False,
-                    cast=[str, int, bool, float],
-                ),
-            )
-
-            self.logger.info(f"Successfully retrieved MWC token for database {database_id}")
-            return mwc_token
-
-        except Exception as e:
-            error_msg = f"Failed to get MWC token for database '{database_id}' in workspace '{workspace_id}': {e}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
-
     async def batch_create_kusto_database_shortcut(self, workspace_id: str, database_id: str, shortcut_params: ShortcutParams) -> None:
         self.logger.info(f"Batch creating shortcuts for database {database_id} in workspace {workspace_id}")
 
         try:
-            mwc_token = await self.get_kusto_database_mwc_token(workspace_id, database_id)
+            mwc_token = await self.mwc_token_client.get_kusto_database_mwc_token(workspace_id, database_id)
             shortcuts_data = []
             for kql_db in shortcut_params.kql_database:
                 storage = self.common_params.fabric.storage

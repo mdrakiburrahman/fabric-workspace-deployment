@@ -1434,20 +1434,6 @@ class ShortcutManager(ABC):
         pass
 
     @abstractmethod
-    async def get_kusto_database_mwc_token(self, workspace_id: str, database_id: str) -> MwcScopedToken:
-        """
-        Get MWC scoped token for a KQL database.
-
-        Args:
-            workspace_id: The workspace ID containing the database
-            database_id: The KQL database ID
-
-        Returns:
-            MwcScopedToken: MWC scoped token information
-        """
-        pass
-
-    @abstractmethod
     async def batch_create_kusto_database_shortcut(self, workspace_id: str, database_id: str, shortcut_params: "ShortcutParams") -> None:
         """
         Batch create KQL database shortcuts using MWC token.
@@ -1487,20 +1473,6 @@ class SparkManager(ABC):
             workspace_id: The Fabric workspace id
             capacity_id: The Fabric capacity id
             spark_params: Parameters for the fabric workspace Spark configuration
-        """
-        pass
-
-    @abstractmethod
-    async def get_mwc_token(self, workspace_id: str, capacity_id: str) -> MwcScopedToken:
-        """
-        Get MWC scoped token for Spark operations.
-
-        Args:
-            workspace_id: The workspace ID
-            capacity_id: The capacity ID
-
-        Returns:
-            MwcScopedToken: MWC scoped token information
         """
         pass
 
@@ -2251,6 +2223,57 @@ class SparkJobDefinitionClient(ABC):
         Raises:
             RuntimeError: If the API call fails
             ValueError: If the lakehouse is not found in the workspace
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class MwcTokenClient(ABC):
+    """
+    Interface for managing Microsoft Fabric MWC (Multi-Workload Compute) token operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the MWC token client with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def get_kusto_database_mwc_token(self, workspace_id: str, database_id: str) -> "MwcScopedToken":
+        """
+        Get MWC scoped token for a KQL database.
+
+        Args:
+            workspace_id: The workspace ID containing the database
+            database_id: The KQL database ID
+
+        Returns:
+            MwcScopedToken: MWC scoped token information
+
+        Raises:
+            RuntimeError: If the API call fails or response cannot be parsed
+        """
+        pass
+
+    @abstractmethod
+    async def get_spark_core_mwc_token(self, workspace_id: str, capacity_id: str) -> "MwcScopedToken":
+        """
+        Get MWC scoped token for Spark operations.
+
+        Args:
+            workspace_id: The workspace ID
+            capacity_id: The capacity ID
+
+        Returns:
+            MwcScopedToken: MWC scoped token information
+
+        Raises:
+            RuntimeError: If the API call fails or response cannot be parsed
         """
         pass
 
