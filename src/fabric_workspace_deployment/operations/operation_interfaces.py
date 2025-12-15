@@ -57,6 +57,13 @@ PARAMETER_FILE_TEMPLATE_NAME = "parameter.yml.tmpl"
 PARAMETER_FILE_EXTENSION_YML = ".yml"
 PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
 
+# ---------------------------------------------------------------------------- #
+# -------------------------- MONITORING CONSTANTS ---------------------------- #
+# ---------------------------------------------------------------------------- #
+
+MONITORING_KUSTO_EVENTHOUSE = "Monitoring Eventhouse"
+MONITORING_KUSTO_DATABASE = "Monitoring KQL database"
+
 
 class HttpRetryHandler:
     """
@@ -222,6 +229,9 @@ class ArtifactType(Enum):
     LAKEHOUSE = "Lakehouse"
     MODEL = "Model"
     PIPELINE = "Pipeline"
+    KUSTO_EVENTHOUSE = "KustoEventHouse"
+    KUSTO_DATABASE = "KustoDatabase"
+    KUSTO_QUERY_WORKBENCH = "KustoQueryWorkbench"
     SPARK_JOB_DEFINITION = "SparkJobDefinition"
 
 
@@ -1088,6 +1098,49 @@ class MonitoringParams:
 
 
 @dataclass
+class KustoExtendedProperties:
+    """Extended properties for Kusto database."""
+
+    query_service_uri: str
+    ingestion_service_uri: str
+    kusto_database_type: str
+
+
+@dataclass
+class KustoDatabaseDetail:
+    """Kusto database detail from API."""
+
+    object_id: str
+    artifact_type: str
+    tenant_object_id: str
+    folder_object_id: str
+    capacity_object_id: str
+    display_name: str
+    description: str
+    last_updates_date: str
+    extended_properties: KustoExtendedProperties
+    provision_state: int
+    parent_artifact_object_id: str
+    system_artifact_type: str
+
+
+@dataclass
+class MonitoringKustoMetadata:
+    """Kusto monitoring metadata."""
+
+    query_service_uri: str
+    cluster_id: str
+    database_id: str
+
+
+@dataclass
+class MonitoringMetadata:
+    """Monitoring metadata for a workspace."""
+
+    kusto: MonitoringKustoMetadata
+
+
+@dataclass
 class RbacParams:
     """RBAC configuration parameters."""
 
@@ -1361,6 +1414,20 @@ class MonitoringManager(ABC):
         Execute monitoring deployment operations.
 
         Configures monitoring resources based on the configuration in MonitoringParams.
+        """
+        pass
+
+    @abstractmethod
+    async def get_monitoring_metadata(self, workspace_id: str, workspace_params: "FabricWorkspaceParams") -> "MonitoringMetadata":
+        """
+        Get monitoring metadata for a workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            workspace_params: The workspace parameters containing capacity information
+
+        Returns:
+            MonitoringMetadata: Metadata containing Kusto connection details
         """
         pass
 

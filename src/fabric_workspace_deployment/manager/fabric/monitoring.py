@@ -5,16 +5,26 @@
 import asyncio
 import logging
 
+import dacite
 import requests
 
+from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
 from fabric_workspace_deployment.operations.operation_interfaces import (
+    CapacityManager,
     CommonParams,
     FabricWorkspaceParams,
     HttpRetryHandler,
+    KustoDatabaseDetail,
+    MONITORING_KUSTO_DATABASE,
+    MONITORING_KUSTO_EVENTHOUSE,
     MonitoringManager,
+    MonitoringKustoMetadata,
+    MonitoringMetadata,
+    MwcTokenClient,
 )
+from fabric_workspace_deployment.static.transformers import StringTransformer
 
 
 class FabricMonitoringManager(MonitoringManager):
@@ -26,6 +36,9 @@ class FabricMonitoringManager(MonitoringManager):
         az_cli: AzCli,
         workspace_manager: FabricWorkspaceManager,
         http_retry_handler: HttpRetryHandler,
+        folder_client: FabricFolderClient,
+        mwc_token_client: MwcTokenClient,
+        capacity_manager: CapacityManager,
     ):
         """
         Initialize the Fabric monitoring manager.
@@ -35,11 +48,17 @@ class FabricMonitoringManager(MonitoringManager):
             az_cli: Azure CLI instance for authentication
             workspace_manager: Workspace manager for getting workspace IDs
             http_retry_handler: HTTP retry handler with exponential backoff
+            folder_client: Folder client for getting folder information
+            mwc_token_client: MWC token client for authentication
+            capacity_manager: Capacity manager for getting capacity IDs
         """
         super().__init__(common_params)
         self.az_cli = az_cli
         self.workspace_manager = workspace_manager
         self.http_retry = http_retry_handler
+        self.folder_client = folder_client
+        self.mwc_token_client = mwc_token_client
+        self.capacity_manager = capacity_manager
         self.logger = logging.getLogger(__name__)
 
     async def execute(self) -> None:
@@ -252,3 +271,104 @@ class FabricMonitoringManager(MonitoringManager):
         )
 
         self.logger.info(f"Successfully deleted monitoring for workspace ID: {workspace_id}")
+
+    async def get_monitoring_metadata(self, workspace_id: str, workspace_params: FabricWorkspaceParams) -> MonitoringMetadata:
+        """
+        Get monitoring metadata for a workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            workspace_params: The workspace parameters containing capacity information
+
+        Returns:
+            MonitoringMetadata: Metadata containing Kusto connection details
+
+        Raises:
+            RuntimeError: If monitoring artifacts are not found or API calls fail
+        """
+        self.logger.info(f"Getting monitoring metadata for workspace ID: {workspace_id}")
+
+        folder_collection = await self.folder_client.get_fabric_folder_collection(workspace_id)
+        cluster_id = None
+        database_id = None
+
+        for artifact in folder_collection.artifacts:
+            if artifact.display_name == MONITORING_KUSTO_EVENTHOUSE and artifact.type_name == "KustoEventHouse":
+                cluster_id = artifact.object_id
+                self.logger.info(f"Found Monitoring Eventhouse with cluster ID: {cluster_id}")
+            elif artifact.display_name == MONITORING_KUSTO_DATABASE and artifact.type_name == "KustoDatabase":
+                database_id = artifact.object_id
+                self.logger.info(f"Found Monitoring KQL database with database ID: {database_id}")
+
+        if not cluster_id:
+            error_msg = f"Monitoring Eventhouse not found in workspace {workspace_id}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        if not database_id:
+            error_msg = f"Monitoring KQL database not found in workspace {workspace_id}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        mwc_token = await self.mwc_token_client.get_kusto_database_mwc_token(workspace_id, database_id)
+        self.logger.info(f"Retrieved MWC token for database {database_id}")
+
+        capacity_info = await self.capacity_manager.get(workspace_params.capacity)
+        capacity_id = capacity_info.fabric_id
+        self.logger.info(f"Retrieved capacity ID: {capacity_id} for workspace {workspace_id}")
+
+        normalized_capacity_id = capacity_id.lower().replace("-", "")
+
+        url = f"https://{normalized_capacity_id}.pbidedicated.windows.net/webapi/capacities/{capacity_id}" f"/workloads/Kusto/KustoService/direct/v1/Eventhouse/{cluster_id}/Databases"
+
+        self.logger.info(f"Calling Kusto API to get database details: {url}")
+
+        response = self.http_retry.execute(
+            requests.get,
+            url,
+            headers={
+                "Authorization": f"MwcToken {mwc_token.token}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+
+        databases = response.json()
+
+        if not isinstance(databases, list):
+            error_msg = f"Unexpected response format from Kusto API: {databases}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        target_database = None
+        for db in databases:
+            if db.get("objectId") == database_id:
+                target_database = db
+                break
+
+        if not target_database:
+            error_msg = f"Database {database_id} not found in Kusto API response"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        database_data_snake_case = StringTransformer.convert_keys_to_snake_case(target_database)
+        database_detail = dacite.from_dict(
+            data_class=KustoDatabaseDetail,
+            data=database_data_snake_case,
+            config=dacite.Config(
+                check_types=False,
+                cast=[str, int, bool, float],
+            ),
+        )
+
+        metadata = MonitoringMetadata(
+            kusto=MonitoringKustoMetadata(
+                query_service_uri=database_detail.extended_properties.query_service_uri,
+                cluster_id=cluster_id,
+                database_id=database_id,
+            )
+        )
+
+        self.logger.info(f"Successfully retrieved monitoring metadata for workspace {workspace_id}: " f"Query Service URI: {metadata.kusto.query_service_uri}")
+
+        return metadata

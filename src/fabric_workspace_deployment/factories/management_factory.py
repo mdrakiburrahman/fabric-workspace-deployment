@@ -113,6 +113,13 @@ class ManagementFactory(ABC):
         pass
 
     @abstractmethod
+    def create_fabric_folder_client(self) -> "FabricFolderClient":
+        """
+        Create a Fabric Folder Client instance.
+        """
+        pass
+
+    @abstractmethod
     def create_fabric_artifact_client(self) -> "FabricArtifactClient":
         """
         Create a Fabric Artifact Client instance.
@@ -194,11 +201,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
             self.create_fabric_spark_job_definition_client(),
-            FabricFolderClient(
-                self.operation_params.common,
-                self.create_azure_cli(),
-                self.http_retry_handler,
-            ),
+            self.create_fabric_folder_client(),
         )
 
     def create_fabric_seed_manager(self) -> FabricSeedManager:
@@ -246,11 +249,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_workspace_manager(),
-            FabricFolderClient(
-                self.operation_params.common,
-                self.create_azure_cli(),
-                self.http_retry_handler,
-            ),
+            self.create_fabric_folder_client(),
             self.http_retry_handler,
         )
 
@@ -259,6 +258,16 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_workspace_manager(),
+            self.http_retry_handler,
+            self.create_fabric_folder_client(),
+            self.create_fabric_mwc_token_client(),
+            self.create_fabric_capacity_manager(),
+        )
+
+    def create_fabric_folder_client(self) -> FabricFolderClient:
+        return FabricFolderClient(
+            self.operation_params.common,
+            self.create_azure_cli(),
             self.http_retry_handler,
         )
 
@@ -280,11 +289,7 @@ class ContainerizedManagementFactory(ManagementFactory):
     def create_fabric_pipeline_client(self) -> FabricPipelineClient:
         return FabricPipelineClient(
             self.operation_params.common,
-            FabricFolderClient(
-                self.operation_params.common,
-                self.create_azure_cli(),
-                self.http_retry_handler,
-            ),
+            self.create_fabric_folder_client(),
         )
 
     def create_fabric_pipeline_run_client(self) -> FabricPipelineRunClient:
