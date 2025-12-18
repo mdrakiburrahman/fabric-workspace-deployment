@@ -35,3 +35,23 @@
    GIT_ROOT=$(git rev-parse --show-toplevel)
    chmod +x ${GIT_ROOT}/contrib/bootstrap-dev-env.sh && ${GIT_ROOT}/contrib/bootstrap-dev-env.sh
    ```
+
+1. `Ctrl + Shift + P` > `Reopen in Container`
+
+1. If ADO gives you a hard time, generate a PAT:
+
+```bash
+read -sp "Enter TWINE_PASSWORD: " TWINE_PASSWORD
+echo
+export TWINE_PASSWORD
+export TWINE_USERNAME="msdata"
+
+cat > "$(git rev-parse --show-toplevel)/.env.publish" << EOF
+TWINE_USERNAME=${TWINE_USERNAME}
+TWINE_PASSWORD=${TWINE_PASSWORD}
+UV_EXTRA_INDEX_URL=https://${TWINE_USERNAME}:${TWINE_PASSWORD}@msdata.pkgs.visualstudio.com/Tina/_packaging/monitoring/pypi/simple/
+PIP_EXTRA_INDEX_URL=https://${TWINE_USERNAME}:${TWINE_PASSWORD}@msdata.pkgs.visualstudio.com/Tina/_packaging/monitoring/pypi/simple/
+EOF
+
+npx nx publish
+```

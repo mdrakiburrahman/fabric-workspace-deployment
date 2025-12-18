@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 
+import requests
+
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.operations.operation_interfaces import CapacityManager, CommonParams, FabricCapacityInfo, FabricCapacityParams
+from fabric_workspace_deployment.operations.operation_interfaces import CapacityManager, CommonParams, FabricCapacityInfo, FabricCapacityParams, CapacityAutoscale, HttpRetryHandler
 
 
 class FabricCapacityManager(CapacityManager):
@@ -27,13 +29,14 @@ class FabricCapacityManager(CapacityManager):
         self.logger.info("Executing FabricCapacityManager")
         tasks = []
         for workspace in self.common_params.fabric.workspaces:
-            task = asyncio.create_task(self.reconcile(
-                workspace.capacity), name=f"reconcile-capacity-{workspace.capacity.name}")
+            if workspace.skip_deploy:
+                self.logger.info(f"Skipping capacity '{workspace.capacity.name}' for workspace '{workspace.name}' due to skipDeploy=true")
+                continue
+            task = asyncio.create_task(self.reconcile(workspace.capacity), name=f"reconcile-capacity-{workspace.capacity.name}")
             tasks.append(task)
 
         if tasks:
-            self.logger.info(
-                f"Executing capacity reconciliation for {len(tasks)} workspaces in parallel")
+            self.logger.info(f"Executing capacity reconciliation for {len(tasks)} workspaces in parallel")
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = []
             for i, result in enumerate(results):
@@ -56,62 +59,47 @@ class FabricCapacityManager(CapacityManager):
         capacity_exists = await self.exists(capacity_params)
 
         if not capacity_exists:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' does not exist. Creating.")
+            self.logger.info(f"Capacity '{capacity_params.name}' does not exist. Creating.")
             await self.create(capacity_params)
-            self.logger.info(
-                f"Successfully created capacity '{capacity_params.name}'")
+            self.logger.info(f"Successfully created capacity '{capacity_params.name}'")
         else:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' already exists")
+            self.logger.info(f"Capacity '{capacity_params.name}' already exists")
 
         capacity_info = await self.get(capacity_params)
 
         if capacity_info.sku_name != capacity_params.sku:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' SKU mismatch. Current: {capacity_info.sku_name}, Desired: {capacity_params.sku}. Scaling."  # noqa: E501
-            )
+            self.logger.info(f"Capacity '{capacity_params.name}' SKU mismatch. Current: {capacity_info.sku_name}, Desired: {capacity_params.sku}. Scaling.")  # noqa: E501
             await self.scale(capacity_params)
-            self.logger.info(
-                f"Successfully scaled capacity '{capacity_params.name}' to {capacity_params.sku}")
+            self.logger.info(f"Successfully scaled capacity '{capacity_params.name}' to {capacity_params.sku}")
         else:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' SKU is already correct: {capacity_params.sku}")
+            self.logger.info(f"Capacity '{capacity_params.name}' SKU is already correct: {capacity_params.sku}")
 
         if capacity_info.state.lower() != "active":
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' is not active (current state: {capacity_info.state}). Starting.")
+            self.logger.info(f"Capacity '{capacity_params.name}' is not active (current state: {capacity_info.state}). Starting.")
             await self.start(capacity_params)
-            self.logger.info(
-                f"Successfully started capacity '{capacity_params.name}'")
+            self.logger.info(f"Successfully started capacity '{capacity_params.name}'")
         else:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' is already active")
+            self.logger.info(f"Capacity '{capacity_params.name}' is already active")
 
         current_admins = set(capacity_info.administrators)
         expected_admins = set(capacity_params.administrators)
         if current_admins != expected_admins:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' administrators mismatch. Current: {current_admins}, Expected: {expected_admins}. Updating administrators."  # noqa: E501
-            )
+            self.logger.info(f"Capacity '{capacity_params.name}' administrators mismatch. Current: {current_admins}, Expected: {expected_admins}. Updating administrators.")  # noqa: E501
             await self.set(capacity_params, "properties.administration.members", json.dumps(capacity_params.administrators))
-            self.logger.info(
-                f"Successfully updated administrators for capacity '{capacity_params.name}'")
+            self.logger.info(f"Successfully updated administrators for capacity '{capacity_params.name}'")
         else:
-            self.logger.info(
-                f"Capacity '{capacity_params.name}' administrators are already correct")
+            self.logger.info(f"Capacity '{capacity_params.name}' administrators are already correct")
 
-        self.logger.info(
-            f"Completed reconciliation for capacity: {capacity_params.name}")
+        await self.reconcile_autoscale(capacity_params, capacity_info.fabric_id)
+
+        self.logger.info(f"Completed reconciliation for capacity: {capacity_params.name}")
 
     async def exists(self, capacity_params: FabricCapacityParams) -> bool:
-        output = self.fabric_cli.run_command(
-            f"exists .capacities/{capacity_params.name}.Capacity")
+        output = self.fabric_cli.run_command(f"exists .capacities/{capacity_params.name}.Capacity")
         return output.strip().lstrip("* ").strip().lower() == "true"
 
     async def get(self, capacity_params: FabricCapacityParams) -> FabricCapacityInfo:
-        output = self.fabric_cli.run_command(
-            f"get .capacities/{capacity_params.name}.Capacity -q .")
+        output = self.fabric_cli.run_command(f"get .capacities/{capacity_params.name}.Capacity -q .")
         capacity_data = json.loads(output.strip())
         properties = capacity_data.get("properties", {})
         sku = capacity_data.get("sku", {})
@@ -143,31 +131,26 @@ class FabricCapacityManager(CapacityManager):
         params.append(f"sku={capacity_params.sku}")
         params.append(f"location={self.common_params.arm.location}")
         params.append(f"resourcegroup={self.common_params.arm.resource_group}")
-        params.append(
-            f"subscriptionid={self.common_params.arm.subscription_id}")
+        params.append(f"subscriptionid={self.common_params.arm.subscription_id}")
         params.append(f"admin={capacity_params.administrators[0]}")
 
         params_str = ",".join(params)
-        self.fabric_cli.run_command(
-            f"create .capacities/{capacity_params.name}.Capacity -P {params_str}")
+        self.fabric_cli.run_command(f"create .capacities/{capacity_params.name}.Capacity -P {params_str}")
 
         await self.set(capacity_params, "properties.administration.members", json.dumps(capacity_params.administrators))
 
     async def remove(self, capacity_params: FabricCapacityParams) -> None:
-        self.fabric_cli.run_command(
-            f"rm .capacities/{capacity_params.name}.Capacity -f")
+        self.fabric_cli.run_command(f"rm .capacities/{capacity_params.name}.Capacity -f")
 
     async def scale(self, capacity_params: FabricCapacityParams) -> None:
         if hasattr(capacity_params, "sku") and capacity_params.sku:
             await self.set(capacity_params, "sku.name", capacity_params.sku)
 
     async def start(self, capacity_params: FabricCapacityParams) -> None:
-        self.fabric_cli.run_command(
-            f"start .capacities/{capacity_params.name}.Capacity -f")
+        self.fabric_cli.run_command(f"start .capacities/{capacity_params.name}.Capacity -f")
 
     async def stop(self, capacity_params: FabricCapacityParams) -> None:
-        self.fabric_cli.run_command(
-            f"stop .capacities/{capacity_params.name}.Capacity -f")
+        self.fabric_cli.run_command(f"stop .capacities/{capacity_params.name}.Capacity -f")
 
     async def set(self, capacity_params: FabricCapacityParams, property_path: str, value: str) -> None:
         available_queries = ["sku.name", "properties.administration.members"]
@@ -175,15 +158,87 @@ class FabricCapacityManager(CapacityManager):
             error = f"Invalid query '{property_path}'. Available queries: {', '.join(available_queries)}"
             raise ValueError(error)
         resource_id = f"/subscriptions/{self.common_params.arm.subscription_id}/resourceGroups/{self.common_params.arm.resource_group}/providers/Microsoft.Fabric/capacities/{capacity_params.name}"  # noqa: E501
-        self.az_cli.run(
-            ["resource", "update", "--ids", resource_id, "--set",
-                f"{property_path}={value}", "--latest-include-preview"]
-        )
+        self.az_cli.run(["resource", "update", "--ids", resource_id, "--set", f"{property_path}={value}", "--latest-include-preview"])
 
     async def assign(self, capacity_params: "FabricCapacityParams", workspace_name: str) -> None:
-        self.fabric_cli.run_command(
-            f"assign .capacities/{capacity_params.name}.Capacity -W {workspace_name}.Workspace -f")
+        self.fabric_cli.run_command(f"assign .capacities/{capacity_params.name}.Capacity -W {workspace_name}.Workspace -f")
 
     async def unassign(self, capacity_params: "FabricCapacityParams", workspace_name: str) -> None:
-        self.fabric_cli.run_command(
-            f"unassign .capacities/{capacity_params.name}.Capacity -W {workspace_name}.Workspace -f")
+        self.fabric_cli.run_command(f"unassign .capacities/{capacity_params.name}.Capacity -W {workspace_name}.Workspace -f")
+
+    async def reconcile_autoscale(self, capacity_params: FabricCapacityParams, capacity_id: str) -> None:
+        self.logger.info(f"Reconciling autoscale for capacity '{capacity_params.name}' (ID: {capacity_id})")
+
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        retry_handler = HttpRetryHandler(logger=self.logger)
+
+        spark_limit = capacity_params.autoscale.spark_core.workload_autoscale_limit
+        spark_url = f"{self.common_params.endpoint.analysis_service}/capacities/{capacity_id}/workloads/SparkCore/workloadAutoscaleLimit"
+
+        self.logger.info(f"Checking current SparkCore workloadAutoscaleLimit for capacity '{capacity_params.name}'")
+        try:
+            get_response = retry_handler.execute(
+                requests.get,
+                spark_url,
+                headers=headers,
+                timeout=30,
+            )
+            current_spark_config = get_response.json()
+            current_spark_limit = current_spark_config.get("workloadAutoscaleLimit")
+
+            if current_spark_limit == spark_limit:
+                self.logger.info(f"SparkCore workloadAutoscaleLimit is already {spark_limit}, skipping update")
+            else:
+                self.logger.info(f"SparkCore workloadAutoscaleLimit mismatch. Current: {current_spark_limit}, Desired: {spark_limit}. Updating.")
+                spark_payload = {"workloadAutoscaleLimit": spark_limit}
+                response = retry_handler.execute(
+                    requests.post,
+                    spark_url,
+                    headers=headers,
+                    json=spark_payload,
+                    timeout=30,
+                )
+                self.logger.info(f"Successfully set SparkCore autoscale limit to {spark_limit}")
+        except Exception as e:
+            error_msg = f"Failed to reconcile SparkCore autoscale limit for capacity '{capacity_params.name}': {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+        warehouse_limit = capacity_params.autoscale.warehouse.workload_autoscale_limit
+        warehouse_url = f"{self.common_params.endpoint.analysis_service}/capacities/{capacity_id}/workloads/DMS/workloadAutoscaleLimit"
+
+        self.logger.info(f"Checking current DMS (warehouse) workloadAutoscaleLimit for capacity '{capacity_params.name}'")
+        try:
+            get_response = retry_handler.execute(
+                requests.get,
+                warehouse_url,
+                headers=headers,
+                timeout=30,
+            )
+            current_warehouse_config = get_response.json()
+            current_warehouse_limit = current_warehouse_config.get("workloadAutoscaleLimit")
+
+            if current_warehouse_limit == warehouse_limit:
+                self.logger.info(f"DMS (warehouse) workloadAutoscaleLimit is already {warehouse_limit}, skipping update")
+            else:
+                self.logger.info(f"DMS (warehouse) workloadAutoscaleLimit mismatch. Current: {current_warehouse_limit}, Desired: {warehouse_limit}. Updating.")
+                warehouse_payload = {"workloadAutoscaleLimit": warehouse_limit}
+                response = retry_handler.execute(
+                    requests.post,
+                    warehouse_url,
+                    headers=headers,
+                    json=warehouse_payload,
+                    timeout=30,
+                )
+                self.logger.info(f"Successfully set DMS autoscale limit to {warehouse_limit}")
+        except Exception as e:
+            error_msg = f"Failed to reconcile DMS autoscale limit for capacity '{capacity_params.name}': {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+        self.logger.info(f"Completed autoscale reconciliation for capacity '{capacity_params.name}'")

@@ -7,9 +7,15 @@ import functools
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import tempfile
+import time
+import uuid
+import requests
+import yaml
+
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,10 +24,151 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 from PIL import Image
-
-import yaml
-
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+
+# ---------------------------------------------------------------------------- #
+# --------------------------- HTTP RETRY CONSTANTS --------------------------- #
+# ---------------------------------------------------------------------------- #
+
+HTTP_RETRYABLE_STATUS_CODES = frozenset(
+    [
+        408,  # Request Timeout
+        429,  # Too Many Requests
+        500,  # Internal Server Error
+        502,  # Bad Gateway
+        503,  # Service Unavailable
+        504,  # Gateway Timeout
+    ]
+)
+
+MAX_RETRY_ATTEMPTS = 10
+MAX_RETRY_DELAY_SECONDS = 60
+INITIAL_RETRY_DELAY_SECONDS = 1
+
+# ---------------------------------------------------------------------------- #
+# --------------------------- RBAC CONSTANTS --------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+ALLOWED_STORAGE_ROLES = frozenset(["Storage Blob Data Reader", "Storage Blob Data Contributor", "Storage Blob Data Owner"])
+SPARK_JOB_DEFINITION_PLATFORM_FILE = ".platform"
+SPARK_JOB_DEFINITION_V1_FILE = "SparkJobDefinitionV1.json"
+PARAMETER_FILE_NAME = "parameter.yml"
+PARAMETER_FILE_TEMPLATE_NAME = "parameter.yml.tmpl"
+PARAMETER_FILE_EXTENSION_YML = ".yml"
+PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
+
+# ---------------------------------------------------------------------------- #
+# -------------------------- MONITORING CONSTANTS ---------------------------- #
+# ---------------------------------------------------------------------------- #
+
+MONITORING_KUSTO_EVENTHOUSE = "Monitoring Eventhouse"
+MONITORING_KUSTO_DATABASE = "Monitoring KQL database"
+
+
+class HttpRetryHandler:
+    """
+    HTTP retry handler with exponential backoff for retryable errors.
+
+    This class provides a reusable, dependency-injectable way to handle HTTP retries
+    with exponential backoff and jitter for transient failures.
+    """
+
+    def __init__(
+        self,
+        max_attempts: int = MAX_RETRY_ATTEMPTS,
+        max_delay_seconds: float = MAX_RETRY_DELAY_SECONDS,
+        initial_delay_seconds: float = INITIAL_RETRY_DELAY_SECONDS,
+        retryable_status_codes: frozenset[int] = HTTP_RETRYABLE_STATUS_CODES,
+        logger: logging.Logger | None = None,
+    ):
+        """
+        Initialize the HTTP retry handler.
+
+        Args:
+            max_attempts: Maximum number of retry attempts
+            max_delay_seconds: Maximum retry delay in seconds
+            initial_delay_seconds: Initial retry delay in seconds
+            retryable_status_codes: Set of HTTP status codes that should trigger retries
+            logger: Optional logger for logging retry attempts
+        """
+        self.max_attempts = max_attempts
+        self.max_delay_seconds = max_delay_seconds
+        self.initial_delay_seconds = initial_delay_seconds
+        self.retryable_status_codes = retryable_status_codes
+        self.logger = logger or logging.getLogger(__name__)
+
+    def execute(self, func: Callable, *args, **kwargs) -> requests.Response:
+        """
+        Execute an HTTP request with retry logic.
+
+        Args:
+            func: The requests function to call (e.g., requests.get, requests.post)
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            requests.Response: The successful response
+
+        Raises:
+            The last exception encountered if all retries are exhausted
+        """
+        last_exception = None
+
+        for attempt in range(1, self.max_attempts + 1):
+
+            try:
+                response = func(*args, **kwargs)
+                response.raise_for_status()
+                return response
+
+            except requests.exceptions.HTTPError as e:
+                last_exception = e
+                if e.response is None or e.response.status_code not in self.retryable_status_codes:
+                    self.logger.debug(f"Non-retryable HTTP error response: {e.response.text if e.response else 'No response'}")
+                    raise
+
+                if attempt >= self.max_attempts:
+                    self.logger.error(f"Max retry attempts ({self.max_attempts}) exhausted for {func.__name__} " f"to {args[0] if args else 'unknown URL'}. Last error: {e}")
+                    raise
+
+                delay = self._calculate_delay(attempt)
+
+                self.logger.warning(f"HTTP {e.response.status_code} error on attempt {attempt}/{self.max_attempts} " f"for {func.__name__} to {args[0] if args else 'unknown URL'}. " f"Retrying in {delay:.2f}s...")
+
+                time.sleep(delay)
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+
+                if attempt >= self.max_attempts:
+                    self.logger.error(f"Max retry attempts ({self.max_attempts}) exhausted for {func.__name__} " f"to {args[0] if args else 'unknown URL'}. Last error: {e}")
+                    raise
+
+                delay = self._calculate_delay(attempt)
+
+                self.logger.warning(f"Network error ({type(e).__name__}) on attempt {attempt}/{self.max_attempts} " f"for {func.__name__} to {args[0] if args else 'unknown URL'}. " f"Retrying in {delay:.2f}s...")
+
+                time.sleep(delay)
+
+        if last_exception:
+            raise last_exception
+
+        raise RuntimeError("Unexpected retry loop exit")
+
+    def _calculate_delay(self, attempt: int) -> float:
+        """
+        Calculate the delay for the next retry attempt with exponential backoff and jitter.
+
+        Args:
+            attempt: The current attempt number (1-indexed)
+
+        Returns:
+            float: The delay in seconds
+        """
+        delay = min(self.initial_delay_seconds * (2 ** (attempt - 1)), self.max_delay_seconds)
+        jitter = random.uniform(0, delay * 0.25)
+        return delay + jitter
+
 
 # ---------------------------------------------------------------------------- #
 # ------------------------------ DATA CLASSES -------------------------------- #
@@ -35,8 +182,11 @@ class Operation(Enum):
     DEPLOY_FABRIC_WORKSPACE = "deployFabricWorkspace"
     DEPLOY_GIT_LINK = "deployGitLink"
     DEPLOY_MODEL = "deployModel"
+    DEPLOY_MONITORING = "deployMonitoring"
     DEPLOY_RBAC = "deployRbac"
+    DEPLOY_SEED = "deploySeed"
     DEPLOY_SHORTCUT = "deployShortcut"
+    DEPLOY_SPARK = "deploySpark"
     DEPLOY_TEMPLATE = "deployTemplate"
     DRY_RUN = "dryRun"
 
@@ -47,6 +197,193 @@ class PrincipalType(Enum):
     GROUP = "Group"
     USER = "User"
     SERVICE_PRINCIPAL = "ServicePrincipal"
+
+
+class NodeSizeFamily(Enum):
+    """Enumeration of node size families for Spark pools."""
+
+    MEMORY_OPTIMIZED = "MemoryOptimized"
+
+
+class NodeSize(Enum):
+    """Enumeration of node sizes for Spark pools."""
+
+    SMALL = "Small"
+    MEDIUM = "Medium"
+    LARGE = "Large"
+    X_LARGE = "XLarge"
+    XX_LARGE = "XXLarge"
+
+
+class SparkRuntimeVersion(Enum):
+    """Enumeration of Spark runtime versions."""
+
+    VERSION_1_2 = "1.2"
+    VERSION_1_3 = "1.3"
+    VERSION_2_0 = "2.0"
+
+
+class ArtifactType(Enum):
+    """Enumeration of Fabric artifact types."""
+
+    LAKEHOUSE = "Lakehouse"
+    MODEL = "Model"
+    PIPELINE = "Pipeline"
+    KUSTO_EVENTHOUSE = "KustoEventHouse"
+    KUSTO_DATABASE = "KustoDatabase"
+    KUSTO_QUERY_WORKBENCH = "KustoQueryWorkbench"
+    SPARK_JOB_DEFINITION = "SparkJobDefinition"
+
+
+class CicdArtifactType(Enum):
+    """Enumeration of Fabric artifact types."""
+
+    DATA_PIPELINE = "DataPipeline"
+    ENVIRONMENT = "Environment"
+    EVENTHOUSE = "Eventhouse"
+    KQL_DATABASE = "KQLDatabase"
+    KQL_QUERYSET = "KQLQueryset"
+    LAKEHOUSE = "Lakehouse"
+    MIRRORED_DATABASE = "MirroredDatabase"
+    NOTEBOOK = "Notebook"
+    REFLEX = "Reflex"
+    REPORT = "Report"
+    SEMANTIC_MODEL = "SemanticModel"
+    SPARK_JOB_DEFINITION = "SparkJobDefinition"
+    SQL_ENDPOINT = "SQLEndpoint"
+    USER_DATA_FUNCTION = "UserDataFunction"
+
+
+class CicdDirectedAcyclicGraph:
+    """Directed Acyclic Graph for CICD deployment ordering based on artifact dependencies."""
+
+    def __init__(self):
+        """
+        Initialize the DAG with predefined artifact type dependencies.
+
+        The dependencies map defines which artifact types must be deployed before others.
+        Key: artifact type that has dependencies
+        Value: list of artifact types that must be deployed first
+        """
+        self._dependencies: dict[str, list[str]] = {
+            "Reflex": ["DataPipeline"],
+            # All other artifact types have no dependencies
+        }
+
+    def get_dependencies(self, artifact_type: str) -> list[str]:
+        """
+        Get the direct dependencies for a given artifact type.
+
+        Args:
+            artifact_type: The artifact type to get dependencies for
+
+        Returns:
+            list[str]: List of artifact types that must be deployed before this one
+        """
+        return self._dependencies.get(artifact_type, [])
+
+    def has_dependencies(self, artifact_type: str) -> bool:
+        """
+        Check if an artifact type has any dependencies.
+
+        Args:
+            artifact_type: The artifact type to check
+
+        Returns:
+            bool: True if the artifact type has dependencies, False otherwise
+        """
+        return artifact_type in self._dependencies and len(self._dependencies[artifact_type]) > 0
+
+    def get_deployment_batches(self, artifact_types: list[str]) -> list[list[str]]:
+        """
+        Get deployment order in batches using topological sort.
+
+        Returns a list of batches where each batch contains artifact types that can be
+        deployed in parallel (they don't depend on each other). Items in later batches
+        depend on items in earlier batches.
+
+        Args:
+            artifact_types: List of artifact types to deploy
+
+        Returns:
+            list[list[str]]: List of batches, each batch is a list of artifact types
+                           that can be deployed in parallel
+
+        Raises:
+            ValueError: If a circular dependency is detected
+        """
+        if not artifact_types:
+            return []
+
+        # Create a working set of remaining items
+        remaining = set(artifact_types)
+        batches = []
+
+        # Track items we've already deployed across all batches
+        deployed = set()
+
+        # Keep processing until all items are deployed
+        max_iterations = len(artifact_types) + 1  # Prevent infinite loop
+        iteration = 0
+
+        while remaining and iteration < max_iterations:
+            iteration += 1
+
+            # Find all items whose dependencies have been deployed (or have no dependencies)
+            current_batch = []
+            for artifact_type in remaining:
+                dependencies = self.get_dependencies(artifact_type)
+                # Check if all dependencies are already deployed
+                if all(dep in deployed or dep not in artifact_types for dep in dependencies):
+                    current_batch.append(artifact_type)
+
+            if not current_batch:
+                # No progress made - either circular dependency or missing dependency
+                unresolved = list(remaining)
+                raise ValueError(f"Circular dependency or missing dependency detected. " f"Cannot resolve deployment order for: {unresolved}")
+
+            # Add this batch and mark items as deployed
+            # Sort for deterministic output
+            batches.append(sorted(current_batch))
+            for artifact_type in current_batch:
+                remaining.remove(artifact_type)
+                deployed.add(artifact_type)
+
+        if remaining:
+            raise ValueError(f"Failed to resolve deployment order for: {list(remaining)}")
+
+        return batches
+
+    def get_dependency_summary(self, artifact_types: list[str]) -> str:
+        """
+        Get a human-readable summary of the DAG for the given artifact types.
+
+        Args:
+            artifact_types: List of artifact types to summarize
+
+        Returns:
+            str: A formatted string describing the dependency graph
+        """
+        lines = ["CICD Deployment DAG:"]
+        lines.append("  Artifact Types in Scope:")
+        for artifact_type in sorted(artifact_types):
+            lines.append(f"    - {artifact_type}")
+
+        lines.append("  Dependencies:")
+        has_any_deps = False
+        for artifact_type in sorted(artifact_types):
+            deps = self.get_dependencies(artifact_type)
+            if deps:
+                has_any_deps = True
+                # Only show dependencies that are in scope
+                relevant_deps = [d for d in deps if d in artifact_types]
+                if relevant_deps:
+                    lines.append(f"    - {artifact_type} depends on: {', '.join(relevant_deps)}")
+
+        if not has_any_deps:
+            lines.append("    - No dependencies (all items can be deployed in parallel)")
+
+        return "\n".join(lines)
 
 
 @dataclass
@@ -134,6 +471,140 @@ class FabricWorkspaceFolderInfo:
 
 
 @dataclass
+@dataclass
+class CustomLibrarySource:
+    """Source configuration for custom library files."""
+
+    folder_path: str
+    prefix: str
+    suffix: str
+    error_on_multiple: bool
+
+
+@dataclass
+class CustomLibraryDest:
+    """Destination configuration for custom library files."""
+
+    folder_path: list[str]
+    clean_folder_path: bool
+
+
+@dataclass
+class CustomLibrary:
+    """Custom library configuration for Spark libraries."""
+
+    source: CustomLibrarySource
+    dest: CustomLibraryDest
+
+
+@dataclass
+class AutoScale:
+    """Auto scale configuration for Spark pools."""
+
+    enabled: bool
+    min_node_count: int
+    max_node_count: int
+
+
+@dataclass
+class DynamicExecutorAllocation:
+    """Dynamic executor allocation configuration for Spark pools."""
+
+    enabled: bool
+    min_executors: int
+    max_executors: int
+
+
+@dataclass
+class PoolDetails:
+    """Spark pool details configuration."""
+
+    id: str
+    name: str
+    node_size_family: NodeSizeFamily
+    node_size: NodeSize
+    auto_scale: AutoScale
+    dynamic_executor_allocation: DynamicExecutorAllocation
+
+
+@dataclass
+class MachineLearningAutoLog:
+    """Machine learning auto log configuration."""
+
+    enabled: bool
+
+
+@dataclass
+class JobManagement:
+    """Job management configuration for Spark pools."""
+
+    conservative_job_admission_enabled: bool
+    session_timeout_in_minutes: int
+
+
+@dataclass
+class HighConcurrencyConfig:
+    """High concurrency configuration for Spark pools."""
+
+    enabled: bool
+    notebook_pipeline_run_enabled: bool
+
+
+@dataclass
+class FabricSparkParams:
+    """Parameters for Fabric Spark configuration."""
+
+    enable_customized_compute_conf: bool
+    machine_learning_auto_log: MachineLearningAutoLog
+    job_management: JobManagement
+    high_concurrency: HighConcurrencyConfig
+    current_pool_id: str
+    runtime_version: SparkRuntimeVersion
+    pools: list[PoolDetails]
+
+
+@dataclass
+class SparkJobDefinitionV1Config:
+    """Spark Job Definition V1 configuration file content."""
+
+    executable_file: str
+    default_lakehouse_artifact_id: str
+    main_class: str
+    additional_lakehouse_ids: list[str]
+    retry_policy: str | None
+    command_line_arguments: str
+    additional_library_uris: list[str]
+    language: str
+    environment_artifact_id: str | None
+
+
+@dataclass
+class SparkJobDefinition:
+    """Spark Job Definition configuration."""
+
+    display_name: str
+    description: str
+    nested_folder_path: str
+    default_lakehouse_artifact_name: str
+    spark_job_definition_v1_config: SparkJobDefinitionV1Config
+
+
+@dataclass
+class MonitoringGeneratorFile:
+    """Monitoring generator file mapping."""
+
+    source: str
+    dest: str
+
+
+@dataclass
+class Generator:
+    """Generator configuration for template files."""
+
+    monitoring: list[MonitoringGeneratorFile]
+
+
+@dataclass
 class FabricWorkspaceTemplateParams:
     """Fabric workspace template parameters."""
 
@@ -143,10 +614,13 @@ class FabricWorkspaceTemplateParams:
     environment_key: str
     feature_flags: list[str]
     unpublish_orphans: bool
+    custom_libraries: list[CustomLibrary]
+    spark_job_definitions: list[SparkJobDefinition]
+    generator: Generator
 
 
 @dataclass
-class FabricFolderArtifacts:
+class FabricFolderArtifact:
     """Fabric folder artifact information."""
 
     id: int
@@ -160,10 +634,62 @@ class FabricFolderArtifacts:
 
 
 @dataclass
-class FabricFolder:
+class FabricSubfolderArtifacts:
+    """Fabric subfolder artifact information."""
+
+    id: int
+    display_name: str
+    object_id: str
+    folder_id: int
+    last_updated_date: str
+
+
+@dataclass
+class FabricFolderCollection:
     """Fabric folder containing artifacts."""
 
-    artifacts: list[FabricFolderArtifacts]
+    artifacts: list[FabricFolderArtifact]
+
+
+@dataclass
+class ArtifactRequest:
+    """Request payload for creating a Fabric artifact."""
+
+    artifact_type: str
+    description: str
+    display_name: str
+
+
+@dataclass
+class FabricArtifact:
+    """Fabric artifact information returned from creation."""
+
+    object_id: str
+    artifact_type: str
+    display_name: str
+    description: str
+
+
+@dataclass
+class SparkAutoscale:
+    """Spark core autoscale configuration."""
+
+    workload_autoscale_limit: int
+
+
+@dataclass
+class WarehouseAutoscale:
+    """Warehouse autoscale configuration."""
+
+    workload_autoscale_limit: int
+
+
+@dataclass
+class CapacityAutoscale:
+    """Capacity autoscale configuration."""
+
+    spark_core: SparkAutoscale
+    warehouse: WarehouseAutoscale
 
 
 @dataclass
@@ -173,6 +699,7 @@ class FabricCapacityParams:
     name: str
     sku: str
     administrators: list[str]
+    autoscale: CapacityAutoscale
 
 
 @dataclass
@@ -559,6 +1086,7 @@ class DatamartParameter:
 @dataclass
 class DatamartParametersResponse:
     """Response for datamart parameters."""
+
     parameters: list[DatamartParameter]
 
 
@@ -569,6 +1097,64 @@ class DatamartBatchResponse:
     batch_id: str
     progress_state: str
     batch_type: str
+
+
+@dataclass
+class KustoMonitoring:
+    """Kusto monitoring configuration parameters."""
+
+    database_enabled: bool
+    ingestion_enabled: bool
+
+
+@dataclass
+class MonitoringParams:
+    """Monitoring configuration parameters."""
+
+    kusto: KustoMonitoring
+
+
+@dataclass
+class KustoExtendedProperties:
+    """Extended properties for Kusto database."""
+
+    query_service_uri: str
+    ingestion_service_uri: str
+    kusto_database_type: str
+
+
+@dataclass
+class KustoDatabaseDetail:
+    """Kusto database detail from API."""
+
+    object_id: str
+    artifact_type: str
+    tenant_object_id: str
+    folder_object_id: str
+    capacity_object_id: str
+    display_name: str
+    description: str
+    last_updates_date: str
+    extended_properties: KustoExtendedProperties
+    provision_state: int
+    parent_artifact_object_id: str
+    system_artifact_type: str
+
+
+@dataclass
+class MonitoringKustoMetadata:
+    """Kusto monitoring metadata."""
+
+    query_service_uri: str
+    cluster_id: str
+    database_id: str
+
+
+@dataclass
+class MonitoringMetadata:
+    """Monitoring metadata for a workspace."""
+
+    kusto: MonitoringKustoMetadata
 
 
 @dataclass
@@ -613,13 +1199,10 @@ class RbacParams:
         Raises:
             ValueError: If the object ID is not found in identities
         """
-        identity = self.get_identity_by_object_id(
-            workspace_rbac.object_id, identities)
+        identity = self.get_identity_by_object_id(workspace_rbac.object_id, identities)
         return workspace_rbac, identity
 
-    def hydrate_item_rbac_detail_with_identity(
-        self, item_rbac_detail: ItemRbacDetailParams, identities: list[Identity]
-    ) -> tuple[ItemRbacDetailParams, Identity]:
+    def hydrate_item_rbac_detail_with_identity(self, item_rbac_detail: ItemRbacDetailParams, identities: list[Identity]) -> tuple[ItemRbacDetailParams, Identity]:
         """
         Hydrate item RBAC detail parameters with identity information.
 
@@ -633,8 +1216,7 @@ class RbacParams:
         Raises:
             ValueError: If the object ID is not found in identities
         """
-        identity = self.get_identity_by_object_id(
-            item_rbac_detail.object_id, identities)
+        identity = self.get_identity_by_object_id(item_rbac_detail.object_id, identities)
         return item_rbac_detail, identity
 
 
@@ -650,6 +1232,10 @@ class FabricWorkspaceParams:
     capacity: FabricCapacityParams
     rbac: RbacParams
     model: list[ModelParams]
+    shortcut_auth_z_role_name: str
+    skip_deploy: bool
+    spark: FabricSparkParams
+    monitoring: MonitoringParams
     shortcut: ShortcutParams | None = None
 
     def get_icon_payload(self, root_folder: str) -> str:
@@ -674,7 +1260,7 @@ class FabricWorkspaceParams:
         try:
             MAX_SIZE = 45 * 1024
 
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                 temp_path = temp_file.name
 
             try:
@@ -683,8 +1269,7 @@ class FabricWorkspaceParams:
 
                 while True:
                     if scale < 1.0:
-                        tmp = img.resize(
-                            (int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+                        tmp = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
                     else:
                         tmp = img
                     tmp.save(temp_path, optimize=True, quality=q)
@@ -708,8 +1293,29 @@ class FabricWorkspaceParams:
                     os.unlink(temp_path)
 
         except Exception as e:
-            raise Exception(
-                f"Failed to read, compress and encode icon file '{icon_full_path}': {e}") from e
+            raise Exception(f"Failed to read, compress and encode icon file '{icon_full_path}': {e}") from e
+
+
+@dataclass
+class LocalConcreteFile:
+    """Local concrete file reference."""
+
+    file_path: str
+
+
+@dataclass
+class StorageAccountFile:
+    """Storage account file reference."""
+
+    file_path: str
+
+
+@dataclass
+class SeedFile:
+    """Seed file mapping between local and storage account."""
+
+    local_concrete_file: LocalConcreteFile
+    storage_account_file: StorageAccountFile
 
 
 @dataclass
@@ -723,6 +1329,7 @@ class FabricStorageParams:
     subscription_id: str
     tenant_id: str
     shortcut_data_connection_id: str
+    seed_files: list[SeedFile]
 
 
 @dataclass
@@ -807,6 +1414,67 @@ class CicdManager(ABC):
         pass
 
 
+class MonitoringManager(ABC):
+    """
+    Interface for managing monitoring operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Monitoring manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute monitoring deployment operations.
+
+        Configures monitoring resources based on the configuration in MonitoringParams.
+        """
+        pass
+
+    @abstractmethod
+    async def get_monitoring_metadata(self, workspace_id: str, workspace_params: "FabricWorkspaceParams") -> "MonitoringMetadata":
+        """
+        Get monitoring metadata for a workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            workspace_params: The workspace parameters containing capacity information
+
+        Returns:
+            MonitoringMetadata: Metadata containing Kusto connection details
+        """
+        pass
+
+
+class SeedManager(ABC):
+    """
+    Interface for managing seed file uploads to Azure Storage.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Seed manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute seed file upload operations.
+
+        Uploads all configured seed files from local storage to Azure Storage
+        based on the configuration in FabricStorageParams.seed_files.
+
+        Raises:
+            FileNotFoundError: If a local seed file does not exist
+            RuntimeError: If blob upload fails
+        """
+        pass
+
+
 class ShortcutManager(ABC):
     """
     Interface for managing Fabric shortcut operations.
@@ -850,23 +1518,7 @@ class ShortcutManager(ABC):
         pass
 
     @abstractmethod
-    async def get_kusto_database_mwc_token(self, workspace_id: str, database_id: str) -> MwcScopedToken:
-        """
-        Get MWC scoped token for a KQL database.
-
-        Args:
-            workspace_id: The workspace ID containing the database
-            database_id: The KQL database ID
-
-        Returns:
-            MwcScopedToken: MWC scoped token information
-        """
-        pass
-
-    @abstractmethod
-    async def batch_create_kusto_database_shortcut(
-        self, workspace_id: str, database_id: str, shortcut_params: "ShortcutParams"
-    ) -> None:
+    async def batch_create_kusto_database_shortcut(self, workspace_id: str, database_id: str, shortcut_params: "ShortcutParams") -> None:
         """
         Batch create KQL database shortcuts using MWC token.
 
@@ -874,6 +1526,50 @@ class ShortcutManager(ABC):
             workspace_id: The workspace ID containing the database
             database_id: The KQL database ID
             shortcut_params: Parameters for the shortcuts to create
+        """
+        pass
+
+
+class SparkManager(ABC):
+    """
+    Interface for managing Fabric Spark operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Spark manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute reconciliation for all workspaces in parallel.
+        """
+        pass
+
+    @abstractmethod
+    async def reconcile(self, workspace_id: str, capacity_id: str, spark_params: "FabricSparkParams") -> None:
+        """
+        Reconcile a single workspace to desired state Spark configuration.
+
+        Args:
+            workspace_id: The Fabric workspace id
+            capacity_id: The Fabric capacity id
+            spark_params: Parameters for the fabric workspace Spark configuration
+        """
+        pass
+
+    @abstractmethod
+    async def create_spark_pools(self, workspace_id: str, capacity_id: str, spark_params: "FabricSparkParams", mwc_token: str) -> None:
+        """
+        Create Spark pools using MWC token.
+
+        Args:
+            workspace_id: The workspace ID
+            capacity_id: The capacity ID
+            spark_params: Parameters for the Spark pools to create
+            mwc_token: MWC authentication token
         """
         pass
 
@@ -907,19 +1603,6 @@ class ModelManager(ABC):
         pass
 
     @abstractmethod
-    async def get_fabric_folder_info(self, workspace_id: str) -> FabricFolder:
-        """
-        Get Fabric folder information.
-
-        Args:
-            workspace_id: The Fabric workspace id
-
-        Returns:
-            FabricFolder: Fabric workspace folder information
-        """
-        pass
-    
-    @abstractmethod
     async def set_model(self, id: str, data: str) -> None:
         """
         Set Model properties for a given ID.
@@ -932,6 +1615,7 @@ class ModelManager(ABC):
             RuntimeError: If the API call fails
         """
         pass
+
 
 class RbacManager(ABC):
     """
@@ -1174,6 +1858,17 @@ class CapacityManager(ABC):
         """
         pass
 
+    @abstractmethod
+    async def reconcile_autoscale(self, capacity_params: "FabricCapacityParams", capacity_id: str) -> None:
+        """
+        Reconcile autoscale configuration for the capacity.
+
+        Args:
+            capacity_params: Parameters for the fabric capacity
+            capacity_id: The capacity ID (from FabricCapacityInfo)
+        """
+        pass
+
 
 class WorkspaceManager(ABC):
     """
@@ -1283,13 +1978,12 @@ class WorkspaceManager(ABC):
         pass
 
     @abstractmethod
-    async def assign_workspace_storage_reader(
-        self, workspace_info: "FabricWorkspaceInfo", storage_params: "FabricStorageParams"
-    ) -> None:
+    async def assign_workspace_storage_role(self, workspace_params: "FabricWorkspaceParams", workspace_info: "FabricWorkspaceInfo", storage_params: "FabricStorageParams") -> None:
         """
-        Assign Storage Blob Data Contributor role to the workspace identity for the storage account.
+        Assign the configured role to the workspace identity for the storage account.
 
         Args:
+            workspace_params: Parameters for the fabric workspace
             workspace_info: Information about the fabric workspace
             storage_params: Parameters for the fabric storage
 
@@ -1304,18 +1998,444 @@ class WorkspaceManager(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class FolderClient(ABC):
+    """
+    Interface for managing Fabric folder operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the folder client with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def get_fabric_folder_collection(self, workspace_id: str) -> FabricFolderCollection:
+        """
+        Get Fabric folder information for a workspace.
+
+        Args:
+            workspace_id: The Fabric workspace id
+
+        Returns:
+            FabricFolderCollection: Fabric workspace folder information
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class ArtifactClient(ABC):
+    """
+    Interface for managing Fabric artifact operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the artifact client with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def post_definition(
+        self,
+        workspace_id: str,
+        artifact_request: "ArtifactRequest",
+    ) -> "FabricArtifact":
+        """
+        Create a new Fabric artifact definition.
+
+        Args:
+            workspace_id: The Fabric workspace ID
+            artifact_request: The artifact creation request payload
+
+        Returns:
+            FabricArtifact: The created artifact information
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class PipelineClient(ABC):
+    """
+    Interface for interacting with Fabric Pipeline artifacts.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Pipeline client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def list_pipelines(self, workspace_object_id: str) -> list[Any]:
+        """
+        List all pipelines in a workspace.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+
+        Returns:
+            List of Pipeline objects
+        """
+        pass
+
+    @abstractmethod
+    async def get_pipeline(self, workspace_object_id: str, pipeline_display_name: str) -> Any | None:
+        """
+        Get a specific pipeline by display name.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_display_name: The display name of the pipeline
+
+        Returns:
+            Pipeline object if found, None otherwise
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class PipelineRunClient(ABC):
+    """
+    Interface for interacting with Fabric Pipeline runs.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Pipeline Run client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    def get_non_terminal_statuses(self) -> list[str]:
+        """
+        Get the list of non-terminal pipeline statuses.
+
+        Returns:
+            List of status codes that represent non-terminal states
+        """
+        pass
+
+    @abstractmethod
+    async def list_non_terminal_runs(self, workspace_object_id: str, pipeline_id: str) -> list[Any]:
+        """
+        List all non-terminal pipeline runs.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+
+        Returns:
+            List of PipelineRun objects in non-terminal states
+        """
+        pass
+
+    @abstractmethod
+    async def list_runs(self, workspace_object_id: str, pipeline_id: str, statuses: list[str], limit: int, days_back: int) -> list[Any]:
+        """
+        List pipeline runs filtered by status.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            statuses: List of status codes to filter by
+            limit: Maximum number of runs to return
+            days_back: Number of days to look back
+
+        Returns:
+            List of PipelineRun objects matching the status filter
+        """
+        pass
+
+    @abstractmethod
+    async def start_run(self, workspace_object_id: str, pipeline_id: str, parameters: dict[str, Any] | None) -> Any:
+        """
+        Start a pipeline run.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            parameters: Optional pipeline parameters as a dictionary
+
+        Returns:
+            StartPipelineResponse with the run details
+        """
+        pass
+
+    @abstractmethod
+    async def start_run_idempotently(self, workspace_object_id: str, pipeline_id: str, parameters: dict[str, Any] | None) -> Any | None:
+        """
+        Start a pipeline run only if no runs are in NOT_STARTED or IN_PROGRESS state.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            parameters: Optional pipeline parameters as a dictionary
+
+        Returns:
+            StartPipelineResponse if a new run was started, None if a run is already in progress
+        """
+        pass
+
+    @abstractmethod
+    async def cancel_run(self, workspace_object_id: str, pipeline_id: str, run_instance_id: str) -> bool:
+        """
+        Cancel a running pipeline.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            run_instance_id: The artifact job instance ID to cancel
+
+        Returns:
+            True if cancellation was accepted
+        """
+        pass
+
+    @abstractmethod
+    async def get_run(self, workspace_object_id: str, pipeline_id: str, run_instance_id: str) -> Any | None:
+        """
+        Get a specific pipeline run by instance ID.
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            run_instance_id: The artifact job instance ID
+
+        Returns:
+            PipelineRun object if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def wait_for_completion(self, workspace_object_id: str, pipeline_id: str, run_instance_id: str, poll_interval_seconds: int, timeout_seconds: int) -> Any:
+        """
+        Wait for a pipeline run to complete (reach a terminal state).
+
+        Args:
+            workspace_object_id: The Fabric workspace object ID
+            pipeline_id: The pipeline artifact object ID
+            run_instance_id: The artifact job instance ID to wait for
+            poll_interval_seconds: Seconds to wait between status checks
+            timeout_seconds: Maximum seconds to wait before timing out
+
+        Returns:
+            PipelineRun object in terminal state
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class SparkJobDefinitionClient(ABC):
+    """
+    Interface for managing Spark Job Definition operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Spark Job Definition client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def create_spark_job_definition_artifact(
+        self,
+        workspace_id: str,
+        spark_job_definition: "SparkJobDefinition",
+    ) -> "FabricArtifact":
+        """
+        Create or retrieve a Spark Job Definition artifact.
+
+        This method checks if a SparkJobDefinition with the given display name already exists.
+        If it exists, returns the existing artifact. Otherwise, creates a new one.
+
+        Args:
+            workspace_id: The Fabric workspace id
+            spark_job_definition: The Spark Job Definition configuration
+
+        Returns:
+            FabricArtifact: The existing or newly created artifact information
+
+        Raises:
+            RuntimeError: If the API calls fail
+            ValueError: If nested_folder_path is empty or invalid
+        """
+        pass
+
+    @abstractmethod
+    async def update_spark_job_definition_config(
+        self,
+        workspace_id: str,
+        spark_job_definition_id: str,
+        lakehouse_name: str,
+        config: "SparkJobDefinitionV1Config",
+    ) -> None:
+        """
+        Update a Spark Job Definition's configuration using PATCH.
+
+        Args:
+            workspace_id: The workspace ID containing the artifacts
+            spark_job_definition_id: The Spark Job Definition artifact ID
+            lakehouse_name: The display name of the default Lakehouse to resolve
+            config: The SparkJobDefinitionV1Config containing the workload payload
+
+        Raises:
+            RuntimeError: If the API call fails
+            ValueError: If the lakehouse is not found in the workspace
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class MwcTokenClient(ABC):
+    """
+    Interface for managing Microsoft Fabric MWC (Multi-Workload Compute) token operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the MWC token client with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def get_kusto_database_mwc_token(self, workspace_id: str, database_id: str) -> "MwcScopedToken":
+        """
+        Get MWC scoped token for a KQL database.
+
+        Args:
+            workspace_id: The workspace ID containing the database
+            database_id: The KQL database ID
+
+        Returns:
+            MwcScopedToken: MWC scoped token information
+
+        Raises:
+            RuntimeError: If the API call fails or response cannot be parsed
+        """
+        pass
+
+    @abstractmethod
+    async def get_spark_core_mwc_token(self, workspace_id: str, capacity_id: str) -> "MwcScopedToken":
+        """
+        Get MWC scoped token for Spark operations.
+
+        Args:
+            workspace_id: The workspace ID
+            capacity_id: The capacity ID
+
+        Returns:
+            MwcScopedToken: MWC scoped token information
+
+        Raises:
+            RuntimeError: If the API call fails or response cannot be parsed
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class AzureStorageManager(ABC):
+    """
+    Interface for managing Azure Storage operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Azure Storage manager.
+
+        Args:
+            common_params: Common parameters containing storage configuration
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    def generate_user_delegated_sas_token(self, account: str, container: str, duration_in_minutes: int = 5) -> str:
+        """
+        Generate a User Delegated SAS token.
+
+        Args:
+            account: The storage account name
+            container: The storage container name
+            duration_in_minutes: The duration of the SAS token in minutes (default: 5)
+
+        Returns:
+            str: The SAS token string with leading '?'
+
+        Raises:
+            RuntimeError: If SAS token generation fails
+        """
+        pass
+
+    @abstractmethod
+    def upload_blob(self, account: str, container: str, absolute_local_file_path: str, azure_file_path: str) -> None:
+        """
+        Upload a blob to Azure Storage.
+
+        Args:
+            account: The storage account name
+            container: The storage container name
+            absolute_local_file_path: The absolute local file path
+            azure_file_path: The Azure file path (relative path in container)
+
+        Raises:
+            FileNotFoundError: If the local file does not exist
+            RuntimeError: If blob upload fails
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class OperationParams:
     """
     Main operation parameters container with parsing and validation capabilities.
     """
 
-    def __init__(self, config_file_absolute_path: str, operation: str, logger: logging.Logger | None = None):
+    def __init__(self, config_file_absolute_path: str, operation: str, replace_placeholders: bool = False, logger: logging.Logger | None = None):
         """
         Initialize OperationParams by parsing the configuration file.
 
         Args:
             config_file_absolute_path: Absolute path to the configuration file
             operation: The operation to execute
+            replace_placeholders: Whether to replace magic placeholders in the config
+            logger: Optional logger instance
 
         Raises:
             FileNotFoundError: If the config file doesn't exist
@@ -1326,14 +2446,12 @@ class OperationParams:
         self.az_cli = AzCli(exit_on_error=True, logger=self.logger)
 
         try:
-            self.config_data = self._load_and_process_config(
-                config_file_absolute_path)
+            self.config_data = self._load_and_process_config(config_file_absolute_path, replace_placeholders)
             self.operation = Operation(operation)
             self.common = self._parse_common_params(self.config_data["common"])
 
         except FileNotFoundError:
-            self.logger.error(
-                f"Configuration file not found: {config_file_absolute_path}")
+            self.logger.error(f"Configuration file not found: {config_file_absolute_path}")
             raise
 
         except json.JSONDecodeError as e:
@@ -1380,7 +2498,7 @@ class OperationParams:
         """
         user_alias = os.getenv("USER_DISPLAY_NAME", "")
         if user_alias:
-            cleaned_alias = re.sub(r'[^a-zA-Z0-9]', '', user_alias.lower())
+            cleaned_alias = re.sub(r"[^a-zA-Z0-9]", "", user_alias.lower())
             if cleaned_alias:
                 return cleaned_alias
 
@@ -1498,10 +2616,8 @@ class OperationParams:
                 placeholder_pattern = f"{{{placeholder_name}}}"
                 if placeholder_pattern in result:
                     replacement_value = resolver_func()
-                    result = result.replace(
-                        placeholder_pattern, replacement_value)
-                    self.logger.debug(
-                        f"Replaced {placeholder_pattern} with {replacement_value}")
+                    result = result.replace(placeholder_pattern, replacement_value)
+                    self.logger.debug(f"Replaced {placeholder_pattern} with {replacement_value}")
 
             return result
 
@@ -1514,15 +2630,53 @@ class OperationParams:
         else:
             return value
 
-    def _load_and_process_config(self, config_file_absolute_path: str) -> dict[str, Any]:
+    def _replace_placeholders_in_file(self, in_file: str, out_file: str) -> None:
         """
-        Load configuration from file and replace magic placeholders.
+        Replace placeholders in a file and write to output file.
+
+        Performs text-based replacement of placeholders like {unique-env-id} in the file content.
+        This works with any text format (YAML, JSON, etc.) including cases where placeholders
+        are used as keys or in positions that wouldn't be valid in the parsed format.
+
+        Args:
+            in_file: Absolute path to input file
+            out_file: Absolute path to output file
+
+        Raises:
+            FileNotFoundError: If input file doesn't exist
+        """
+        if not os.path.exists(in_file):
+            error_msg = f"Input file does not exist: {in_file}"
+            self.logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+        with open(in_file, encoding="utf-8") as f:
+            content = f.read()
+
+        resolvers = self._get_placeholder_resolvers()
+        for placeholder_name, resolver_func in resolvers.items():
+            placeholder_pattern = f"{{{placeholder_name}}}"
+            if placeholder_pattern in content:
+                replacement_value = resolver_func()
+                content = content.replace(placeholder_pattern, replacement_value)
+                self.logger.info(f"Replaced {placeholder_pattern} with {replacement_value} in {in_file}")
+
+        os.makedirs(os.path.dirname(out_file), exist_ok=True)
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        self.logger.info(f"Replaced placeholders in {in_file} and wrote to {out_file}")
+
+    def _load_and_process_config(self, config_file_absolute_path: str, replace_placeholders: bool) -> dict[str, Any]:
+        """
+        Load configuration from file and optionally replace magic placeholders.
 
         Args:
             config_file_absolute_path: Absolute path to the configuration file
+            replace_placeholders: Whether to replace magic placeholders in the config
 
         Returns:
-            dict[str, Any]: Configuration data with placeholders replaced
+            dict[str, Any]: Configuration data with placeholders optionally replaced
 
         Raises:
             FileNotFoundError: If the config file doesn't exist
@@ -1530,60 +2684,48 @@ class OperationParams:
         """
         with open(config_file_absolute_path, encoding="utf-8") as file:
             config_data = json.load(file)
-        return self._replace_placeholders_in_value(config_data)
+
+        if replace_placeholders:
+            return self._replace_placeholders_in_value(config_data)
+        return config_data
 
     def _validate_operation(self) -> bool:
         """Validate the operation parameter."""
         if self.operation is None:
-            self.logger.error(
-                f"operation cannot be empty or left as default: {self.operation}")
+            self.logger.error(f"operation cannot be empty or left as default: {self.operation}")
             return False
         return True
 
     def _validate_common_params(self) -> bool:
         """Validate common parameters."""
-        return (
-            self._validate_local_params()
-            and self._validate_endpoint_params()
-            and self._validate_scope_params()
-            and self._validate_arm_params()
-            and self._validate_identities_params()
-            and self._validate_fabric_params()
-        )
+        return self._validate_local_params() and self._validate_endpoint_params() and self._validate_scope_params() and self._validate_arm_params() and self._validate_identities_params() and self._validate_fabric_params()
 
     def _validate_local_params(self) -> bool:
         """Validate local parameters."""
         if not self.common.local.root_folder or self._is_folder_empty(self.common.local.root_folder):
-            self.logger.error(
-                f"rootFolder cannot be empty: {self.common.local.root_folder}")
+            self.logger.error(f"rootFolder cannot be empty: {self.common.local.root_folder}")
             return False
         return True
 
     def _validate_endpoint_params(self) -> bool:
         """Validate endpoint parameters."""
         if not self.common.endpoint.analysis_service:
-            self.logger.error(
-                f"analysisService endpoint cannot be empty: {self.common.endpoint.analysis_service}")
+            self.logger.error(f"analysisService endpoint cannot be empty: {self.common.endpoint.analysis_service}")
             return False
         if not self.common.endpoint.cicd:
-            self.logger.error(
-                f"cicd endpoint cannot be empty: {self.common.endpoint.cicd}")
+            self.logger.error(f"cicd endpoint cannot be empty: {self.common.endpoint.cicd}")
             return False
         if not self.common.endpoint.power_bi:
-            self.logger.error(
-                f"powerBi endpoint cannot be empty: {self.common.endpoint.power_bi}")
+            self.logger.error(f"powerBi endpoint cannot be empty: {self.common.endpoint.power_bi}")
             return False
         if not self.common.endpoint.analysis_service.startswith("https://"):
-            self.logger.error(
-                f"analysisService endpoint must be a valid HTTPS URL: {self.common.endpoint.analysis_service}")
+            self.logger.error(f"analysisService endpoint must be a valid HTTPS URL: {self.common.endpoint.analysis_service}")
             return False
         if not self.common.endpoint.cicd.startswith("https://"):
-            self.logger.error(
-                f"cicd endpoint must be a valid HTTPS URL: {self.common.endpoint.cicd}")
+            self.logger.error(f"cicd endpoint must be a valid HTTPS URL: {self.common.endpoint.cicd}")
             return False
         if not self.common.endpoint.power_bi.startswith("https://"):
-            self.logger.error(
-                f"powerBi endpoint must be a valid HTTPS URL: {self.common.endpoint.power_bi}")
+            self.logger.error(f"powerBi endpoint must be a valid HTTPS URL: {self.common.endpoint.power_bi}")
             return False
 
         return True
@@ -1591,29 +2733,18 @@ class OperationParams:
     def _validate_scope_params(self) -> bool:
         """Validate scope parameters."""
         if not self.common.scope.analysis_service:
-            self.logger.error(
-                f"analysisService scope cannot be empty: {self.common.scope.analysis_service}")
+            self.logger.error(f"analysisService scope cannot be empty: {self.common.scope.analysis_service}")
             return False
         if not self.common.scope.analysis_service.startswith("https://"):
-            self.logger.error(
-                f"analysisService scope must be a valid HTTPS URL: {self.common.scope.analysis_service}")
+            self.logger.error(f"analysisService scope must be a valid HTTPS URL: {self.common.scope.analysis_service}")
             return False
 
         return True
 
     def _validate_arm_params(self) -> bool:
         """Validate ARM parameters."""
-        if (
-            not self.common.arm.resource_group
-            or not self.common.arm.location
-            or not self.common.arm.subscription_id
-            or not self.common.arm.tenant_id
-        ):
-            self.logger.error(
-                f"resourceGroup: {self.common.arm.resource_group}, "
-                f"location: {self.common.arm.location}, subscriptionId: {self.common.arm.subscription_id}, "
-                f"or tenantId: {self.common.arm.tenant_id} cannot be empty"
-            )
+        if not self.common.arm.resource_group or not self.common.arm.location or not self.common.arm.subscription_id or not self.common.arm.tenant_id:
+            self.logger.error(f"resourceGroup: {self.common.arm.resource_group}, " f"location: {self.common.arm.location}, subscriptionId: {self.common.arm.subscription_id}, " f"or tenantId: {self.common.arm.tenant_id} cannot be empty")
             return False
         return True
 
@@ -1633,101 +2764,157 @@ class OperationParams:
 
         return True
 
+    def _validate_monitoring_params(self, monitoring: MonitoringParams, workspace_index: int) -> bool:
+        """Validate monitoring parameters."""
+        if monitoring is None:
+            self.logger.error(f"Workspace monitoring configuration at index {workspace_index} cannot be None")
+            return False
+
+        if not monitoring.kusto.database_enabled and monitoring.kusto.ingestion_enabled:
+            self.logger.error(f"Workspace monitoring at index {workspace_index}: Kusto ingestion cannot be enabled when database is disabled")
+            return False
+
+        return True
+
     def _validate_fabric_params(self) -> bool:
         """Validate Fabric parameters."""
         if not self.common.fabric.workspaces or len(self.common.fabric.workspaces) == 0:
-            self.logger.error(
-                "At least one Fabric workspace must be configured")
+            self.logger.error("At least one Fabric workspace must be configured")
             return False
 
         for i, workspace in enumerate(self.common.fabric.workspaces):
             if not workspace.name:
-                self.logger.error(
-                    f"Workspace name at index {i} cannot be empty")
+                self.logger.error(f"Workspace name at index {i} cannot be empty")
                 return False
 
             if not workspace.description:
-                self.logger.error(
-                    f"Workspace description at index {i} cannot be empty")
+                self.logger.error(f"Workspace description at index {i} cannot be empty")
                 return False
 
             if not workspace.dataset_storage_mode:
-                self.logger.error(
-                    f"Workspace dataset_storage_mode at index {i} cannot be empty")
+                self.logger.error(f"Workspace dataset_storage_mode at index {i} cannot be empty")
                 return False
 
             if not workspace.template.artifacts_folder:
-                self.logger.error(
-                    f"Workspace template artifacts_folder at index {i} cannot be empty")
+                self.logger.error(f"Workspace template artifacts_folder at index {i} cannot be empty")
                 return False
 
             if not workspace.template.parameter_file_path:
-                self.logger.error(
-                    f"Workspace template parameter_file_path at index {i} cannot be empty")
+                self.logger.error(f"Workspace template parameter_file_path at index {i} cannot be empty")
+                return False
+
+            param_file_basename = os.path.basename(workspace.template.parameter_file_path)
+            if not (param_file_basename.endswith(PARAMETER_FILE_EXTENSION_YML) or param_file_basename.endswith(PARAMETER_FILE_EXTENSION_TMPL)):
+                self.logger.error(f"Workspace template parameter_file_path at index {i} must end with {PARAMETER_FILE_EXTENSION_YML} or {PARAMETER_FILE_EXTENSION_TMPL}, got: {param_file_basename}")
                 return False
 
             if not workspace.template.item_types_in_scope or len(workspace.template.item_types_in_scope) < 1:
-                self.logger.error(
-                    f"Workspace template item_types_in_scope at index {i} cannot be empty")
+                self.logger.error(f"Workspace template item_types_in_scope at index {i} cannot be empty")
                 return False
 
             if not workspace.template.environment_key:
-                self.logger.error(
-                    f"Workspace template environment_key at index {i} cannot be empty")
+                self.logger.error(f"Workspace template environment_key at index {i} cannot be empty")
                 return False
 
             if not workspace.template.feature_flags:
-                self.logger.error(
-                    f"Workspace template feature_flags at index {i} cannot be empty")
+                self.logger.error(f"Workspace template feature_flags at index {i} cannot be empty")
                 return False
 
             if not workspace.template.unpublish_orphans:
-                self.logger.error(
-                    f"Workspace template unpublish_orphans at index {i} cannot be empty")
+                self.logger.error(f"Workspace template unpublish_orphans at index {i} cannot be empty")
                 return False
 
-            if self._is_yaml_file_invalid(str(Path(self.common.local.root_folder) / workspace.template.parameter_file_path)):
+            param_file_full_path = str(Path(self.common.local.root_folder) / workspace.template.parameter_file_path)
+            if param_file_basename == PARAMETER_FILE_NAME and self._is_yaml_file_invalid(param_file_full_path):
                 self.logger.error(f"Workspace template parameter_file_path at index {i} is invalid: {workspace.template.parameter_file_path}")  # fmt: skip  # noqa: E501
                 return False
 
             if not workspace.icon_path:
-                self.logger.error(
-                    f"Workspace icon_path at index {i} cannot be empty")
+                self.logger.error(f"Workspace icon_path at index {i} cannot be empty")
                 return False
 
-            icon_full_path = os.path.join(
-                self.common.local.root_folder, workspace.icon_path)
+            icon_full_path = os.path.join(self.common.local.root_folder, workspace.icon_path)
             if not os.path.exists(icon_full_path):
-                self.logger.error(
-                    f"Icon file not found for workspace at index {i}: {icon_full_path}")
+                self.logger.error(f"Icon file not found for workspace at index {i}: {icon_full_path}")
                 return False
 
             if not workspace.capacity.name:
-                self.logger.error(
-                    f"Workspace capacity name at index {i} cannot be empty")
+                self.logger.error(f"Workspace capacity name at index {i} cannot be empty")
                 return False
 
-            if (
-                not workspace.capacity.name[0].islower()
-                or not workspace.capacity.name.isalnum()
-                or not workspace.capacity.name.islower()
-            ):
-                self.logger.error(
-                    f"Workspace capacity name at index {i} must start with a lowercase letter and contain only lowercase letters and digits (no spaces, underscores, or dashes): {workspace.capacity.name}"  # noqa: E501
-                )
+            if not workspace.capacity.name[0].islower() or not workspace.capacity.name.isalnum() or not workspace.capacity.name.islower():
+                self.logger.error(f"Workspace capacity name at index {i} must start with a lowercase letter and contain only lowercase letters and digits (no spaces, underscores, or dashes): {workspace.capacity.name}")  # noqa: E501
                 return False
 
             if not workspace.capacity.sku:
-                self.logger.error(
-                    f"Workspace capacity sku at index {i} cannot be empty")
+                self.logger.error(f"Workspace capacity sku at index {i} cannot be empty")
                 return False
 
             if not workspace.capacity.administrators or not len(workspace.capacity.administrators) >= 1:
-                self.logger.error(
-                    f"Workspace capacity administrators at index {i} must contain at least one administrator")
+                self.logger.error(f"Workspace capacity administrators at index {i} must contain at least one administrator")
+                return False
+
+            if not workspace.capacity.autoscale:
+                self.logger.error(f"Workspace capacity autoscale at index {i} cannot be None")
+                return False
+
+            spark_limit = workspace.capacity.autoscale.spark_core.workload_autoscale_limit
+            if spark_limit < 0:
+                self.logger.error(f"Workspace capacity autoscale sparkCore workloadAutoscaleLimit at index {i} must be >= 0, got {spark_limit}")
+                return False
+
+            if spark_limit > 0 and spark_limit < 2:
+                self.logger.error(f"Workspace capacity autoscale sparkCore workloadAutoscaleLimit at index {i} must be 0 or >= 2, got {spark_limit}")
+                return False
+
+            warehouse_limit = workspace.capacity.autoscale.warehouse.workload_autoscale_limit
+            if warehouse_limit < 0:
+                self.logger.error(f"Workspace capacity autoscale warehouse workloadAutoscaleLimit at index {i} must be >= 0, got {warehouse_limit}")
+                return False
+
+            if warehouse_limit > 0 and warehouse_limit < 32:
+                self.logger.error(f"Workspace capacity autoscale warehouse workloadAutoscaleLimit at index {i} must be 0 or >= 32, got {warehouse_limit}")
+                return False
+
+            if not workspace.shortcut_auth_z_role_name:
+                self.logger.error(f"Workspace shortcutAuthZRoleName at index {i} cannot be empty")
+                return False
+
+            if workspace.shortcut_auth_z_role_name not in ALLOWED_STORAGE_ROLES:
+                self.logger.error(f"Workspace shortcutAuthZRoleName at index {i} must be one of {ALLOWED_STORAGE_ROLES}, " f"got '{workspace.shortcut_auth_z_role_name}'")
+                return False
+
+            if workspace.skip_deploy is None:
+                self.logger.error(f"Workspace skipDeploy at index {i} cannot be None")
                 return False
 
             if not self._validate_model_params(workspace.model, i):
+                return False
+
+            if not self._validate_spark_job_definition_params(workspace.template.spark_job_definitions, i):
+                return False
+
+            if not hasattr(workspace.template, "generator") or workspace.template.generator is None:
+                self.logger.error(f"fabric.workspaces[{i}].template.generator is required when template is specified")
+                return False
+
+            if not hasattr(workspace.template.generator, "monitoring") or workspace.template.generator.monitoring is None:
+                self.logger.error(f"fabric.workspaces[{i}].template.generator.monitoring is required (can be empty array)")
+                return False
+
+            for monitoring_idx, monitoring_file in enumerate(workspace.template.generator.monitoring):
+                if not monitoring_file.source:
+                    self.logger.error(f"fabric.workspaces[{i}].template.generator.monitoring[{monitoring_idx}].source is required")
+                    return False
+                if not monitoring_file.dest:
+                    self.logger.error(f"fabric.workspaces[{i}].template.generator.monitoring[{monitoring_idx}].dest is required")
+                    return False
+
+            if workspace.spark is None:
+                self.logger.error(f"Workspace spark at index {i} cannot be None")
+                return False
+
+            if not self._validate_spark_params(workspace.spark, i):
                 return False
 
             if workspace.shortcut is not None and not self._validate_shortcut_params(workspace.shortcut, i):
@@ -1736,34 +2923,46 @@ class OperationParams:
             if workspace.rbac is not None and not self._validate_rbac_params(workspace.rbac, i, self.common.identities):
                 return False
 
+            if not self._validate_monitoring_params(workspace.monitoring, i):
+                return False
+
         return self._validate_fabric_storage_params()
 
     def _validate_fabric_storage_params(self) -> bool:
         """Validate Fabric Storage parameters."""
         storage = self.common.fabric.storage
-        if (
-            not storage.account
-            or not storage.container
-            or not storage.location
-            or not storage.resource_group
-            or not storage.subscription_id
-            or not storage.tenant_id
-            or not storage.shortcut_data_connection_id
-        ):
-            self.logger.error(
-                f"FabricStorageParams members cannot be empty: account={storage.account}, "
-                f"container={storage.container}, location={storage.location}, "
-                f"resourceGroup={storage.resource_group}, subscriptionId={storage.subscription_id}, "
-                f"tenantId={storage.tenant_id}"
-            )
+        if not storage.account or not storage.container or not storage.location or not storage.resource_group or not storage.subscription_id or not storage.tenant_id or not storage.shortcut_data_connection_id:
+            self.logger.error(f"FabricStorageParams members cannot be empty: account={storage.account}, " f"container={storage.container}, location={storage.location}, " f"resourceGroup={storage.resource_group}, subscriptionId={storage.subscription_id}, " f"tenantId={storage.tenant_id}")
             return False
+
+        if storage.seed_files is None:
+            self.logger.error("FabricStorageParams seedFiles cannot be None")
+            return False
+
+        for i, seed_file in enumerate(storage.seed_files):
+            if not seed_file.local_concrete_file.file_path:
+                self.logger.error(f"Seed file localConcreteFile.filePath at index {i} cannot be empty")
+                return False
+
+            local_file_full_path = Path(self.common.local.root_folder) / seed_file.local_concrete_file.file_path
+            if not local_file_full_path.exists():
+                self.logger.error(f"Seed file localConcreteFile does not exist at index {i}: {local_file_full_path}")
+                return False
+
+            if not local_file_full_path.is_file():
+                self.logger.error(f"Seed file localConcreteFile is not a file at index {i}: {local_file_full_path}")
+                return False
+
+            if not seed_file.storage_account_file.file_path:
+                self.logger.error(f"Seed file storageAccountFile.filePath at index {i} cannot be empty")
+                return False
+
         return True
 
     def _validate_model_params(self, models: list[ModelParams], workspace_index: int) -> bool:
         """Validate model parameters."""
         if models is None:
-            self.logger.error(
-                f"Workspace model at index {workspace_index} cannot be None")
+            self.logger.error(f"Workspace model at index {workspace_index} cannot be None")
             return False
 
         if len(models) == 0:
@@ -1771,44 +2970,210 @@ class OperationParams:
 
         for j, model in enumerate(models):
             if not model.display_name:
-                self.logger.error(
-                    f"Workspace model[{j}].displayName at index {workspace_index} cannot be empty")
+                self.logger.error(f"Workspace model[{j}].displayName at index {workspace_index} cannot be empty")
                 return False
 
             if model.direct_lake_auto_sync is None:
-                self.logger.error(
-                    f"Workspace model[{j}].directLakeAutoSync at index {workspace_index} cannot be None")
+                self.logger.error(f"Workspace model[{j}].directLakeAutoSync at index {workspace_index} cannot be None")
                 return False
+
+        return True
+
+    def _validate_spark_job_definition_params(self, spark_job_definitions: list[SparkJobDefinition], workspace_index: int) -> bool:
+        """Validate Spark Job Definition parameters."""
+        if spark_job_definitions is None:
+            self.logger.error(f"Workspace spark_job_definitions at index {workspace_index} cannot be None")
+            return False
+
+        if len(spark_job_definitions) == 0:
+            return True
+
+        seen_display_names = set()
+        seen_nested_paths = set()
+        for j, sjd in enumerate(spark_job_definitions):
+            if not sjd.display_name:
+                self.logger.error(f"Spark Job Definition display_name at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            if sjd.display_name in seen_display_names:
+                self.logger.error(f"Duplicate Spark Job Definition display_name '{sjd.display_name}' at workspace index {workspace_index}, definition index {j}")
+                return False
+            seen_display_names.add(sjd.display_name)
+
+            if not sjd.description:
+                self.logger.error(f"Spark Job Definition description at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            if not sjd.default_lakehouse_artifact_name:
+                self.logger.error(f"Spark Job Definition default_lakehouse_artifact_name at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            if not sjd.nested_folder_path:
+                self.logger.error(f"Spark Job Definition nested_folder_path at workspace index {workspace_index}, definition index {j} cannot be empty")
+                return False
+
+            spark_job_def_v1_file = os.path.join(self.common.local.root_folder, sjd.nested_folder_path, SPARK_JOB_DEFINITION_V1_FILE)
+            if not os.path.exists(spark_job_def_v1_file):
+                self.logger.error(f"Spark Job Definition file '{SPARK_JOB_DEFINITION_V1_FILE}' not found at workspace index {workspace_index}, definition index {j}: {spark_job_def_v1_file}")
+                return False
+
+            if sjd.nested_folder_path in seen_nested_paths:
+                self.logger.error(f"Duplicate Spark Job Definition nested_folder_path '{sjd.nested_folder_path}' at workspace index {workspace_index}, definition index {j}")
+                return False
+            seen_nested_paths.add(sjd.nested_folder_path)
+
+        return True
+
+    def _validate_spark_params(self, spark: FabricSparkParams, workspace_index: int) -> bool:
+        """Validate Spark parameters."""
+        if spark.pools is None:
+            self.logger.error(f"Workspace spark pools at index {workspace_index} cannot be None")
+            return False
+
+        if spark.enable_customized_compute_conf is None:
+            self.logger.error(f"Workspace spark enableCustomizedComputeConf at index {workspace_index} cannot be None")
+            return False
+
+        if spark.machine_learning_auto_log is None or spark.machine_learning_auto_log.enabled is None:
+            self.logger.error(f"Workspace spark machineLearningAutoLog.enabled at index {workspace_index} cannot be None")
+            return False
+
+        if spark.job_management is None:
+            self.logger.error(f"Workspace spark jobManagement at index {workspace_index} cannot be None")
+            return False
+
+        if spark.job_management.conservative_job_admission_enabled is None:
+            self.logger.error(f"Workspace spark jobManagement.conservativeJobAdmissionEnabled at index {workspace_index} cannot be None")
+            return False
+
+        if spark.job_management.session_timeout_in_minutes is None or spark.job_management.session_timeout_in_minutes <= 0:
+            self.logger.error(f"Workspace spark jobManagement.sessionTimeoutInMinutes at index {workspace_index} must be greater than 0")
+            return False
+
+        if spark.high_concurrency is None:
+            self.logger.error(f"Workspace spark highConcurrency at index {workspace_index} cannot be None")
+            return False
+
+        if spark.high_concurrency.enabled is None:
+            self.logger.error(f"Workspace spark highConcurrency.enabled at index {workspace_index} cannot be None")
+            return False
+
+        if spark.high_concurrency.notebook_pipeline_run_enabled is None:
+            self.logger.error(f"Workspace spark highConcurrency.notebookPipelineRunEnabled at index {workspace_index} cannot be None")
+            return False
+
+        if not spark.current_pool_id:
+            self.logger.error(f"Workspace spark currentPoolId at index {workspace_index} cannot be empty")
+            return False
+
+        if spark.runtime_version is None:
+            self.logger.error(f"Workspace spark runtimeVersion at index {workspace_index} cannot be None")
+            return False
+
+        if len(spark.pools) == 0:
+            return True
+
+        pool_ids = set()
+        for j, pool_details in enumerate(spark.pools):
+
+            if pool_details is None:
+                self.logger.error(f"Workspace spark pools[{j}] at index {workspace_index} cannot be None")
+                return False
+
+            if not pool_details.id:
+                self.logger.error(f"Workspace spark pools[{j}].id at index {workspace_index} cannot be empty")
+                return False
+
+            try:
+                uuid.UUID(pool_details.id)
+            except ValueError:
+                self.logger.error(f"Workspace spark pools[{j}].id at index {workspace_index} must be a valid GUID: {pool_details.id}")
+                return False
+
+            if pool_details.id in pool_ids:
+                self.logger.error(f"Workspace spark pools[{j}].id at index {workspace_index} is not unique: {pool_details.id}")
+                return False
+            pool_ids.add(pool_details.id)
+
+            if not pool_details.name:
+                self.logger.error(f"Workspace spark pools[{j}].name at index {workspace_index} cannot be empty")
+                return False
+
+            if pool_details.node_size_family is None:
+                self.logger.error(f"Workspace spark pools[{j}].nodeSizeFamily at index {workspace_index} cannot be None")
+                return False
+
+            if pool_details.node_size is None:
+                self.logger.error(f"Workspace spark pools[{j}].nodeSize at index {workspace_index} cannot be None")
+                return False
+
+            if pool_details.auto_scale is None:
+                self.logger.error(f"Workspace spark pools[{j}].autoScale at index {workspace_index} cannot be None")
+                return False
+
+            if pool_details.auto_scale.enabled is None:
+                self.logger.error(f"Workspace spark pools[{j}].autoScale.enabled at index {workspace_index} cannot be None")
+                return False
+
+            if pool_details.auto_scale.min_node_count is None or pool_details.auto_scale.min_node_count <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].autoScale.minNodeCount at index {workspace_index} must be greater than 0")
+                return False
+
+            if pool_details.auto_scale.max_node_count is None or pool_details.auto_scale.max_node_count <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].autoScale.maxNodeCount at index {workspace_index} must be greater than 0")
+                return False
+
+            if pool_details.auto_scale.min_node_count > pool_details.auto_scale.max_node_count:
+                self.logger.error(f"Workspace spark pools[{j}].autoScale.minNodeCount at index {workspace_index} cannot be greater than maxNodeCount")
+                return False
+
+            if pool_details.dynamic_executor_allocation is None:
+                self.logger.error(f"Workspace spark pools[{j}].dynamicExecutorAllocation at index {workspace_index} cannot be None")
+                return False
+
+            if pool_details.dynamic_executor_allocation.enabled is None:
+                self.logger.error(f"Workspace spark pools[{j}].dynamicExecutorAllocation.enabled at index {workspace_index} cannot be None")
+                return False
+
+            if pool_details.dynamic_executor_allocation.min_executors is None or pool_details.dynamic_executor_allocation.min_executors <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].dynamicExecutorAllocation.minExecutors at index {workspace_index} must be greater than 0")
+                return False
+
+            if pool_details.dynamic_executor_allocation.max_executors is None or pool_details.dynamic_executor_allocation.max_executors <= 0:
+                self.logger.error(f"Workspace spark pools[{j}].dynamicExecutorAllocation.maxExecutors at index {workspace_index} must be greater than 0")
+                return False
+
+            if pool_details.dynamic_executor_allocation.min_executors > pool_details.dynamic_executor_allocation.max_executors:
+                self.logger.error(f"Workspace spark pools[{j}].dynamicExecutorAllocation.minExecutors at index {workspace_index} cannot be greater than maxExecutors")
+                return False
+
+        if spark.current_pool_id not in pool_ids:
+            self.logger.error(f"Workspace spark currentPoolId '{spark.current_pool_id}' at index {workspace_index} does not match any configured pool ID")
+            return False
 
         return True
 
     def _validate_shortcut_params(self, shortcut: ShortcutParams, workspace_index: int) -> bool:
         """Validate shortcut parameters."""
         if shortcut.kql_database is None:
-            self.logger.error(
-                f"Workspace shortcut kqlDatabase at index {workspace_index} cannot be None")
+            self.logger.error(f"Workspace shortcut kqlDatabase at index {workspace_index} cannot be None")
             return False
 
         for j, kql_db in enumerate(shortcut.kql_database):
             if not kql_db.database:
-                self.logger.error(
-                    f"Workspace shortcut kqlDatabase[{j}].database at index {workspace_index} cannot be empty")
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].database at index {workspace_index} cannot be empty")
                 return False
 
             if not kql_db.table:
-                self.logger.error(
-                    f"Workspace shortcut kqlDatabase[{j}].table at index {workspace_index} cannot be empty")
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].table at index {workspace_index} cannot be empty")
                 return False
 
             if not kql_db.path:
-                self.logger.error(
-                    f"Workspace shortcut kqlDatabase[{j}].path at index {workspace_index} cannot be empty")
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].path at index {workspace_index} cannot be empty")
                 return False
 
             if kql_db.query_acceleration_toggle is None:
-                self.logger.error(
-                    f"Workspace shortcut kqlDatabase[{j}].queryAccelerationToggle at index {workspace_index} cannot be None"
-                )
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].queryAccelerationToggle at index {workspace_index} cannot be None")
                 return False
 
         return True
@@ -1816,17 +3181,14 @@ class OperationParams:
     def _validate_rbac_params(self, rbac: RbacParams, workspace_index: int, identities: list[Identity]) -> bool:
         """Validate RBAC parameters."""
         if rbac.purge_unmatched_role_assignments is None:
-            self.logger.error(
-                f"Workspace rbac purgeUnmatchedRoleAssignments at index {workspace_index} cannot be None")
+            self.logger.error(f"Workspace rbac purgeUnmatchedRoleAssignments at index {workspace_index} cannot be None")
             return False
 
         if identities is None:
-            self.logger.error(
-                f"Common identities cannot be None")
+            self.logger.error(f"Common identities cannot be None")
             return False
 
-        identity_object_ids = {
-            identity.object_id for identity in identities}
+        identity_object_ids = {identity.object_id for identity in identities}
 
         for j, identity in enumerate(identities):
             if not self._validate_identity_params(identity, workspace_index, j):
@@ -1836,47 +3198,37 @@ class OperationParams:
             return False
 
         if rbac.workspace is None:
-            self.logger.error(
-                f"Workspace rbac workspace at index {workspace_index} cannot be None")
+            self.logger.error(f"Workspace rbac workspace at index {workspace_index} cannot be None")
             return False
 
         for j, workspace_rbac in enumerate(rbac.workspace):
             if not self._validate_workspace_rbac_params(workspace_rbac, workspace_index, j, identity_object_ids):
                 return False
 
-        return all(
-            self._validate_item_rbac_params(
-                item_rbac, workspace_index, k, identity_object_ids)
-            for k, item_rbac in enumerate(rbac.items)
-        )
+        return all(self._validate_item_rbac_params(item_rbac, workspace_index, k, identity_object_ids) for k, item_rbac in enumerate(rbac.items))
 
     def _validate_universal_security_params(self, universal_security: UniversalSecurity, workspace_index: int) -> bool:
         """Validate universalSecurity settings parsed from configuration."""
         if universal_security is None:
-            self.logger.error(
-                f"Workspace rbac universalSecurity block at index {workspace_index} is required and cannot be None")
+            self.logger.error(f"Workspace rbac universalSecurity block at index {workspace_index} is required and cannot be None")
             return False
 
         sql_endpoint = universal_security.sql_endpoint
         if sql_endpoint is None:
-            self.logger.error(
-                f"Workspace rbac universalSecurity.sqlEndpoint at index {workspace_index} is required and cannot be None")
+            self.logger.error(f"Workspace rbac universalSecurity.sqlEndpoint at index {workspace_index} is required and cannot be None")
             return False
 
         if not isinstance(sql_endpoint.enabled, bool):
-            self.logger.error(
-                f"Workspace rbac universalSecurity.sqlEndpoint.enabled at index {workspace_index} must be a boolean (true/false)")
+            self.logger.error(f"Workspace rbac universalSecurity.sqlEndpoint.enabled at index {workspace_index} must be a boolean (true/false)")
             return False
 
         if not isinstance(sql_endpoint.skip_reconcile, list):
-            self.logger.error(
-                f"Workspace rbac universalSecurity.sqlEndpoint.skipReconcile at index {workspace_index} must be a list of strings")
+            self.logger.error(f"Workspace rbac universalSecurity.sqlEndpoint.skipReconcile at index {workspace_index} must be a list of strings")
             return False
 
         for i, item in enumerate(sql_endpoint.skip_reconcile):
             if not isinstance(item, str):
-                self.logger.error(
-                    f"Workspace rbac universalSecurity.sqlEndpoint.skipReconcile[{i}] at index {workspace_index} must be a string")
+                self.logger.error(f"Workspace rbac universalSecurity.sqlEndpoint.skipReconcile[{i}] at index {workspace_index} must be a string")
                 return False
 
         return True
@@ -1884,67 +3236,51 @@ class OperationParams:
     def _validate_identity_params(self, identity: Identity, workspace_index: int, identity_index: int) -> bool:
         """Validate identity parameters."""
         if not identity.given_name:
-            self.logger.error(
-                f"Workspace rbac identities[{identity_index}].givenName at index {workspace_index} cannot be empty")
+            self.logger.error(f"Workspace rbac identities[{identity_index}].givenName at index {workspace_index} cannot be empty")
             return False
 
         if not identity.object_id:
-            self.logger.error(
-                f"Workspace rbac identities[{identity_index}].objectId at index {workspace_index} cannot be empty")
+            self.logger.error(f"Workspace rbac identities[{identity_index}].objectId at index {workspace_index} cannot be empty")
             return False
 
         if identity.principal_type == PrincipalType.SERVICE_PRINCIPAL and not identity.aad_app_id:
-            self.logger.error(
-                f"Workspace rbac identities[{identity_index}].aadAppId at index {workspace_index} cannot be empty for service principals"  # noqa: E501
-            )
+            self.logger.error(f"Workspace rbac identities[{identity_index}].aadAppId at index {workspace_index} cannot be empty for service principals")  # noqa: E501
             return False
 
         return True
 
-    def _validate_workspace_rbac_params(
-        self, workspace_rbac: WorkspaceRbacParams, workspace_index: int, rbac_index: int, identity_object_ids: set[str]
-    ) -> bool:
+    def _validate_workspace_rbac_params(self, workspace_rbac: WorkspaceRbacParams, workspace_index: int, rbac_index: int, identity_object_ids: set[str]) -> bool:
         """Validate workspace RBAC parameters."""
         if workspace_rbac.permissions is None:
-            self.logger.error(
-                f"Workspace rbac workspace[{rbac_index}].permissions at index {workspace_index} cannot be None")
+            self.logger.error(f"Workspace rbac workspace[{rbac_index}].permissions at index {workspace_index} cannot be None")
             return False
 
         if not workspace_rbac.object_id:
-            self.logger.error(
-                f"Workspace rbac workspace[{rbac_index}].objectId at index {workspace_index} cannot be empty")
+            self.logger.error(f"Workspace rbac workspace[{rbac_index}].objectId at index {workspace_index} cannot be empty")
             return False
 
         if workspace_rbac.object_id not in identity_object_ids:
-            self.logger.error(
-                f"Workspace rbac workspace[{rbac_index}].objectId '{workspace_rbac.object_id}' at index {workspace_index} not found in identities"  # noqa: E501
-            )
+            self.logger.error(f"Workspace rbac workspace[{rbac_index}].objectId '{workspace_rbac.object_id}' at index {workspace_index} not found in identities")  # noqa: E501
             return False
 
         if not workspace_rbac.purpose:
-            self.logger.error(
-                f"Workspace rbac workspace[{rbac_index}].purpose at index {workspace_index} cannot be empty")
+            self.logger.error(f"Workspace rbac workspace[{rbac_index}].purpose at index {workspace_index} cannot be empty")
             return False
 
         return True
 
-    def _validate_item_rbac_params(
-        self, item_rbac: ItemRbacParams, workspace_index: int, item_index: int, identity_object_ids: set[str]
-    ) -> bool:
+    def _validate_item_rbac_params(self, item_rbac: ItemRbacParams, workspace_index: int, item_index: int, identity_object_ids: set[str]) -> bool:
         """Validate item RBAC parameters."""
         if not item_rbac.type:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].type at index {workspace_index} cannot be empty")
+            self.logger.error(f"Workspace rbac items[{item_index}].type at index {workspace_index} cannot be empty")
             return False
 
         if not item_rbac.display_name:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].displayName at index {workspace_index} cannot be empty")
+            self.logger.error(f"Workspace rbac items[{item_index}].displayName at index {workspace_index} cannot be empty")
             return False
 
         if item_rbac.detail is None:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].detail at index {workspace_index} cannot be None")
+            self.logger.error(f"Workspace rbac items[{item_index}].detail at index {workspace_index} cannot be None")
             return False
 
         for j, detail_rbac in enumerate(item_rbac.detail):
@@ -1963,27 +3299,19 @@ class OperationParams:
     ) -> bool:
         """Validate item RBAC detail parameters."""
         if detail_rbac.permissions is None:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].detail[{detail_index}].permissions at index {workspace_index} cannot be None"
-            )
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].permissions at index {workspace_index} cannot be None")
             return False
 
         if not detail_rbac.object_id:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].detail[{detail_index}].objectId at index {workspace_index} cannot be empty"
-            )
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].objectId at index {workspace_index} cannot be empty")
             return False
 
         if detail_rbac.object_id not in identity_object_ids:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].detail[{detail_index}].objectId '{detail_rbac.object_id}' at index {workspace_index} not found in identities"  # noqa: E501
-            )
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].objectId '{detail_rbac.object_id}' at index {workspace_index} not found in identities")  # noqa: E501
             return False
 
         if not detail_rbac.purpose:
-            self.logger.error(
-                f"Workspace rbac items[{item_index}].detail[{detail_index}].purpose at index {workspace_index} cannot be empty"
-            )
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].purpose at index {workspace_index} cannot be empty")
             return False
 
         return True
@@ -2023,8 +3351,7 @@ class OperationParams:
                 json.load(f)
             return False
         except (OSError, json.JSONDecodeError) as e:
-            self.logger.error(
-                f"Failed to JSON parse {file_path} with error: {e}")
+            self.logger.error(f"Failed to JSON parse {file_path} with error: {e}")
             return True
 
     def _is_yaml_file_invalid(self, file_path: str) -> bool:
@@ -2034,22 +3361,21 @@ class OperationParams:
                 yaml.safe_load(f)
             return False
         except (OSError, yaml.YAMLError) as e:
-            self.logger.error(
-                f"Failed to YAML parse {file_path} with error: {e}")
+            self.logger.error(f"Failed to YAML parse {file_path} with error: {e}")
             return True
 
     # ---------------------------------------------------------------------------- #
 
     def _parse_common_params(self, data: dict[str, Any]) -> CommonParams:
         """Parse common parameters."""
+        root_folder = data["local"]["rootFolder"]
         return CommonParams(
             local=self._parse_local_params(data["local"]),
             endpoint=self._parse_endpoint_params(data["endpoint"]),
             scope=self._parse_scope_params(data["scope"]),
             arm=self._parse_arm_params(data["arm"]),
-            fabric=self._parse_fabric_params(data["fabric"]),
-            identities=self._parse_identities_params(
-                data.get("identities", [])),
+            fabric=self._parse_fabric_params(data["fabric"], root_folder),
+            identities=self._parse_identities_params(data.get("identities", [])),
         )
 
     def _parse_identities_params(self, data: list[dict[str, Any]]) -> list[Identity]:
@@ -2080,22 +3406,21 @@ class OperationParams:
             tenant_id=data["tenantId"],
         )
 
-    def _parse_fabric_params(self, data: dict[str, Any]) -> FabricParams:
+    def _parse_fabric_params(self, data: dict[str, Any], root_folder: str) -> FabricParams:
         """Parse Fabric parameters."""
         return FabricParams(
-            workspaces=self._parse_fabric_workspaces(data["workspaces"]),
+            workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
             storage=self._parse_fabric_storage_params(data["storage"]),
         )
 
-    def _parse_fabric_workspaces(self, data: list[dict[str, Any]]) -> list[FabricWorkspaceParams]:
+    def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
         """Parse Fabric workspaces."""
         workspaces = []
         for workspace_data in data:
-            workspaces.append(
-                self._parse_fabric_workspace_params(workspace_data))
+            workspaces.append(self._parse_fabric_workspace_params(workspace_data, root_folder))
         return workspaces
 
-    def _parse_fabric_workspace_params(self, data: dict[str, Any]) -> FabricWorkspaceParams:
+    def _parse_fabric_workspace_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceParams:
         """Parse a single Fabric workspace."""
         shortcut = None
         if "shortcut" in data:
@@ -2106,23 +3431,211 @@ class OperationParams:
             description=data["description"],
             icon_path=data["iconPath"],
             dataset_storage_mode=data["datasetStorageMode"],
-            template=self._parse_fabric_workspace_template_params(
-                data["template"]),
+            template=self._parse_fabric_workspace_template_params(data["template"], root_folder),
             capacity=self._parse_fabric_capacity_params(data["capacity"]),
             shortcut=shortcut,
             rbac=self._parse_rbac_params(data["rbac"]),
             model=self._parse_model_params(data["model"]),
+            shortcut_auth_z_role_name=data["shortcutAuthZRoleName"],
+            skip_deploy=data["skipDeploy"],
+            spark=self._parse_spark_params(data["spark"]),
+            monitoring=self._parse_monitoring_params(data["monitoring"]),
         )
 
-    def _parse_fabric_workspace_template_params(self, data: dict[str, Any]) -> FabricWorkspaceTemplateParams:
+    def _parse_fabric_workspace_template_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceTemplateParams:
         """Parse Fabric workspace template parameters."""
+        if "customLibraries" not in data:
+            msg = "Missing required field 'customLibraries' in template configuration"
+            raise KeyError(msg)
+
+        if "sparkJobDefinitions" not in data:
+            msg = "Missing required field 'sparkJobDefinitions' in template configuration"
+            raise KeyError(msg)
+
+        custom_libraries = []
+        for lib_data in data["customLibraries"]:
+            custom_libraries.append(self._parse_custom_library(lib_data))
+
+        spark_job_definitions = []
+        for sjd_data in data["sparkJobDefinitions"]:
+            spark_job_definitions.append(self._parse_spark_job_definition(sjd_data, root_folder))
+
+        param_file_path = data["parameterFilePath"]
+        param_file_basename = os.path.basename(param_file_path)
+
+        if param_file_basename.endswith(PARAMETER_FILE_EXTENSION_TMPL):
+            original_param_file = os.path.join(root_folder, param_file_path)
+            param_file_dir = os.path.dirname(original_param_file)
+            processed_param_file = os.path.join(param_file_dir, PARAMETER_FILE_NAME)
+
+            self.logger.debug(f"Processing template file: {original_param_file}")
+            self._replace_placeholders_in_file(original_param_file, processed_param_file)
+            self.logger.debug(f"Processed parameter file written to: {processed_param_file}")
+
+            relative_param_path = os.path.relpath(processed_param_file, root_folder)
+        else:
+            relative_param_path = param_file_path
+            self.logger.debug(f"Using parameter file as-is: {param_file_path}")
+
+        # Parse generator
+        if "generator" not in data:
+            msg = "Missing required field 'generator' in template configuration"
+            raise KeyError(msg)
+
+        generator = self._parse_generator(data["generator"])
+
         return FabricWorkspaceTemplateParams(
             artifacts_folder=data["artifactsFolder"],
-            parameter_file_path=data["parameterFilePath"],
+            parameter_file_path=relative_param_path,
             item_types_in_scope=data["itemTypesInScope"],
             environment_key=data["environmentKey"],
             feature_flags=data["featureFlags"],
             unpublish_orphans=data["unpublishOrphans"],
+            custom_libraries=custom_libraries,
+            spark_job_definitions=spark_job_definitions,
+            generator=generator,
+        )
+
+    def _parse_generator(self, data: dict[str, Any]) -> Generator:
+        """Parse generator configuration."""
+        if "monitoring" not in data:
+            msg = "Missing required field 'monitoring' in generator configuration"
+            raise KeyError(msg)
+
+        monitoring_files = []
+        for monitoring_data in data["monitoring"]:
+            monitoring_files.append(self._parse_monitoring_generator_file(monitoring_data))
+
+        return Generator(monitoring=monitoring_files)
+
+    def _parse_monitoring_generator_file(self, data: dict[str, Any]) -> MonitoringGeneratorFile:
+        """Parse monitoring generator file configuration."""
+        if "source" not in data:
+            msg = "Missing required field 'source' in monitoring generator file configuration"
+            raise KeyError(msg)
+        if "dest" not in data:
+            msg = "Missing required field 'dest' in monitoring generator file configuration"
+            raise KeyError(msg)
+
+        return MonitoringGeneratorFile(
+            source=data["source"],
+            dest=data["dest"],
+        )
+
+    def _parse_custom_library(self, data: dict[str, Any]) -> CustomLibrary:
+        """Parse custom library configuration."""
+        source = CustomLibrarySource(
+            folder_path=data["source"]["folderPath"],
+            prefix=data["source"]["prefix"],
+            suffix=data["source"]["suffix"],
+            error_on_multiple=data["source"]["errorOnMultiple"],
+        )
+        dest = CustomLibraryDest(
+            folder_path=data["dest"]["folderPath"],
+            clean_folder_path=data["dest"]["cleanFolderPath"],
+        )
+        return CustomLibrary(source=source, dest=dest)
+
+    def _parse_spark_job_definition(self, data: dict[str, Any], root_folder: str) -> SparkJobDefinition:
+        """Parse Spark Job Definition configuration by reading from .platform and SparkJobDefinitionV1.json files."""
+        nested_folder_path = data["nestedFolderPath"]
+
+        platform_file_path = os.path.join(root_folder, nested_folder_path, SPARK_JOB_DEFINITION_PLATFORM_FILE)
+        if not os.path.exists(platform_file_path):
+            msg = f"Required file '{SPARK_JOB_DEFINITION_PLATFORM_FILE}' not found in path: {platform_file_path}"
+            self.logger.error(msg)
+            raise FileNotFoundError(msg)
+        try:
+            with open(platform_file_path, encoding="utf-8") as f:
+                platform_data = json.load(f)
+        except json.JSONDecodeError as e:
+            msg = f"Invalid JSON in {SPARK_JOB_DEFINITION_PLATFORM_FILE} file at {platform_file_path}: {e}"
+            self.logger.error(msg)
+            raise ValueError(msg) from e
+        except Exception as e:
+            msg = f"Failed to read {SPARK_JOB_DEFINITION_PLATFORM_FILE} file at {platform_file_path}: {e}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+        if "metadata" not in platform_data:
+            msg = f"Missing required field 'metadata' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+
+        metadata = platform_data["metadata"]
+        if "displayName" not in metadata:
+            msg = f"Missing required field 'metadata.displayName' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+        if "description" not in metadata:
+            msg = f"Missing required field 'metadata.description' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+        if "type" not in metadata:
+            msg = f"Missing required field 'metadata.type' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}"
+            self.logger.error(msg)
+            raise KeyError(msg)
+
+        artifact_type = metadata["type"]
+        if artifact_type != ArtifactType.SPARK_JOB_DEFINITION.value:
+            msg = f"Invalid artifact type '{artifact_type}' in {SPARK_JOB_DEFINITION_PLATFORM_FILE} at {platform_file_path}. " f"Expected '{ArtifactType.SPARK_JOB_DEFINITION.value}'"
+            self.logger.error(msg)
+            raise ValueError(msg)
+
+        v1_file_path = os.path.join(root_folder, nested_folder_path, SPARK_JOB_DEFINITION_V1_FILE)
+        if not os.path.exists(v1_file_path):
+            msg = f"Required file '{SPARK_JOB_DEFINITION_V1_FILE}' not found in path: {v1_file_path}"
+            self.logger.error(msg)
+            raise FileNotFoundError(msg)
+        try:
+            with open(v1_file_path, encoding="utf-8") as f:
+                v1_data = json.load(f)
+        except json.JSONDecodeError as e:
+            msg = f"Invalid JSON in {SPARK_JOB_DEFINITION_V1_FILE} file at {v1_file_path}: {e}"
+            self.logger.error(msg)
+            raise ValueError(msg) from e
+        except Exception as e:
+            msg = f"Failed to read {SPARK_JOB_DEFINITION_V1_FILE} file at {v1_file_path}: {e}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+
+        spark_job_definition_v1_config = self._parse_spark_job_definition_v1_config(v1_data, v1_file_path)
+
+        return SparkJobDefinition(
+            display_name=metadata["displayName"],
+            description=metadata["description"],
+            nested_folder_path=nested_folder_path,
+            default_lakehouse_artifact_name=data["defaultLakehouseArtifactName"],
+            spark_job_definition_v1_config=spark_job_definition_v1_config,
+        )
+
+    def _parse_spark_job_definition_v1_config(self, data: dict[str, Any], file_path: str) -> SparkJobDefinitionV1Config:
+        """Parse SparkJobDefinitionV1Config from JSON data."""
+        required_fields = [
+            "executableFile",
+            "defaultLakehouseArtifactId",
+            "mainClass",
+            "additionalLakehouseIds",
+            "commandLineArguments",
+            "additionalLibraryUris",
+            "language",
+        ]
+
+        for field in required_fields:
+            if field not in data:
+                msg = f"Missing required field '{field}' in {SPARK_JOB_DEFINITION_V1_FILE} at {file_path}"
+                self.logger.error(msg)
+                raise KeyError(msg)
+
+        return SparkJobDefinitionV1Config(
+            executable_file=data["executableFile"],
+            default_lakehouse_artifact_id=data["defaultLakehouseArtifactId"],
+            main_class=data["mainClass"],
+            additional_lakehouse_ids=data["additionalLakehouseIds"],
+            retry_policy=data.get("retryPolicy"),
+            command_line_arguments=data["commandLineArguments"],
+            additional_library_uris=data["additionalLibraryUris"],
+            language=data["language"],
+            environment_artifact_id=data.get("environmentArtifactId"),
         )
 
     def _parse_fabric_capacity_params(self, data: dict[str, Any]) -> FabricCapacityParams:
@@ -2131,10 +3644,23 @@ class OperationParams:
             administrators=list(dict.fromkeys(data["administrators"])),
             name=data["name"],
             sku=data["sku"],
+            autoscale=self._parse_capacity_autoscale(data["autoscale"]),
+        )
+
+    def _parse_capacity_autoscale(self, data: dict[str, Any]) -> CapacityAutoscale:
+        """Parse capacity autoscale parameters."""
+        return CapacityAutoscale(
+            spark_core=SparkAutoscale(workload_autoscale_limit=data["sparkCore"]["workloadAutoscaleLimit"]),
+            warehouse=WarehouseAutoscale(workload_autoscale_limit=data["warehouse"]["workloadAutoscaleLimit"]),
         )
 
     def _parse_fabric_storage_params(self, data: dict[str, Any]) -> FabricStorageParams:
         """Parse Fabric Storage parameters."""
+        seed_files = []
+        if "seedFiles" in data:
+            for seed_file_data in data["seedFiles"]:
+                seed_files.append(self._parse_seed_file(seed_file_data))
+
         return FabricStorageParams(
             account=data["account"],
             container=data["container"],
@@ -2143,6 +3669,16 @@ class OperationParams:
             subscription_id=data["subscriptionId"],
             tenant_id=data["tenantId"],
             shortcut_data_connection_id=data["shortcutDataConnectionId"],
+            seed_files=seed_files,
+        )
+
+    def _parse_seed_file(self, data: dict[str, Any]) -> SeedFile:
+        """Parse seed file configuration."""
+        local_concrete_file = LocalConcreteFile(file_path=data["localConcreteFile"]["filePath"])
+        storage_account_file = StorageAccountFile(file_path=data["storageAccountFile"]["filePath"])
+        return SeedFile(
+            local_concrete_file=local_concrete_file,
+            storage_account_file=storage_account_file,
         )
 
     def _parse_shortcut_params(self, data: dict[str, Any]) -> ShortcutParams:
@@ -2150,8 +3686,7 @@ class OperationParams:
         kql_database = []
         if "kqlDatabase" in data:
             for kql_db_data in data["kqlDatabase"]:
-                kql_database.append(
-                    self._parse_kql_database_shortcut(kql_db_data))
+                kql_database.append(self._parse_kql_database_shortcut(kql_db_data))
 
         return ShortcutParams(kql_database=kql_database)
 
@@ -2168,26 +3703,86 @@ class OperationParams:
         """Parse model parameters."""
         models = []
         for model_data in data:
-            models.append(ModelParams(
-                display_name=model_data["displayName"],
-                direct_lake_auto_sync=model_data["directLakeAutoSync"],
-            ))
+            models.append(
+                ModelParams(
+                    display_name=model_data["displayName"],
+                    direct_lake_auto_sync=model_data["directLakeAutoSync"],
+                )
+            )
         return models
+
+    def _parse_spark_params(self, data: dict[str, Any]) -> FabricSparkParams:
+        """Parse Spark parameters."""
+        pools = []
+        for pool_data in data["pools"]:
+            pools.append(self._parse_pool_details(pool_data))
+        return FabricSparkParams(
+            enable_customized_compute_conf=data["enableCustomizedComputeConf"],
+            machine_learning_auto_log=self._parse_machine_learning_auto_log(data["machineLearningAutoLog"]),
+            job_management=self._parse_job_management(data["jobManagement"]),
+            high_concurrency=self._parse_high_concurrency_params(data["highConcurrency"]),
+            current_pool_id=data["currentPoolId"],
+            runtime_version=SparkRuntimeVersion(data["runtimeVersion"]),
+            pools=pools,
+        )
+
+    def _parse_machine_learning_auto_log(self, data: dict[str, Any]) -> MachineLearningAutoLog:
+        """Parse machine learning auto log configuration."""
+        return MachineLearningAutoLog(enabled=data["enabled"])
+
+    def _parse_job_management(self, data: dict[str, Any]) -> JobManagement:
+        """Parse job management configuration."""
+        return JobManagement(
+            conservative_job_admission_enabled=data["conservativeJobAdmissionEnabled"],
+            session_timeout_in_minutes=data["sessionTimeoutInMinutes"],
+        )
+
+    def _parse_high_concurrency_params(self, data: dict[str, Any]) -> HighConcurrencyConfig:
+        """Parse high concurrency configuration."""
+        return HighConcurrencyConfig(
+            enabled=data["enabled"],
+            notebook_pipeline_run_enabled=data["notebookPipelineRunEnabled"],
+        )
+
+    def _parse_pool_details(self, data: dict[str, Any]) -> PoolDetails:
+        """Parse pool details configuration."""
+        return PoolDetails(
+            id=data["id"],
+            name=data["name"],
+            node_size_family=NodeSizeFamily(data["nodeSizeFamily"]),
+            node_size=NodeSize(data["nodeSize"]),
+            auto_scale=self._parse_auto_scale(data["autoScale"]),
+            dynamic_executor_allocation=self._parse_dynamic_executor_allocation(data["dynamicExecutorAllocation"]),
+        )
+
+    def _parse_auto_scale(self, data: dict[str, Any]) -> AutoScale:
+        """Parse auto scale configuration."""
+        return AutoScale(
+            enabled=data["enabled"],
+            min_node_count=data["minNodeCount"],
+            max_node_count=data["maxNodeCount"],
+        )
+
+    def _parse_dynamic_executor_allocation(self, data: dict[str, Any]) -> DynamicExecutorAllocation:
+        """Parse dynamic executor allocation configuration."""
+        return DynamicExecutorAllocation(
+            enabled=data["enabled"],
+            min_executors=data["minExecutors"],
+            max_executors=data["maxExecutors"],
+        )
 
     def _parse_rbac_params(self, data: dict[str, Any]) -> RbacParams:
         """Parse RBAC parameters."""
         workspace_rbac = []
         if "workspace" in data:
             for workspace_rbac_data in data["workspace"]:
-                workspace_rbac.append(
-                    self._parse_workspace_rbac_params(workspace_rbac_data))
+                workspace_rbac.append(self._parse_workspace_rbac_params(workspace_rbac_data))
 
         items_rbac = []
         for item_rbac_data in data["items"]:
             items_rbac.append(self._parse_item_rbac_params(item_rbac_data))
 
-        universal_security = self._parse_universal_security_params(
-            data["universalSecurity"])
+        universal_security = self._parse_universal_security_params(data["universalSecurity"])
 
         return RbacParams(
             purge_unmatched_role_assignments=data["purgeUnmatchedRoleAssignments"],
@@ -2241,8 +3836,7 @@ class OperationParams:
                 self.logger.debug(f"Removing duplicate item: {item}")
 
         if len(deduplicated) != len(items):
-            self.logger.info(
-                f"Removed {len(items) - len(deduplicated)} duplicate entries from list")
+            self.logger.info(f"Removed {len(items) - len(deduplicated)} duplicate entries from list")
 
         return deduplicated
 
@@ -2281,6 +3875,19 @@ class OperationParams:
         else:
             return obj1 == obj2
 
+    def _parse_monitoring_params(self, data: dict[str, Any]) -> MonitoringParams:
+        """Parse monitoring parameters."""
+        return MonitoringParams(
+            kusto=self._parse_kusto_monitoring(data["kusto"]),
+        )
+
+    def _parse_kusto_monitoring(self, data: dict[str, Any]) -> KustoMonitoring:
+        """Parse Kusto monitoring parameters."""
+        return KustoMonitoring(
+            database_enabled=data["databaseEnabled"],
+            ingestion_enabled=data["ingestionEnabled"],
+        )
+
     def _parse_identity_params(self, data: dict[str, Any]) -> Identity:
         """Parse identity parameters."""
         return Identity(
@@ -2302,8 +3909,7 @@ class OperationParams:
         """Parse item RBAC parameters."""
         detail_rbac = []
         for detail_rbac_data in data["detail"]:
-            detail_rbac.append(
-                self._parse_item_rbac_detail_params(detail_rbac_data))
+            detail_rbac.append(self._parse_item_rbac_detail_params(detail_rbac_data))
 
         return ItemRbacParams(
             type=data["type"],

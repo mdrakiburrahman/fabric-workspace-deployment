@@ -42,8 +42,20 @@
                 ]
             }
         },
+        "lint": {
+            "executor": "nx:run-commands",
+            "options": {
+                "commands": [
+                    "black --line-length 2000 ."
+                ],
+                "parallel": false
+            }
+        },
         "publish": {
             "executor": "nx:run-commands",
+            "dependsOn": [
+                "lint"
+            ],
             "options": {
                 "commands": [
                     "cp .pypirc ~/.pypirc",
