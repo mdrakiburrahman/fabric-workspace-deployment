@@ -112,12 +112,13 @@ class AzCli:
             return str(e).strip()
 
     @functools.cache  # noqa: B019
-    def get_access_token(self, scope: str) -> str:
+    def get_access_token(self, scope: str, force_run_az: bool = False) -> str:
         """
         Get an access token for the specified scope/resource.
 
         Args:
             scope: The resource scope for the access token (e.g., "https://analysis.windows.net/powerbi/api")
+            force_run_az: If True, always run az command instead of using environment variables. Defaults to False.
 
         Returns:
             str: The access token
@@ -125,10 +126,11 @@ class AzCli:
         Raises:
             RuntimeError: If the token cannot be retrieved or is empty
         """
-        if scope == "https://analysis.windows.net/powerbi/api" and os.getenv("FAB_TOKEN"):
-            return os.getenv("FAB_TOKEN")
-        elif scope == "https://management.azure.com" and os.getenv("FAB_TOKEN_AZURE"):
-            return os.getenv("FAB_TOKEN_AZURE")
+        if not force_run_az:
+            if scope == "https://analysis.windows.net/powerbi/api" and os.getenv("FAB_TOKEN"):
+                return os.getenv("FAB_TOKEN")
+            elif scope == "https://management.azure.com" and os.getenv("FAB_TOKEN_AZURE"):
+                return os.getenv("FAB_TOKEN_AZURE")
 
         try:
             token = self.run_command(f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
@@ -224,7 +226,7 @@ class AzCli:
 
         """
         try:
-            token = self.get_access_token("https://analysis.windows.net/powerbi/api")
+            token = self.get_access_token("https://analysis.windows.net/powerbi/api", True)
             parts = token.split(".")
             if len(parts) != 3:  # noqa: PLR2004
                 raise RuntimeError("Invalid JWT token format")  # noqa: EM101
