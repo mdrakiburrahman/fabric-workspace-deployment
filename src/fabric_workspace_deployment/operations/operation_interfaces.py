@@ -2577,16 +2577,16 @@ class OperationParams:
         }
 
     def _get_unique_env_id(self) -> str:
-        return os.getenv("UNIQUE_ENV_ID", self.get_user_alias())
+        return os.getenv("UNIQUE_ENV_ID") or self.get_user_alias()
 
     def _get_user_appid(self) -> str:
-        return os.getenv("USER_APP_ID", self.az_cli.get_user_appid())
+        return os.getenv("USER_APP_ID") or self.az_cli.get_user_appid()
 
     def _get_user_display_name(self) -> str:
-        return os.getenv("USER_DISPLAY_NAME", self.az_cli.get_user_principal_name())
+        return os.getenv("USER_DISPLAY_NAME") or self.az_cli.get_user_principal_name()
 
     def _get_user_oid(self) -> str:
-        return os.getenv("USER_OBJECT_ID", self.az_cli.get_user_oid())
+        return os.getenv("USER_OBJECT_ID") or self.az_cli.get_user_oid()
 
     def _get_user_principal_type(self) -> str:
         return os.getenv("USER_PRINCIPAL_TYPE", "User")
