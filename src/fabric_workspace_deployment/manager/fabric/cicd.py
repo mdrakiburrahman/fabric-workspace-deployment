@@ -164,7 +164,7 @@ class FabricCicdManager(CicdManager):
                     fabric_cicd.append_feature_flag(feature_flag)
 
             self.logger.info(f"Publishing items in batch {batch_idx}")
-            fabric_cicd.publish_all_items(target_workspace)
+            await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace)
             self.logger.info(f"Completed batch {batch_idx}/{len(deployment_batches)}")
 
         if template_params.unpublish_orphans:
@@ -177,7 +177,7 @@ class FabricCicdManager(CicdManager):
                 item_type_in_scope=template_params.item_types_in_scope,
                 token_credential=self.token_credential,
             )
-            fabric_cicd.unpublish_all_orphan_items(target_workspace_full)
+            await asyncio.to_thread(fabric_cicd.unpublish_all_orphan_items, target_workspace_full)
 
         self.logger.info("Updating Spark Job Definition configurations")
         if template_params.spark_job_definitions:
