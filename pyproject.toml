@@ -16,7 +16,7 @@ authors = [
 dependencies = [
   "azure-identity===1.25.1",
   "dacite==1.9.2",
-  "fabric-cicd==0.1.33.1.11",
+  "fabric-cicd==0.1.34.3",
   "pillow==11.3.0",
   "pyyaml==6.0.3",
   "requests==2.32.5"
