@@ -64,6 +64,11 @@ PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
 MONITORING_KUSTO_EVENTHOUSE = "Monitoring Eventhouse"
 MONITORING_KUSTO_DATABASE = "Monitoring KQL database"
 
+# ---------------------------------------------------------------------------- #
+# ----------------------------- SPARK CONSTANTS ------------------------------ #
+# ---------------------------------------------------------------------------- #
+STARTER_POOL_ID = "00000000-0000-0000-0000-000000000000"
+
 
 class HttpRetryHandler:
     """
@@ -3147,7 +3152,7 @@ class OperationParams:
                 self.logger.error(f"Workspace spark pools[{j}].dynamicExecutorAllocation.minExecutors at index {workspace_index} cannot be greater than maxExecutors")
                 return False
 
-        if spark.current_pool_id not in pool_ids:
+        if spark.current_pool_id != STARTER_POOL_ID and spark.current_pool_id not in pool_ids:
             self.logger.error(f"Workspace spark currentPoolId '{spark.current_pool_id}' at index {workspace_index} does not match any configured pool ID")
             return False
 
