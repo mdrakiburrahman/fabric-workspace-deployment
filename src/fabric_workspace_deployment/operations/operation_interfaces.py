@@ -183,6 +183,7 @@ class HttpRetryHandler:
 class Operation(Enum):
     """Enumeration of available operations."""
 
+    DEPLOY_ALERT = "deployAlert"
     DEPLOY_FABRIC_CAPACITY = "deployFabricCapacity"
     DEPLOY_FABRIC_WORKSPACE = "deployFabricWorkspace"
     DEPLOY_GIT_LINK = "deployGitLink"
@@ -1163,6 +1164,42 @@ class MonitoringMetadata:
 
 
 @dataclass
+class ContactDetail:
+    """Contact detail for a Fabric artifact contact."""
+
+    display_name: str
+    object_id: str
+    user_principal_name: str | None
+    is_security_group: bool
+    object_type: int
+    group_type: int
+    aad_app_id: str | None
+    email_address: str | None
+    relevance_score: str | None
+    creator_object_id: str | None
+    contact_type: int
+
+
+@dataclass
+class AlertParams:
+    """Alert configuration parameters for artifact contacts."""
+
+    default: list[str]
+    item_types_in_scope: list[str]
+
+
+@dataclass
+class ArtifactContactsFile:
+    """Schema for per-artifact .contacts file."""
+
+    owners: list[str]
+    skip_alert: bool
+
+
+CONTACTS_FILE_NAME = ".contacts"
+
+
+@dataclass
 class RbacParams:
     """RBAC configuration parameters."""
 
@@ -1242,6 +1279,7 @@ class FabricWorkspaceParams:
     spark: FabricSparkParams
     monitoring: MonitoringParams
     shortcut: ShortcutParams | None = None
+    alert: AlertParams | None = None
 
     def get_icon_payload(self, root_folder: str) -> str:
         """
@@ -1355,6 +1393,7 @@ class CommonParams:
     arm: ArmParams
     fabric: FabricParams
     identities: list[Identity]
+    contacts: dict[str, ContactDetail] | None = None
 
 
 # ---------------------------------------------------------------------------- #
@@ -1387,6 +1426,35 @@ class EntryPointOperator(Manager):
         super().__init__(operation_params.common)
         self.operation_params = operation_params
         self.operation = operation_params.operation
+
+
+class AlertManager(ABC):
+    """
+    Interface for managing artifact alert contacts operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Alert manager with common parameters.
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def execute(self) -> None:
+        """
+        Execute alert contact deployment for all workspaces in parallel.
+        """
+        pass
+
+    @abstractmethod
+    async def reconcile(self, workspace_params: "FabricWorkspaceParams") -> None:
+        """
+        Reconcile alert contacts for a single workspace.
+
+        Args:
+            workspace_params: The workspace parameters including alert config
+        """
+        pass
 
 
 class CicdManager(ABC):
@@ -2703,7 +2771,7 @@ class OperationParams:
 
     def _validate_common_params(self) -> bool:
         """Validate common parameters."""
-        return self._validate_local_params() and self._validate_endpoint_params() and self._validate_scope_params() and self._validate_arm_params() and self._validate_identities_params() and self._validate_fabric_params()
+        return self._validate_local_params() and self._validate_endpoint_params() and self._validate_scope_params() and self._validate_arm_params() and self._validate_identities_params() and self._validate_contacts_params() and self._validate_fabric_params()
 
     def _validate_local_params(self) -> bool:
         """Validate local parameters."""
@@ -2777,6 +2845,99 @@ class OperationParams:
 
         if not monitoring.kusto.database_enabled and monitoring.kusto.ingestion_enabled:
             self.logger.error(f"Workspace monitoring at index {workspace_index}: Kusto ingestion cannot be enabled when database is disabled")
+            return False
+
+        return True
+
+    def _validate_contacts_params(self) -> bool:
+        """Validate contacts parameters at common level."""
+        contacts = self.common.contacts
+        if contacts is None:
+            return True
+
+        for key, contact in contacts.items():
+            if not contact.object_id:
+                self.logger.error(f"Contact '{key}' must have a non-empty objectId")
+                return False
+            if contact.contact_type is None:
+                self.logger.error(f"Contact '{key}' must have a contactType")
+                return False
+
+        return True
+
+    def _validate_alert_params(self, alert: AlertParams, workspace_index: int) -> bool:
+        """Validate alert parameters for a workspace."""
+        if not alert.item_types_in_scope or len(alert.item_types_in_scope) < 1:
+            self.logger.error(f"Workspace alert itemTypesInScope at index {workspace_index} cannot be empty")
+            return False
+
+        contacts = self.common.contacts
+        if contacts is None and alert.default:
+            self.logger.error(f"Workspace alert at index {workspace_index} references default contacts but no contacts are defined in common")
+            return False
+
+        if contacts is not None:
+            for default_key in alert.default:
+                if default_key not in contacts:
+                    self.logger.error(f"Workspace alert at index {workspace_index}: default contact key '{default_key}' not found in common.contacts")
+                    return False
+
+        workspace = self.common.fabric.workspaces[workspace_index]
+        artifacts_folder = str(Path(self.common.local.root_folder) / workspace.template.artifacts_folder)
+        if os.path.isdir(artifacts_folder):
+            for entry in os.listdir(artifacts_folder):
+                entry_path = os.path.join(artifacts_folder, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                parts = entry.rsplit(".", 1)
+                if len(parts) != 2:  # noqa: PLR2004
+                    continue
+                artifact_type = parts[1]
+                if artifact_type not in alert.item_types_in_scope:
+                    continue
+                contacts_file = os.path.join(entry_path, CONTACTS_FILE_NAME)
+                if os.path.isfile(contacts_file):
+                    if not self._validate_artifact_contacts_file(contacts_file, workspace_index):
+                        return False
+
+        return True
+
+    def _validate_artifact_contacts_file(self, file_path: str, workspace_index: int) -> bool:
+        """
+        Validate a .contacts file in an artifact folder.
+
+        Args:
+            file_path: Full path to the .contacts file
+            workspace_index: Index of the workspace for error reporting
+
+        Returns:
+            bool: True if the file is valid, False otherwise
+        """
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            self.logger.error(f"Failed to parse .contacts file at '{file_path}' for workspace index {workspace_index}: {e}")
+            return False
+
+        if "owners" not in data:
+            self.logger.error(f".contacts file at '{file_path}' for workspace index {workspace_index} must have an 'owners' field")
+            return False
+
+        if not isinstance(data["owners"], list):
+            self.logger.error(f".contacts file at '{file_path}' for workspace index {workspace_index}: 'owners' must be a list of strings")
+            return False
+
+        for owner in data["owners"]:
+            if not isinstance(owner, str):
+                self.logger.error(f".contacts file at '{file_path}' for workspace index {workspace_index}: each owner must be a string")
+                return False
+            if self.common.contacts and owner not in self.common.contacts:
+                self.logger.error(f".contacts file at '{file_path}' for workspace index {workspace_index}: owner '{owner}' not found in common.contacts")
+                return False
+
+        if "skipAlert" in data and not isinstance(data["skipAlert"], bool):
+            self.logger.error(f".contacts file at '{file_path}' for workspace index {workspace_index}: 'skipAlert' must be a boolean")
             return False
 
         return True
@@ -2929,6 +3090,9 @@ class OperationParams:
                 return False
 
             if not self._validate_monitoring_params(workspace.monitoring, i):
+                return False
+
+            if workspace.alert is not None and not self._validate_alert_params(workspace.alert, i):
                 return False
 
         return self._validate_fabric_storage_params()
@@ -3381,6 +3545,7 @@ class OperationParams:
             arm=self._parse_arm_params(data["arm"]),
             fabric=self._parse_fabric_params(data["fabric"], root_folder),
             identities=self._parse_identities_params(data.get("identities", [])),
+            contacts=self._parse_contacts_params(data.get("contacts", None)),
         )
 
     def _parse_identities_params(self, data: list[dict[str, Any]]) -> list[Identity]:
@@ -3431,6 +3596,10 @@ class OperationParams:
         if "shortcut" in data:
             shortcut = self._parse_shortcut_params(data["shortcut"])
 
+        alert = None
+        if "alert" in data:
+            alert = self._parse_alert_params(data["alert"])
+
         return FabricWorkspaceParams(
             name=data["name"],
             description=data["description"],
@@ -3439,6 +3608,7 @@ class OperationParams:
             template=self._parse_fabric_workspace_template_params(data["template"], root_folder),
             capacity=self._parse_fabric_capacity_params(data["capacity"]),
             shortcut=shortcut,
+            alert=alert,
             rbac=self._parse_rbac_params(data["rbac"]),
             model=self._parse_model_params(data["model"]),
             shortcut_auth_z_role_name=data["shortcutAuthZRoleName"],
@@ -3891,6 +4061,35 @@ class OperationParams:
         return KustoMonitoring(
             database_enabled=data["databaseEnabled"],
             ingestion_enabled=data["ingestionEnabled"],
+        )
+
+    def _parse_contacts_params(self, data: dict[str, Any] | None) -> dict[str, ContactDetail] | None:
+        """Parse contacts parameters from common config."""
+        if data is None:
+            return None
+
+        contacts: dict[str, ContactDetail] = {}
+        for key, contact_data in data.items():
+            contacts[key] = ContactDetail(
+                display_name=contact_data["displayName"],
+                object_id=contact_data["objectId"],
+                user_principal_name=contact_data.get("userPrincipalName"),
+                is_security_group=contact_data.get("isSecurityGroup", False),
+                object_type=contact_data.get("objectType", 1),
+                group_type=contact_data.get("groupType", 0),
+                aad_app_id=contact_data.get("aadAppId"),
+                email_address=contact_data.get("emailAddress"),
+                relevance_score=contact_data.get("relevanceScore"),
+                creator_object_id=contact_data.get("creatorObjectId"),
+                contact_type=contact_data.get("contactType", 1),
+            )
+        return contacts
+
+    def _parse_alert_params(self, data: dict[str, Any]) -> AlertParams:
+        """Parse alert parameters for a workspace."""
+        return AlertParams(
+            default=data.get("default", []),
+            item_types_in_scope=data.get("itemTypesInScope", []),
         )
 
     def _parse_identity_params(self, data: dict[str, Any]) -> Identity:
