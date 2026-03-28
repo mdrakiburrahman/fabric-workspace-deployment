@@ -20,6 +20,7 @@ from fabric_workspace_deployment.manager.azure.storage import AzStorageManager
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.manager.fabric.contacts import FabricAlertManager
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
 from fabric_workspace_deployment.manager.fabric.monitoring import FabricMonitoringManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
@@ -53,6 +54,13 @@ class ManagementFactory(ABC):
     def create_fabric_capacity_manager(self) -> FabricCapacityManager:
         """
         Create a Fabric Capacity Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_alert_manager(self) -> FabricAlertManager:
+        """
+        Create a Fabric Alert Manager instance.
         """
         pass
 
@@ -177,6 +185,15 @@ class ContainerizedManagementFactory(ManagementFactory):
 
     def create_fabric_capacity_manager(self) -> FabricCapacityManager:
         return FabricCapacityManager(self.operation_params.common, self.create_azure_cli(), self.create_fabric_cli())
+
+    def create_fabric_alert_manager(self) -> FabricAlertManager:
+        return FabricAlertManager(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.create_fabric_workspace_manager(),
+            self.create_fabric_folder_client(),
+            self.http_retry_handler,
+        )
 
     def create_fabric_workspace_manager(self) -> FabricWorkspaceManager:
         return FabricWorkspaceManager(

@@ -1,6 +1,19 @@
 {
     "name": "devcontainer",
-    "image": "monitoringdev.azurecr.io/devcontainer:cf07fac2d13bfb1491d80dab57985f27cf72fb7af7c7c68aa072e1a242f91200",
+    "image": "rakirahman.azurecr.io/devcontainer/spark:2d6281b13738c8576a232df9a708f5c083820105d8d3f6d4696c28aa99bb091e",
     "remoteUser": "vscode",
-    "containerUser": "vscode"
+    "containerUser": "vscode",
+    "mounts": [
+        "type=bind,source=${localEnv:HOME}/.azure,target=/home/vscode/.azure"
+    ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.gpuAcceleration": "off",
+                "terminal.integrated.enablePersistentSessions": false,
+                "terminal.integrated.scrollback": 5000,
+                "remote.autoForwardPorts": false
+            }
+        }
+    }
 }

@@ -8,6 +8,7 @@ from fabric_workspace_deployment.factories.management_factory import Containeriz
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
+    AlertManager,
     CapacityManager,
     CicdManager,
     EntryPointOperator,
@@ -39,6 +40,7 @@ class CentralOperator(EntryPointOperator):
         self.azure_cli: AzCli = self.management_factory.create_azure_cli()
         self.fabric_cli: FabricCli = self.management_factory.create_fabric_cli()
         self.capacity_manager: CapacityManager = self.management_factory.create_fabric_capacity_manager()
+        self.alert_manager: AlertManager = self.management_factory.create_fabric_alert_manager()
         self.workspace_manager: WorkspaceManager = self.management_factory.create_fabric_workspace_manager()
         self.cicd_manager: CicdManager = self.management_factory.create_fabric_cicd_manager()
         self.seed_manager: SeedManager = self.management_factory.create_fabric_seed_manager()
@@ -57,6 +59,9 @@ class CentralOperator(EntryPointOperator):
             match self.operation:
                 case Operation.DRY_RUN:
                     await self._execute_dry_run()
+
+                case Operation.DEPLOY_ALERT:
+                    await self._execute_deploy_alert()
 
                 case Operation.DEPLOY_FABRIC_CAPACITY:
                     await self._execute_deploy_fabric_capacity()
@@ -105,6 +110,12 @@ class CentralOperator(EntryPointOperator):
         Execute dry run operation.
         """
         self.logger.info("Dry run completed.")
+
+    async def _execute_deploy_alert(self) -> None:
+        """
+        Execute deploy alert contacts operation.
+        """
+        await self.alert_manager.execute()
 
     async def _execute_deploy_fabric_capacity(self) -> None:
         """

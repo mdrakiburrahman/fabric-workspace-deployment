@@ -50,11 +50,11 @@ class AzCli:
         proc = Popen(commands, stdout=PIPE, stderr=PIPE, env=env)  # noqa: S603
 
         try:
-            (stdout, stderr) = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout)
         except TimeoutExpired:
             self.logger.warning(f"Command execution timeout: {timeout}")
             proc.kill()
-            (stdout, stderr) = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout)
             sys.stdout.buffer.write(stdout)
             sys.stderr.buffer.write(stderr)
             raise

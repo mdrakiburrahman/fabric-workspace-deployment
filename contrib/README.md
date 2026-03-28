@@ -5,17 +5,14 @@
 1. Get a fresh new WSL machine up:
 
    ```powershell
-   # Delete old WSL
-   wsl --unregister Ubuntu-24.04
-
-   # Create new WSL
-   wsl --install -d Ubuntu-24.04
+   $GIT_ROOT = git rev-parse --show-toplevel
+   & "$GIT_ROOT\contrib\bootstrap-dev-env.ps1"
    ```
 
 1. Clone the repo, and open VSCode in it:
 
    ```bash
-   cd ~/
+   sudo mkdir -p /workspaces && sudo chmod 777 /workspaces && cd /workspaces
 
    git config --global user.name "Raki Rahman"
    git config --global user.email "mdrakiburrahman@gmail.com"
@@ -25,10 +22,6 @@
    code .
    ```
 
-1. Reset your docker WSL integration since this is a new VM:
-
-   > `Docker Desktop: Settings > Resources > WSL Integration > Turn off/on Ubuntu-24.04`
-
 1. Run the bootstrapper script, that installs all tools idempotently:
 
    ```bash
@@ -36,7 +29,13 @@
    chmod +x ${GIT_ROOT}/contrib/bootstrap-dev-env.sh && ${GIT_ROOT}/contrib/bootstrap-dev-env.sh
    ```
 
-1. `Ctrl + Shift + P` > `Reopen in Container`
+1. Launch devcontainer:
+
+   ```bash
+   cd /workspaces/fabric-workspace-deployment
+   HEX=$(printf '%s' "$(wslpath -w .)" | xxd -ps -c 256)
+   code --folder-uri "vscode-remote://dev-container+${HEX}/workspaces/fabric-workspace-deployment"
+   ```
 
 1. If ADO gives you a hard time, generate a PAT:
 
