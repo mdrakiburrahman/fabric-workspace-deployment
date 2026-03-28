@@ -12,7 +12,7 @@
 1. Clone the repo, and open VSCode in it:
 
    ```bash
-   cd ~/
+   sudo mkdir -p /workspaces && sudo chmod 777 /workspaces && cd /workspaces
 
    git config --global user.name "Raki Rahman"
    git config --global user.email "mdrakiburrahman@gmail.com"
@@ -32,9 +32,9 @@
 1. Launch devcontainer:
 
    ```bash
-   cd /home/mdrrahman/fabric-workspace-deployment
+   cd /workspaces/fabric-workspace-deployment
    HEX=$(printf '%s' "$(wslpath -w .)" | xxd -ps -c 256)
-   code --folder-uri "vscode-remote://dev-container+${HEX}/home/mdrrahman/fabric-workspace-deployment"
+   code --folder-uri "vscode-remote://dev-container+${HEX}/workspaces/fabric-workspace-deployment"
    ```
 
 1. If ADO gives you a hard time, generate a PAT:
