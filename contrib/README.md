@@ -29,7 +29,13 @@
    chmod +x ${GIT_ROOT}/contrib/bootstrap-dev-env.sh && sudo ${GIT_ROOT}/contrib/bootstrap-dev-env.sh
    ```
 
-1. `Ctrl + Shift + P` > `Reopen in Container`
+1. Launch devcontainer:
+
+   ```bash
+   cd /home/mdrrahman/fabric-workspace-deployment
+   HEX=$(printf '%s' "$(wslpath -w .)" | xxd -ps -c 256)
+   code --folder-uri "vscode-remote://dev-container+${HEX}/home/mdrrahman/fabric-workspace-deployment"
+   ```
 
 1. If ADO gives you a hard time, generate a PAT:
 
