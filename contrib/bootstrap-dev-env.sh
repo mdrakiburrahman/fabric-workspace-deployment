@@ -7,8 +7,7 @@
 # ---------------------------------------------------------------------------------------
 #
 
-set -e
-set -m
+set -eou pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 NPMRC_TMPL="$REPO_ROOT/.npmrc.tmpl"
@@ -37,6 +36,7 @@ sudo mkdir -p /etc/docker
 echo '{"max-concurrent-downloads": 32}' | sudo tee /etc/docker/daemon.json > /dev/null
 
 echo "docker is installed, restarting..."
+sudo systemctl reset-failed docker.service 2>/dev/null || true
 sudo systemctl restart docker
 
 sudo chmod 666 /var/run/docker.sock
@@ -47,12 +47,12 @@ docker ps -q | xargs -r docker kill
 # This allows us to mount ~/.azure from WSL.
 #
 export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "/mnt/c" | tr '\n' ':' | sed 's/:$//')
-AZ_PATH=$(which az 2>/dev/null)
+AZ_PATH=$(which az 2>/dev/null || true)
 if [[ -z "$AZ_PATH" || "$AZ_PATH" == *"/mnt/c"* ]]; then
   echo "Native Linux Azure CLI not found, installing..."
   curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
   export PATH="$HOME/bin:$PATH"
-  [[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
+  [[ -f "$HOME/.bashrc" ]] && (set +u; source "$HOME/.bashrc") || true
 else
   echo "Native Linux Azure CLI already installed at: $AZ_PATH"
 fi
@@ -72,10 +72,9 @@ echo "│ Authentication │"
 echo "└────────────────┘"
 echo ""
 
-az account get-access-token --query "expiresOn" -o tsv >/dev/null 2>&1
-if [[ $? -ne 0 ]]; then
+if ! az account get-access-token --query "expiresOn" -o tsv >/dev/null 2>&1; then
     echo "az is not logged in, logging in..."
-    az login --use-device-code >/dev/null
+    az login >/dev/null
 fi
 
 cp $NPMRC_TMPL $NPMRC
