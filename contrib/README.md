@@ -22,10 +22,6 @@
    code .
    ```
 
-1. Reset your docker WSL integration since this is a new VM:
-
-   > `Docker Desktop: Settings > Resources > WSL Integration > Turn off/on Ubuntu-24.04`
-
 1. Run the bootstrapper script, that installs all tools idempotently:
 
    ```bash
