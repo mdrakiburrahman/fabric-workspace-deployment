@@ -57,12 +57,6 @@ else
   echo "Native Linux Azure CLI already installed at: $AZ_PATH"
 fi
 
-az account get-access-token --query "expiresOn" -o tsv >/dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    echo "az is not logged in, logging in..."
-    az login >/dev/null
-fi
-
 if ! [ -x "$(command -v npm)" ]; then
   echo "npm is not installed on your devbox, installing..."
   curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
