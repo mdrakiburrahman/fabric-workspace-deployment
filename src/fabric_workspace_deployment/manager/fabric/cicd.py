@@ -93,9 +93,6 @@ class FabricCicdManager(CicdManager):
 
         Import fabric_cicd lazily to avoid logging configuration conflicts.
         """
-        current_level = logging.getLogger().level
-        current_handlers = logging.getLogger().handlers[:]
-
         self.logger.info("Processing Spark Job Definitions")
         if template_params.spark_job_definitions:
             await self._create_spark_job_definition_artifacts(workspace_id, template_params)
@@ -128,10 +125,7 @@ class FabricCicdManager(CicdManager):
 
         import fabric_cicd
 
-        if logging.getLogger().level != current_level:
-            logging.getLogger().setLevel(current_level)
-        if logging.getLogger().handlers != current_handlers:
-            logging.getLogger().handlers = current_handlers
+        fabric_cicd.configure_external_file_logging(logging.getLogger())
 
         self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 
