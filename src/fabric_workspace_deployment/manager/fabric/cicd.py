@@ -125,7 +125,9 @@ class FabricCicdManager(CicdManager):
 
         import fabric_cicd
 
-        fabric_cicd.configure_external_file_logging(logging.getLogger())
+        fabric_cicd.disable_file_logging()
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger("fabric_cicd").setLevel(logging.DEBUG)
 
         self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 

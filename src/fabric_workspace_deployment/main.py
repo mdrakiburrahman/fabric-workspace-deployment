@@ -17,6 +17,17 @@ import os
 # ---------------------------------------------------------------------------- #
 
 
+class _ExcludeByNamePrefix(logging.Filter):
+    """Reject log records whose logger name starts with a given prefix."""
+
+    def __init__(self, prefix: str) -> None:
+        super().__init__()
+        self._prefix = prefix
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.name.startswith(self._prefix)
+
+
 def setup_logging() -> str:
     """
     Configure logging with timestamp-based filename.
@@ -37,6 +48,7 @@ def setup_logging() -> str:
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(getattr(logging, log_level))
     stream_handler.setFormatter(formatter)
+    stream_handler.addFilter(_ExcludeByNamePrefix("fabric_cicd"))
 
     logging.basicConfig(
         level=logging.DEBUG,
