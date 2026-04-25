@@ -22,6 +22,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricWorkspaceTemplateParams,
     FolderClient,
     MonitoringManager,
+    SparkEnvironmentClient,
     SparkJobDefinitionClient,
     WorkspaceManager,
 )
@@ -40,6 +41,7 @@ class FabricCicdManager(CicdManager):
         spark_job_definition_client: SparkJobDefinitionClient,
         folder_client: FolderClient,
         monitoring_manager: MonitoringManager,
+        spark_environment_client: SparkEnvironmentClient,
     ):
         """
         Initialize the Fabric CICD manager.
@@ -52,6 +54,7 @@ class FabricCicdManager(CicdManager):
         self.spark_job_definition_client = spark_job_definition_client
         self.folder_client = folder_client
         self.monitoring_manager = monitoring_manager
+        self.spark_environment_client = spark_environment_client
         self.logger = logging.getLogger(__name__)
 
     async def execute(self) -> None:
@@ -167,6 +170,9 @@ class FabricCicdManager(CicdManager):
             await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace)
             self.logger.info(f"Completed batch {batch_idx}/{len(deployment_batches)}")
 
+            if "Environment" in batch:
+                await self._post_process_environment_spark_settings(workspace_id, template_params)
+
         if template_params.unpublish_orphans:
             self.logger.info("Unpublishing orphan items")
             # Use full scope for unpublishing orphans
@@ -186,6 +192,72 @@ class FabricCicdManager(CicdManager):
             self.logger.info("No Spark Job Definitions configured, skipping config update")
 
         self.logger.info(f"Completed CICD reconciliation for workspace ID: {workspace_id}")
+
+    async def _post_process_environment_spark_settings(
+        self,
+        workspace_id: str,
+        template_params: FabricWorkspaceTemplateParams,
+    ) -> None:
+        """
+        After fabric-cicd publishes Environments, overwrite spark settings
+        via the SparkCore internal API to handle NEE and full spark_conf replacement.
+
+        Remove when these bugs are resolved:
+        - https://github.com/microsoft/fabric-cicd/issues/954
+        - https://github.com/microsoft/fabric-cicd/issues/955
+        """
+        workspace_params = None
+        for wp in self.common_params.fabric.workspaces:
+            workspace_info = await self.workspace.get(wp)
+            if workspace_info.id == workspace_id:
+                workspace_params = wp
+                break
+
+        if not workspace_params:
+            self.logger.warning(f"Could not find workspace params for workspace ID: {workspace_id}, skipping SparkCore post-processing")
+            return
+
+        capacity_id = (await self.workspace.get(workspace_params)).capacity_id
+        artifacts_root = Path(self.common_params.local.root_folder) / template_params.artifacts_folder
+
+        env_dirs = [d for d in artifacts_root.iterdir() if d.is_dir() and d.name.endswith(".Environment")]
+
+        if not env_dirs:
+            self.logger.info("No Environment items found for SparkCore post-processing")
+            return
+
+        artifact_collection = await self.folder_client.get_fabric_folder_collection(workspace_id)
+        env_artifact_map = {a.display_name: a.object_id for a in artifact_collection.artifacts if a.type_name == ArtifactType.ENVIRONMENT.value}
+
+        for env_dir in env_dirs:
+            env_name = env_dir.name.replace(".Environment", "")
+            sparkcompute_path = env_dir / "Setting" / "Sparkcompute.yml"
+
+            if not sparkcompute_path.exists():
+                self.logger.warning(f"No Sparkcompute.yml found for Environment '{env_name}', skipping")
+                continue
+
+            if env_name not in env_artifact_map:
+                self.logger.warning(f"Environment '{env_name}' not found in workspace artifacts, skipping")
+                continue
+
+            artifact_id = env_artifact_map[env_name]
+            self.logger.info(f"Post-processing Environment '{env_name}' (ID: {artifact_id})")
+
+            await self.spark_environment_client.put_spark_settings(
+                capacity_id=capacity_id,
+                workspace_id=workspace_id,
+                environment_artifact_id=artifact_id,
+                sparkcompute_yaml_path=str(sparkcompute_path),
+            )
+
+            await self.spark_environment_client.publish_spark_settings(
+                capacity_id=capacity_id,
+                workspace_id=workspace_id,
+                environment_artifact_id=artifact_id,
+            )
+
+            self.logger.info(f"Completed SparkCore post-processing for Environment '{env_name}'")
 
     def _clean_path(self, dest_folder: Path) -> None:
         """

@@ -232,6 +232,7 @@ class SparkRuntimeVersion(Enum):
 class ArtifactType(Enum):
     """Enumeration of Fabric artifact types."""
 
+    ENVIRONMENT = "Environment"
     LAKEHOUSE = "Lakehouse"
     MODEL = "Model"
     PIPELINE = "Pipeline"
@@ -2431,6 +2432,66 @@ class MwcTokenClient(ABC):
 
         Raises:
             RuntimeError: If the API call fails or response cannot be parsed
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
+class SparkEnvironmentClient(ABC):
+    """
+    Interface for managing Spark Environment settings via the internal SparkCore API.
+
+    This works around limitations in the public Fabric REST API where
+    enableNativeExecutionEngine is not supported and spark properties
+    use merge semantics instead of full replacement.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        self.common_params = common_params
+
+    @abstractmethod
+    async def put_spark_settings(
+        self,
+        capacity_id: str,
+        workspace_id: str,
+        environment_artifact_id: str,
+        sparkcompute_yaml_path: str,
+    ) -> None:
+        """
+        PUT full spark settings to an Environment via the SparkCore internal API.
+
+        Reads the Sparkcompute.yml, converts it to the SparkCore PUT payload format,
+        and sends a full replacement PUT. This handles enableNativeExecutionEngine
+        and ensures spark_conf is a clean replacement (no orphaned keys).
+
+        Args:
+            capacity_id: The Fabric capacity ID (with dashes, e.g. "B3CD285F-...")
+            workspace_id: The workspace ID containing the environment
+            environment_artifact_id: The Environment item's artifact GUID
+            sparkcompute_yaml_path: Absolute path to the Sparkcompute.yml file on disk
+        """
+        pass
+
+    @abstractmethod
+    async def publish_spark_settings(
+        self,
+        capacity_id: str,
+        workspace_id: str,
+        environment_artifact_id: str,
+    ) -> None:
+        """
+        Trigger a staged publish of spark settings via the SparkCore internal API.
+
+        Must be called after put_spark_settings to apply the changes.
+
+        Args:
+            capacity_id: The Fabric capacity ID (with dashes)
+            workspace_id: The workspace ID containing the environment
+            environment_artifact_id: The Environment item's artifact GUID
         """
         pass
 
