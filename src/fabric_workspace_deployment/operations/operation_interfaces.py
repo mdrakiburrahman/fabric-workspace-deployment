@@ -2428,13 +2428,14 @@ class MwcTokenClient(ABC):
         pass
 
     @abstractmethod
-    async def get_spark_core_mwc_token(self, workspace_id: str, capacity_id: str) -> "MwcScopedToken":
+    async def get_spark_core_mwc_token(self, workspace_id: str, capacity_id: str, artifact_id: str | None = None) -> "MwcScopedToken":
         """
         Get MWC scoped token for Spark operations.
 
         Args:
             workspace_id: The workspace ID
             capacity_id: The capacity ID
+            artifact_id: The artifact ID to scope the token to (optional)
 
         Returns:
             MwcScopedToken: MWC scoped token information

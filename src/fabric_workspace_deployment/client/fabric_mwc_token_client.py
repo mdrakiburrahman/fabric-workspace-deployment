@@ -75,8 +75,8 @@ class FabricMwcTokenClient(MwcTokenClient):
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    async def get_spark_core_mwc_token(self, workspace_id: str, capacity_id: str) -> MwcScopedToken:
-        self.logger.info(f"Getting MWC token for workspace: {workspace_id}, capacity: {capacity_id}")
+    async def get_spark_core_mwc_token(self, workspace_id: str, capacity_id: str, artifact_id: str | None = None) -> MwcScopedToken:
+        self.logger.info(f"Getting MWC token for workspace: {workspace_id}, capacity: {capacity_id}, artifact: {artifact_id}")
         normalized_capacity_id = capacity_id.lower().replace("-", "")
         url = f"{self.common_params.endpoint.analysis_service}/metadata/v201606/generatemwctoken"
 
@@ -91,6 +91,9 @@ class FabricMwcTokenClient(MwcTokenClient):
             "workspaceObjectId": workspace_id,
             "capacityObjectId": normalized_capacity_id,
         }
+
+        if artifact_id is not None:
+            payload["artifactObjectIds"] = [artifact_id]
 
         try:
             response = self.http_retry.execute(

@@ -93,6 +93,7 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
         mwc_token = await self.mwc_token_client.get_spark_core_mwc_token(
             workspace_id=workspace_id,
             capacity_id=capacity_id,
+            artifact_id=environment_artifact_id,
         )
 
         base_url = self._build_sparkcore_base_url(capacity_id)
@@ -119,6 +120,7 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
         mwc_token = await self.mwc_token_client.get_spark_core_mwc_token(
             workspace_id=workspace_id,
             capacity_id=capacity_id,
+            artifact_id=environment_artifact_id,
         )
 
         base_url = self._build_sparkcore_base_url(capacity_id)
