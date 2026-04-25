@@ -15,9 +15,7 @@ from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspace
 from fabric_workspace_deployment.operations.operation_interfaces import (
     AlertManager,
     AlertParams,
-    ArtifactContactsFile,
     CommonParams,
-    CONTACTS_FILE_NAME,
     ContactDetail,
     FabricWorkspaceParams,
     HttpRetryHandler,
@@ -148,6 +146,10 @@ class FabricAlertManager(AlertManager):
         """
         Build the contact plan by scanning the artifacts folder.
 
+        Resolution order:
+        1. overrides[artifact_name] — if present, use its owners or honor skip_alert
+        2. alert.default — fallback for in-scope items not in overrides
+
         Returns:
             dict mapping artifact_name -> { "action": "DEFAULT"|"CUSTOM"|"SKIPPED", "contacts": [...] }
         """
@@ -175,39 +177,19 @@ class FabricAlertManager(AlertManager):
             if artifact_type not in alert.item_types_in_scope:
                 continue
 
-            contacts_file_path = os.path.join(entry_path, CONTACTS_FILE_NAME)
+            override = (alert.overrides or {}).get(artifact_name)
 
-            if os.path.isfile(contacts_file_path):
-                artifact_contacts = self._parse_contacts_file(contacts_file_path)
-
-                if artifact_contacts.skip_alert:
+            if override is not None:
+                if override.skip_alert:
                     plan[artifact_name] = {"action": "SKIPPED", "contacts": []}
                 else:
-                    resolved_contacts = self._resolve_contact_keys(artifact_contacts.owners, contacts_dict)
-                    plan[artifact_name] = {"action": "CUSTOM", "contacts": resolved_contacts}
+                    resolved = self._resolve_contact_keys(override.owners or alert.default, contacts_dict)
+                    plan[artifact_name] = {"action": "CUSTOM", "contacts": resolved}
             else:
-                resolved_contacts = self._resolve_contact_keys(alert.default, contacts_dict)
-                plan[artifact_name] = {"action": "DEFAULT", "contacts": resolved_contacts}
+                resolved = self._resolve_contact_keys(alert.default, contacts_dict)
+                plan[artifact_name] = {"action": "DEFAULT", "contacts": resolved}
 
         return plan
-
-    def _parse_contacts_file(self, file_path: str) -> ArtifactContactsFile:
-        """
-        Parse a .contacts file.
-
-        Args:
-            file_path: Full path to the .contacts file
-
-        Returns:
-            ArtifactContactsFile: Parsed contacts file data
-        """
-        with open(file_path, encoding="utf-8") as f:
-            data = json.load(f)
-
-        return ArtifactContactsFile(
-            owners=data.get("owners", []),
-            skip_alert=data.get("skipAlert", False),
-        )
 
     def _resolve_contact_keys(
         self,

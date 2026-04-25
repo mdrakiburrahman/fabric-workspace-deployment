@@ -1182,11 +1182,20 @@ class ContactDetail:
 
 
 @dataclass
+class AlertOverride:
+    """Per-artifact alert override configuration."""
+
+    owners: list[str] | None = None
+    skip_alert: bool = False
+
+
+@dataclass
 class AlertParams:
     """Alert configuration parameters for artifact contacts."""
 
     default: list[str]
     item_types_in_scope: list[str]
+    overrides: dict[str, AlertOverride] | None = None
 
 
 @dataclass
@@ -4148,9 +4157,20 @@ class OperationParams:
 
     def _parse_alert_params(self, data: dict[str, Any]) -> AlertParams:
         """Parse alert parameters for a workspace."""
+        overrides: dict[str, AlertOverride] | None = None
+        raw_overrides = data.get("overrides")
+        if raw_overrides is not None:
+            overrides = {}
+            for name, entry in raw_overrides.items():
+                overrides[name] = AlertOverride(
+                    owners=entry.get("owners"),
+                    skip_alert=entry.get("skipAlert", False),
+                )
+
         return AlertParams(
             default=data.get("default", []),
             item_types_in_scope=data.get("itemTypesInScope", []),
+            overrides=overrides,
         )
 
     def _parse_identity_params(self, data: dict[str, Any]) -> Identity:
