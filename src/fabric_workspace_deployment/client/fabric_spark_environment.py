@@ -7,6 +7,7 @@ import logging
 import requests
 import yaml
 
+from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     CommonParams,
     HttpRetryHandler,
@@ -23,10 +24,12 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
         common_params: CommonParams,
         mwc_token_client: MwcTokenClient,
         http_retry_handler: HttpRetryHandler,
+        az_cli: AzCli,
     ):
         super().__init__(common_params)
         self.mwc_token_client = mwc_token_client
         self.http_retry = http_retry_handler
+        self.az_cli = az_cli
         self.logger = logging.getLogger(__name__)
 
     def _build_sparkcore_base_url(self, capacity_id: str) -> str:
@@ -117,20 +120,13 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
         workspace_id: str,
         environment_artifact_id: str,
     ) -> None:
-        mwc_token = await self.mwc_token_client.get_spark_core_mwc_token(
-            workspace_id=workspace_id,
-            capacity_id=capacity_id,
-            artifact_id=environment_artifact_id,
-        )
-
-        base_url = self._build_sparkcore_base_url(capacity_id)
-        url = f"{base_url}/workspaces/{workspace_id}" f"/artifacts/{environment_artifact_id}/sparkSettings/stagedPublish"
+        url = f"{self.common_params.endpoint.power_bi}/v1/workspaces/{workspace_id}" f"/environments/{environment_artifact_id}/staging/publish?beta=False"
 
         self.http_retry.execute(
             requests.post,
             url,
             headers={
-                "Authorization": f"mwctoken {mwc_token.token}",
+                "Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}",
                 "Content-Type": "application/json",
             },
             json={},

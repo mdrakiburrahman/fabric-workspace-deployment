@@ -341,4 +341,5 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_fabric_mwc_token_client(),
             self.http_retry_handler,
+            self.create_azure_cli(),
         )
