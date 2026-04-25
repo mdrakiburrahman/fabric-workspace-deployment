@@ -127,7 +127,13 @@ class FabricCicdManager(CicdManager):
 
         fabric_cicd.disable_file_logging()
         logging.getLogger().setLevel(logging.DEBUG)
-        logging.getLogger("fabric_cicd").setLevel(logging.DEBUG)
+        fc_logger = logging.getLogger("fabric_cicd")
+        fc_logger.setLevel(logging.DEBUG)
+        fc_logger.propagate = False
+        for h in logging.getLogger().handlers:
+            if isinstance(h, logging.FileHandler):
+                fc_logger.addHandler(h)
+                break
 
         self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 
