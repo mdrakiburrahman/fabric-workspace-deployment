@@ -28,7 +28,7 @@ from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
-from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, MwcTokenClient, OperationParams
+from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, MwcTokenClient, OperationParams, SparkEnvironmentClient
 
 
 class ManagementFactory(ABC):
@@ -162,6 +162,13 @@ class ManagementFactory(ABC):
         """
         pass
 
+    @abstractmethod
+    def create_fabric_spark_environment_client(self) -> "SparkEnvironmentClient":
+        """
+        Create a Fabric Spark Environment Client instance.
+        """
+        pass
+
 
 class ContainerizedManagementFactory(ManagementFactory):
     """Containerized implementation of the ManagementFactory."""
@@ -220,6 +227,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_spark_job_definition_client(),
             self.create_fabric_folder_client(),
             self.create_fabric_monitoring_manager(),
+            self.create_fabric_spark_environment_client(),
         )
 
     def create_fabric_seed_manager(self) -> FabricSeedManager:
@@ -324,4 +332,14 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.operation_params.common,
             self.create_azure_cli(),
             self.http_retry_handler,
+        )
+
+    def create_fabric_spark_environment_client(self) -> "SparkEnvironmentClient":
+        from fabric_workspace_deployment.client.fabric_spark_environment import FabricSparkEnvironmentClient
+
+        return FabricSparkEnvironmentClient(
+            self.operation_params.common,
+            self.create_fabric_mwc_token_client(),
+            self.http_retry_handler,
+            self.create_azure_cli(),
         )
