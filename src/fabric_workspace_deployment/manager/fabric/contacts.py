@@ -163,31 +163,28 @@ class FabricAlertManager(AlertManager):
             self.logger.warning(f"Artifacts folder does not exist: {artifacts_folder}")
             return plan
 
-        for entry in sorted(os.listdir(artifacts_folder)):
-            entry_path = os.path.join(artifacts_folder, entry)
-            if not os.path.isdir(entry_path):
-                continue
+        for dirpath, dirnames, _filenames in sorted(os.walk(artifacts_folder)):
+            for entry in sorted(dirnames):
+                parts = entry.rsplit(".", 1)
+                if len(parts) != 2:  # noqa: PLR2004
+                    continue
 
-            parts = entry.rsplit(".", 1)
-            if len(parts) != 2:  # noqa: PLR2004
-                continue
+                artifact_name, artifact_type = parts[0], parts[1]
 
-            artifact_name, artifact_type = parts[0], parts[1]
+                if artifact_type not in alert.item_types_in_scope:
+                    continue
 
-            if artifact_type not in alert.item_types_in_scope:
-                continue
+                override = (alert.overrides or {}).get(artifact_name)
 
-            override = (alert.overrides or {}).get(artifact_name)
-
-            if override is not None:
-                if override.skip_alert:
-                    plan[artifact_name] = {"action": "SKIPPED", "contacts": []}
+                if override is not None:
+                    if override.skip_alert:
+                        plan[artifact_name] = {"action": "SKIPPED", "contacts": []}
+                    else:
+                        resolved = self._resolve_contact_keys(override.owners or alert.default, contacts_dict)
+                        plan[artifact_name] = {"action": "CUSTOM", "contacts": resolved}
                 else:
-                    resolved = self._resolve_contact_keys(override.owners or alert.default, contacts_dict)
-                    plan[artifact_name] = {"action": "CUSTOM", "contacts": resolved}
-            else:
-                resolved = self._resolve_contact_keys(alert.default, contacts_dict)
-                plan[artifact_name] = {"action": "DEFAULT", "contacts": resolved}
+                    resolved = self._resolve_contact_keys(alert.default, contacts_dict)
+                    plan[artifact_name] = {"action": "DEFAULT", "contacts": resolved}
 
         return plan
 
