@@ -29,7 +29,7 @@ from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
-from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, MwcTokenClient, OperationParams, SparkEnvironmentClient, StorageRbacAuthMode
+from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, MwcTokenClient, OperationParams, SparkEnvironmentClient
 
 
 class ManagementFactory(ABC):
@@ -66,9 +66,9 @@ class ManagementFactory(ABC):
         pass
 
     @abstractmethod
-    def create_arm_rbac_manager(self) -> ArmRbacManager | None:
+    def create_arm_rbac_manager(self) -> ArmRbacManager:
         """
-        Create an ARM RBAC Manager instance, or None if not applicable for the configured auth mode.
+        Create an ARM RBAC Manager instance.
         """
         pass
 
@@ -210,11 +210,8 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.http_retry_handler,
         )
 
-    def create_arm_rbac_manager(self) -> ArmRbacManager | None:
-        mode = self.operation_params.common.fabric.storage.rbac.auth.mode
-        if mode == StorageRbacAuthMode.JWT:
-            return ArmRbacManager(self.operation_params.common, self.http_retry_handler, self.logger)
-        return None
+    def create_arm_rbac_manager(self) -> ArmRbacManager:
+        return ArmRbacManager(self.operation_params.common, self.http_retry_handler, self.logger)
 
     def create_fabric_workspace_manager(self) -> FabricWorkspaceManager:
         return FabricWorkspaceManager(

@@ -105,7 +105,7 @@ class FabricWorkspaceManager(WorkspaceManager):
         else:
             self.logger.info(f"Workspace '{workspace_params.name}' already has a managed identity '{workspace_info.workspace_identity}'")
 
-        await self.assign_workspace_storage_role(workspace_params, workspace_info, self.common_params.fabric.storage)
+        await asyncio.gather(*[self.assign_workspace_storage_role(workspace_params, workspace_info, storage) for storage in self.common_params.fabric.storages])
 
         self.logger.info(f"Completed reconciliation for workspace: {workspace_params.name}")
 

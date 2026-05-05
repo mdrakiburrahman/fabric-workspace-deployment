@@ -972,6 +972,7 @@ class KqlDatabaseShortcut:
     table: str
     path: str
     query_acceleration_toggle: bool
+    storage_account: str
 
 
 @dataclass
@@ -1420,7 +1421,7 @@ class FabricParams:
     """Fabric workspace parameters."""
 
     workspaces: list[FabricWorkspaceParams]
-    storage: FabricStorageParams
+    storages: list[FabricStorageParams]
 
 
 @dataclass
@@ -3251,11 +3252,27 @@ class OperationParams:
             if workspace.alert is not None and not self._validate_alert_params(workspace.alert, i):
                 return False
 
-        return self._validate_fabric_storage_params()
+        return self._validate_all_fabric_storage_params()
 
-    def _validate_fabric_storage_params(self) -> bool:
-        """Validate Fabric Storage parameters."""
-        storage = self.common.fabric.storage
+    def _validate_all_fabric_storage_params(self) -> bool:
+        """Validate all Fabric Storage parameters, enforcing no duplicate account names."""
+        storages = self.common.fabric.storages
+        if not storages:
+            self.logger.error("fabric.storages cannot be empty")
+            return False
+
+        seen_accounts: set[str] = set()
+        for i, storage in enumerate(storages):
+            if storage.account in seen_accounts:
+                self.logger.error(f"Duplicate storage account name '{storage.account}' found at index {i} in fabric.storages")
+                return False
+            seen_accounts.add(storage.account)
+            if not self._validate_fabric_storage_params(storage, i):
+                return False
+        return True
+
+    def _validate_fabric_storage_params(self, storage: "FabricStorageParams", index: int) -> bool:
+        """Validate a single Fabric Storage entry."""
         if not storage.account or not storage.container or not storage.location or not storage.resource_group or not storage.subscription_id or not storage.tenant_id or not storage.shortcut_data_connection_id:
             self.logger.error(f"FabricStorageParams members cannot be empty: account={storage.account}, " f"container={storage.container}, location={storage.location}, " f"resourceGroup={storage.resource_group}, subscriptionId={storage.subscription_id}, " f"tenantId={storage.tenant_id}")
             return False
@@ -3502,6 +3519,8 @@ class OperationParams:
             self.logger.error(f"Workspace shortcut kqlDatabase at index {workspace_index} cannot be None")
             return False
 
+        known_accounts = {s.account for s in self.common.fabric.storages}
+
         for j, kql_db in enumerate(shortcut.kql_database):
             if not kql_db.database:
                 self.logger.error(f"Workspace shortcut kqlDatabase[{j}].database at index {workspace_index} cannot be empty")
@@ -3517,6 +3536,14 @@ class OperationParams:
 
             if kql_db.query_acceleration_toggle is None:
                 self.logger.error(f"Workspace shortcut kqlDatabase[{j}].queryAccelerationToggle at index {workspace_index} cannot be None")
+                return False
+
+            if not kql_db.storage_account:
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].storage.account at index {workspace_index} cannot be empty")
+                return False
+
+            if kql_db.storage_account not in known_accounts:
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].storage.account '{kql_db.storage_account}' at index {workspace_index} is not defined in fabric.storages (known accounts: {sorted(known_accounts)})")
                 return False
 
         return True
@@ -3754,7 +3781,7 @@ class OperationParams:
         """Parse Fabric parameters."""
         return FabricParams(
             workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
-            storage=self._parse_fabric_storage_params(data["storage"]),
+            storages=[self._parse_fabric_storage_params(s) for s in data["storages"]],
         )
 
     def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
@@ -4058,6 +4085,7 @@ class OperationParams:
             table=data["table"],
             path=data["path"],
             query_acceleration_toggle=data["queryAccelerationToggle"],
+            storage_account=data["storage"]["account"],
         )
 
     def _parse_model_params(self, data: list[dict[str, Any]]) -> list[ModelParams]:

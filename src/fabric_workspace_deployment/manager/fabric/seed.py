@@ -42,41 +42,40 @@ class FabricSeedManager(SeedManager):
         """
         self.logger.info("Executing FabricSeedManager")
 
-        storage = self.common_params.fabric.storage
-        seed_files = storage.seed_files
+        tasks = []
+        for storage in self.common_params.fabric.storages:
+            if not storage.seed_files:
+                self.logger.info(f"No seed files configured for storage account '{storage.account}', skipping")
+                continue
 
-        if not seed_files or len(seed_files) == 0:
-            self.logger.info("No seed files configured, skipping seed upload")
+            self.logger.info(f"Queuing {len(storage.seed_files)} seed file(s) for storage account '{storage.account}'")
+            for i, seed_file in enumerate(storage.seed_files):
+                tasks.append(
+                    asyncio.create_task(
+                        self._upload_seed_file(
+                            index=i,
+                            account=storage.account,
+                            container=storage.container,
+                            local_file_path=seed_file.local_concrete_file.file_path,
+                            azure_file_path=seed_file.storage_account_file.file_path,
+                        ),
+                        name=f"upload-seed-{storage.account}-{i}",
+                    )
+                )
+
+        if not tasks:
+            self.logger.info("No seed files configured across any storage account, skipping")
+            self.logger.info("Finished executing FabricSeedManager")
             return
 
-        self.logger.info(f"Uploading {len(seed_files)} seed file(s) to Azure Storage")
+        self.logger.info(f"Uploading {len(tasks)} seed file(s) across all storage accounts in parallel")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        errors = [f"Task '{tasks[i].get_name()}': {result}" for i, result in enumerate(results) if isinstance(result, Exception)]
+        for err in errors:
+            self.logger.error(err)
 
-        tasks = []
-        for i, seed_file in enumerate(seed_files):
-            task = asyncio.create_task(
-                self._upload_seed_file(
-                    index=i,
-                    account=storage.account,
-                    container=storage.container,
-                    local_file_path=seed_file.local_concrete_file.file_path,
-                    azure_file_path=seed_file.storage_account_file.file_path,
-                ),
-                name=f"upload-seed-{i}",
-            )
-            tasks.append(task)
-
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            errors = []
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    error_msg = f"Failed to upload seed file at index {i}: {result}"
-                    self.logger.error(error_msg)
-                    errors.append(error_msg)
-
-            if errors:
-                error = f"Failed to upload some seed files: {'; '.join(errors)}"
-                raise RuntimeError(error)
+        if errors:
+            raise RuntimeError(f"Failed to upload some seed files: {'; '.join(errors)}")
 
         self.logger.info("Finished executing FabricSeedManager")
 
