@@ -972,6 +972,7 @@ class KqlDatabaseShortcut:
     table: str
     path: str
     query_acceleration_toggle: bool
+    storage_account: str
 
 
 @dataclass
@@ -1371,6 +1372,35 @@ class SeedFile:
     storage_account_file: StorageAccountFile
 
 
+class StorageRbacAuthMode(Enum):
+    """Authentication mode for storage RBAC operations."""
+
+    CLI = "cli"
+    JWT = "jwt"
+
+
+@dataclass
+class StorageRbacJwtParams:
+    """JWT authentication parameters for storage RBAC."""
+
+    env: str
+
+
+@dataclass
+class StorageRbacAuthParams:
+    """Authentication parameters for storage RBAC."""
+
+    mode: StorageRbacAuthMode
+    jwt: StorageRbacJwtParams | None = None
+
+
+@dataclass
+class StorageRbacParams:
+    """RBAC configuration for storage operations."""
+
+    auth: StorageRbacAuthParams
+
+
 @dataclass
 class FabricStorageParams:
     """Fabric storage parameters."""
@@ -1383,6 +1413,7 @@ class FabricStorageParams:
     tenant_id: str
     shortcut_data_connection_id: str
     seed_files: list[SeedFile]
+    rbac: StorageRbacParams
 
 
 @dataclass
@@ -1390,7 +1421,7 @@ class FabricParams:
     """Fabric workspace parameters."""
 
     workspaces: list[FabricWorkspaceParams]
-    storage: FabricStorageParams
+    storages: list[FabricStorageParams]
 
 
 @dataclass
@@ -2566,6 +2597,61 @@ class AzureStorageManager(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class AzureRbacManager(ABC):
+    """
+    Interface for managing Azure RBAC role assignments via the ARM REST API.
+
+    All methods accept a caller-supplied Bearer token so the implementation
+    has no dependency on an ambient az-login session.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Azure RBAC manager.
+
+        Args:
+            common_params: Common parameters containing ARM subscription/tenant info
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    def create_role_assignment(
+        self,
+        token: str,
+        scope: str,
+        role_name: str,
+        object_id: str,
+        principal_type: "PrincipalType",
+    ) -> str:
+        """
+        Idempotently create an ARM role assignment.
+
+        If an assignment for the same (scope, role, principal) already exists it
+        is left untouched and its name is returned; no duplicate is created.
+
+        Args:
+            token: Bearer JWT for the ARM audience (https://management.azure.com)
+            scope: Full ARM resource scope, e.g.
+                   "/subscriptions/{sub}/resourceGroups/{rg}/providers/..."
+            role_name: Human-readable role name, e.g. "Storage Blob Data Reader"
+            object_id: AAD object ID of the principal receiving the role
+            principal_type: PrincipalType enum value (User, Group, ServicePrincipal)
+
+        Returns:
+            str: The role assignment name (deterministic UUID v5)
+
+        Raises:
+            ValueError: If role_name cannot be resolved to a role definition
+            RuntimeError: If the ARM API call fails
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class OperationParams:
     """
     Main operation parameters container with parsing and validation capabilities.
@@ -3166,11 +3252,27 @@ class OperationParams:
             if workspace.alert is not None and not self._validate_alert_params(workspace.alert, i):
                 return False
 
-        return self._validate_fabric_storage_params()
+        return self._validate_all_fabric_storage_params()
 
-    def _validate_fabric_storage_params(self) -> bool:
-        """Validate Fabric Storage parameters."""
-        storage = self.common.fabric.storage
+    def _validate_all_fabric_storage_params(self) -> bool:
+        """Validate all Fabric Storage parameters, enforcing no duplicate account names."""
+        storages = self.common.fabric.storages
+        if not storages:
+            self.logger.error("fabric.storages cannot be empty")
+            return False
+
+        seen_accounts: set[str] = set()
+        for i, storage in enumerate(storages):
+            if storage.account in seen_accounts:
+                self.logger.error(f"Duplicate storage account name '{storage.account}' found at index {i} in fabric.storages")
+                return False
+            seen_accounts.add(storage.account)
+            if not self._validate_fabric_storage_params(storage, i):
+                return False
+        return True
+
+    def _validate_fabric_storage_params(self, storage: "FabricStorageParams", index: int) -> bool:
+        """Validate a single Fabric Storage entry."""
         if not storage.account or not storage.container or not storage.location or not storage.resource_group or not storage.subscription_id or not storage.tenant_id or not storage.shortcut_data_connection_id:
             self.logger.error(f"FabricStorageParams members cannot be empty: account={storage.account}, " f"container={storage.container}, location={storage.location}, " f"resourceGroup={storage.resource_group}, subscriptionId={storage.subscription_id}, " f"tenantId={storage.tenant_id}")
             return False
@@ -3195,6 +3297,24 @@ class OperationParams:
 
             if not seed_file.storage_account_file.file_path:
                 self.logger.error(f"Seed file storageAccountFile.filePath at index {i} cannot be empty")
+                return False
+
+        return self._validate_storage_rbac_params(storage.rbac)
+
+    def _validate_storage_rbac_params(self, rbac: "StorageRbacParams") -> bool:
+        """Validate storage RBAC parameters."""
+        if rbac.auth.mode == StorageRbacAuthMode.JWT:
+            if rbac.auth.jwt is None or not rbac.auth.jwt.env:
+                self.logger.error("storage.rbac.auth.jwt.env must be set when mode is 'jwt'")
+                return False
+
+            token = os.getenv(rbac.auth.jwt.env)
+            if not token:
+                self.logger.error(f"Environment variable '{rbac.auth.jwt.env}' is not set or empty (required for storage rbac mode 'jwt')")
+                return False
+
+            if len(token.split(".")) != 3:  # noqa: PLR2004
+                self.logger.error(f"Environment variable '{rbac.auth.jwt.env}' does not contain a valid JWT (expected 3 dot-separated parts)")
                 return False
 
         return True
@@ -3399,6 +3519,8 @@ class OperationParams:
             self.logger.error(f"Workspace shortcut kqlDatabase at index {workspace_index} cannot be None")
             return False
 
+        known_accounts = {s.account for s in self.common.fabric.storages}
+
         for j, kql_db in enumerate(shortcut.kql_database):
             if not kql_db.database:
                 self.logger.error(f"Workspace shortcut kqlDatabase[{j}].database at index {workspace_index} cannot be empty")
@@ -3414,6 +3536,14 @@ class OperationParams:
 
             if kql_db.query_acceleration_toggle is None:
                 self.logger.error(f"Workspace shortcut kqlDatabase[{j}].queryAccelerationToggle at index {workspace_index} cannot be None")
+                return False
+
+            if not kql_db.storage_account:
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].storage.account at index {workspace_index} cannot be empty")
+                return False
+
+            if kql_db.storage_account not in known_accounts:
+                self.logger.error(f"Workspace shortcut kqlDatabase[{j}].storage.account '{kql_db.storage_account}' at index {workspace_index} is not defined in fabric.storages (known accounts: {sorted(known_accounts)})")
                 return False
 
         return True
@@ -3651,7 +3781,7 @@ class OperationParams:
         """Parse Fabric parameters."""
         return FabricParams(
             workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
-            storage=self._parse_fabric_storage_params(data["storage"]),
+            storages=[self._parse_fabric_storage_params(s) for s in data["storages"]],
         )
 
     def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
@@ -3907,6 +4037,8 @@ class OperationParams:
             for seed_file_data in data["seedFiles"]:
                 seed_files.append(self._parse_seed_file(seed_file_data))
 
+        rbac = self._parse_storage_rbac_params(data["rbac"])
+
         return FabricStorageParams(
             account=data["account"],
             container=data["container"],
@@ -3916,7 +4048,17 @@ class OperationParams:
             tenant_id=data["tenantId"],
             shortcut_data_connection_id=data["shortcutDataConnectionId"],
             seed_files=seed_files,
+            rbac=rbac,
         )
+
+    def _parse_storage_rbac_params(self, data: dict[str, Any]) -> StorageRbacParams:
+        """Parse storage RBAC parameters."""
+        auth_data = data["auth"]
+        mode = StorageRbacAuthMode(auth_data["mode"])
+        jwt_params = None
+        if "jwt" in auth_data:
+            jwt_params = StorageRbacJwtParams(env=auth_data["jwt"]["env"])
+        return StorageRbacParams(auth=StorageRbacAuthParams(mode=mode, jwt=jwt_params))
 
     def _parse_seed_file(self, data: dict[str, Any]) -> SeedFile:
         """Parse seed file configuration."""
@@ -3943,6 +4085,7 @@ class OperationParams:
             table=data["table"],
             path=data["path"],
             query_acceleration_toggle=data["queryAccelerationToggle"],
+            storage_account=data["storage"]["account"],
         )
 
     def _parse_model_params(self, data: list[dict[str, Any]]) -> list[ModelParams]:

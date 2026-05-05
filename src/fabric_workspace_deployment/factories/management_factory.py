@@ -16,6 +16,7 @@ from fabric_workspace_deployment.client.fabric_pipeline_run import FabricPipelin
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.azure.rbac import ArmRbacManager
 from fabric_workspace_deployment.manager.azure.storage import AzStorageManager
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
@@ -61,6 +62,13 @@ class ManagementFactory(ABC):
     def create_fabric_alert_manager(self) -> FabricAlertManager:
         """
         Create a Fabric Alert Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_arm_rbac_manager(self) -> ArmRbacManager:
+        """
+        Create an ARM RBAC Manager instance.
         """
         pass
 
@@ -202,12 +210,16 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.http_retry_handler,
         )
 
+    def create_arm_rbac_manager(self) -> ArmRbacManager:
+        return ArmRbacManager(self.operation_params.common, self.http_retry_handler, self.logger)
+
     def create_fabric_workspace_manager(self) -> FabricWorkspaceManager:
         return FabricWorkspaceManager(
             self.operation_params.common,
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.http_retry_handler,
+            arm_rbac_manager=self.create_arm_rbac_manager(),
         )
 
     def create_fabric_cicd_manager(self) -> FabricCicdManager:

@@ -139,7 +139,12 @@ class FabricShortcutManager(ShortcutManager):
             mwc_token = await self.mwc_token_client.get_kusto_database_mwc_token(workspace_id, database_id)
             shortcuts_data = []
             for kql_db in shortcut_params.kql_database:
-                storage = self.common_params.fabric.storage
+                storage = next(
+                    (s for s in self.common_params.fabric.storages if s.account == kql_db.storage_account),
+                    None,
+                )
+                if storage is None:
+                    raise RuntimeError(f"Storage account '{kql_db.storage_account}' not found in fabric.storages")
                 full_path = f"https://{storage.account}.dfs.core.windows.net/{storage.container}{kql_db.path}"
 
                 shortcut_item = {

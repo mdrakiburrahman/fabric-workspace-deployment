@@ -5,11 +5,13 @@
 import asyncio
 import json
 import logging
+import os
 
 import dacite
 import requests
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.azure.rbac import ArmRbacManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     AnalysisServiceCapacity,
@@ -18,6 +20,8 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricWorkspaceInfo,
     FabricWorkspaceParams,
     HttpRetryHandler,
+    PrincipalType,
+    StorageRbacAuthMode,
     WorkspaceManager,
 )
 from fabric_workspace_deployment.static.transformers import StringTransformer
@@ -26,7 +30,7 @@ from fabric_workspace_deployment.static.transformers import StringTransformer
 class FabricWorkspaceManager(WorkspaceManager):
     """Concrete implementation of WorkspaceManager for Microsoft Fabric."""
 
-    def __init__(self, common_params: CommonParams, az_cli: AzCli, fabric_cli: FabricCli, http_retry_handler: HttpRetryHandler):
+    def __init__(self, common_params: CommonParams, az_cli: AzCli, fabric_cli: FabricCli, http_retry_handler: HttpRetryHandler, arm_rbac_manager: ArmRbacManager | None = None):
         """
         Initialize the Fabric workspace manager.
         """
@@ -35,6 +39,7 @@ class FabricWorkspaceManager(WorkspaceManager):
         self.fabric_cli = fabric_cli
         self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
+        self.arm_rbac_manager = arm_rbac_manager
 
     async def execute(self) -> None:
         self.logger.info("Executing FabricWorkspaceManager")
@@ -100,7 +105,7 @@ class FabricWorkspaceManager(WorkspaceManager):
         else:
             self.logger.info(f"Workspace '{workspace_params.name}' already has a managed identity '{workspace_info.workspace_identity}'")
 
-        await self.assign_workspace_storage_role(workspace_params, workspace_info, self.common_params.fabric.storage)
+        await asyncio.gather(*[self.assign_workspace_storage_role(workspace_params, workspace_info, storage) for storage in self.common_params.fabric.storages])
 
         self.logger.info(f"Completed reconciliation for workspace: {workspace_params.name}")
 
@@ -252,11 +257,18 @@ class FabricWorkspaceManager(WorkspaceManager):
         object_id = workspace_info.workspace_identity.service_principal_id
         scope = f"/subscriptions/{storage_params.subscription_id}/resourceGroups/{storage_params.resource_group}/providers/Microsoft.Storage/storageAccounts/{storage_params.account}"  # noqa: E501
         role = workspace_params.shortcut_auth_z_role_name
+        mode = storage_params.rbac.auth.mode
 
-        self.logger.info(f"Assigning role '{role}' to workspace identity '{app_id}' for storage scope: {scope}")
+        self.logger.info(f"Assigning role '{role}' to workspace identity '{app_id}' for storage scope: {scope} (mode={mode.value})")
 
         try:
-            self.az_cli.run(["role", "assignment", "create", "--assignee-object-id", object_id, "--assignee-principal-type", "ServicePrincipal", "--role", role, "--scope", scope])
+            if mode == StorageRbacAuthMode.CLI:
+                self.az_cli.run(["role", "assignment", "create", "--assignee-object-id", object_id, "--assignee-principal-type", "ServicePrincipal", "--role", role, "--scope", scope])
+            elif mode == StorageRbacAuthMode.JWT:
+                self.arm_rbac_manager.create_role_assignment(os.getenv(storage_params.rbac.auth.jwt.env), scope, role, object_id, PrincipalType.SERVICE_PRINCIPAL)
+            else:
+                raise RuntimeError(f"Unsupported storage rbac auth mode: {mode}")
+
             self.logger.info(f"Successfully assigned storage role for workspace: {workspace_info.display_name}")
         except Exception as e:
             error_msg = f"Failed to assign storage role for workspace '{workspace_info.display_name}': {e}"
