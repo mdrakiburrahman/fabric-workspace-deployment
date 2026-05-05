@@ -20,8 +20,6 @@ echo "└──────────────────────┘"
 echo ""
 
 DOCKER_VERSION="5:27.5.1-1~ubuntu.24.04~noble"
-# Docker does not yet publish packages for every Ubuntu release; pin to the latest
-# supported LTS repo (noble/24.04) whose packages are binary-compatible.
 DOCKER_REPO_CODENAME="noble"
 
 if ! [ -x "$(command -v docker)" ]; then
