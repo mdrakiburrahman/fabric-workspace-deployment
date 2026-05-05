@@ -37,6 +37,12 @@
    code --folder-uri "vscode-remote://dev-container+${HEX}/workspaces/fabric-workspace-deployment"
    ```
 
+1. Installcopilot:
+
+   ```bash
+   wget -qO- https://gh.io/copilot-install | bash
+   ```
+
 1. If ADO gives you a hard time, generate a PAT:
 
 ```bash

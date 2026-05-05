@@ -20,13 +20,20 @@ echo "└──────────────────────┘"
 echo ""
 
 DOCKER_VERSION="5:27.5.1-1~ubuntu.24.04~noble"
+# Docker does not yet publish packages for every Ubuntu release; pin to the latest
+# supported LTS repo (noble/24.04) whose packages are binary-compatible.
+DOCKER_REPO_CODENAME="noble"
 
 if ! [ -x "$(command -v docker)" ]; then
   echo "docker is not installed on your devbox, installing..."
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-  sudo add-apt-repository -y "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
   sudo apt-get update -q
-  sudo apt-get install -y apt-transport-https ca-certificates curl
+  sudo apt-get install -y apt-transport-https ca-certificates curl gnupg
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  sudo chmod a+r /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${DOCKER_REPO_CODENAME} stable" \
+    | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  sudo apt-get update -q
   sudo apt-get install -y --allow-downgrades docker-ce="$DOCKER_VERSION" docker-ce-cli="$DOCKER_VERSION" containerd.io
 else
   echo "docker is already installed."
