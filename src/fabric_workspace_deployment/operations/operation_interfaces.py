@@ -1371,6 +1371,35 @@ class SeedFile:
     storage_account_file: StorageAccountFile
 
 
+class StorageRbacAuthMode(Enum):
+    """Authentication mode for storage RBAC operations."""
+
+    CLI = "cli"
+    JWT = "jwt"
+
+
+@dataclass
+class StorageRbacJwtParams:
+    """JWT authentication parameters for storage RBAC."""
+
+    env: str
+
+
+@dataclass
+class StorageRbacAuthParams:
+    """Authentication parameters for storage RBAC."""
+
+    mode: StorageRbacAuthMode
+    jwt: StorageRbacJwtParams | None = None
+
+
+@dataclass
+class StorageRbacParams:
+    """RBAC configuration for storage operations."""
+
+    auth: StorageRbacAuthParams
+
+
 @dataclass
 class FabricStorageParams:
     """Fabric storage parameters."""
@@ -1383,6 +1412,7 @@ class FabricStorageParams:
     tenant_id: str
     shortcut_data_connection_id: str
     seed_files: list[SeedFile]
+    rbac: StorageRbacParams
 
 
 @dataclass
@@ -2566,6 +2596,61 @@ class AzureStorageManager(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class AzureRbacManager(ABC):
+    """
+    Interface for managing Azure RBAC role assignments via the ARM REST API.
+
+    All methods accept a caller-supplied Bearer token so the implementation
+    has no dependency on an ambient az-login session.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Azure RBAC manager.
+
+        Args:
+            common_params: Common parameters containing ARM subscription/tenant info
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    def create_role_assignment(
+        self,
+        token: str,
+        scope: str,
+        role_name: str,
+        object_id: str,
+        principal_type: "PrincipalType",
+    ) -> str:
+        """
+        Idempotently create an ARM role assignment.
+
+        If an assignment for the same (scope, role, principal) already exists it
+        is left untouched and its name is returned; no duplicate is created.
+
+        Args:
+            token: Bearer JWT for the ARM audience (https://management.azure.com)
+            scope: Full ARM resource scope, e.g.
+                   "/subscriptions/{sub}/resourceGroups/{rg}/providers/..."
+            role_name: Human-readable role name, e.g. "Storage Blob Data Reader"
+            object_id: AAD object ID of the principal receiving the role
+            principal_type: PrincipalType enum value (User, Group, ServicePrincipal)
+
+        Returns:
+            str: The role assignment name (deterministic UUID v5)
+
+        Raises:
+            ValueError: If role_name cannot be resolved to a role definition
+            RuntimeError: If the ARM API call fails
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class OperationParams:
     """
     Main operation parameters container with parsing and validation capabilities.
@@ -3195,6 +3280,24 @@ class OperationParams:
 
             if not seed_file.storage_account_file.file_path:
                 self.logger.error(f"Seed file storageAccountFile.filePath at index {i} cannot be empty")
+                return False
+
+        return self._validate_storage_rbac_params(storage.rbac)
+
+    def _validate_storage_rbac_params(self, rbac: "StorageRbacParams") -> bool:
+        """Validate storage RBAC parameters."""
+        if rbac.auth.mode == StorageRbacAuthMode.JWT:
+            if rbac.auth.jwt is None or not rbac.auth.jwt.env:
+                self.logger.error("storage.rbac.auth.jwt.env must be set when mode is 'jwt'")
+                return False
+
+            token = os.getenv(rbac.auth.jwt.env)
+            if not token:
+                self.logger.error(f"Environment variable '{rbac.auth.jwt.env}' is not set or empty (required for storage rbac mode 'jwt')")
+                return False
+
+            if len(token.split(".")) != 3:  # noqa: PLR2004
+                self.logger.error(f"Environment variable '{rbac.auth.jwt.env}' does not contain a valid JWT (expected 3 dot-separated parts)")
                 return False
 
         return True
@@ -3907,6 +4010,8 @@ class OperationParams:
             for seed_file_data in data["seedFiles"]:
                 seed_files.append(self._parse_seed_file(seed_file_data))
 
+        rbac = self._parse_storage_rbac_params(data["rbac"])
+
         return FabricStorageParams(
             account=data["account"],
             container=data["container"],
@@ -3916,7 +4021,17 @@ class OperationParams:
             tenant_id=data["tenantId"],
             shortcut_data_connection_id=data["shortcutDataConnectionId"],
             seed_files=seed_files,
+            rbac=rbac,
         )
+
+    def _parse_storage_rbac_params(self, data: dict[str, Any]) -> StorageRbacParams:
+        """Parse storage RBAC parameters."""
+        auth_data = data["auth"]
+        mode = StorageRbacAuthMode(auth_data["mode"])
+        jwt_params = None
+        if "jwt" in auth_data:
+            jwt_params = StorageRbacJwtParams(env=auth_data["jwt"]["env"])
+        return StorageRbacParams(auth=StorageRbacAuthParams(mode=mode, jwt=jwt_params))
 
     def _parse_seed_file(self, data: dict[str, Any]) -> SeedFile:
         """Parse seed file configuration."""
