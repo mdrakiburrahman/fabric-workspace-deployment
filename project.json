@@ -58,9 +58,7 @@
             ],
             "options": {
                 "commands": [
-                    "cp .pypirc ~/.pypirc",
-                    "hatch env remove publish",
-                    "hatch run publish:release"
+                    "bash contrib/publish.sh"
                 ],
                 "parallel": false
             }

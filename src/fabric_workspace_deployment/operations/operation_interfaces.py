@@ -637,7 +637,7 @@ class FabricFolderArtifact:
     display_name: str
     permissions: int
     is_hidden: bool
-    artifact_permissions: int
+    artifact_permissions: int | None = None
 
 
 @dataclass
