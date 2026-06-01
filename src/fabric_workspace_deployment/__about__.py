@@ -7,6 +7,12 @@ import time
 
 
 def get_version():
+    # Allow CI to pin a stable version via environment variable, ensuring
+    # sdist and wheel get the same version in a single build invocation.
+    env_version = os.environ.get("PACKAGE_VERSION")
+    if env_version:
+        return env_version
+
     try:
         timestamp = int(time.time())
         git_root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], cwd=os.path.dirname(__file__)).decode().strip()
