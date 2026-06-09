@@ -18,7 +18,7 @@ import yaml
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -866,8 +866,8 @@ class FabricWorkspaceInfo:
     capacity_assignment_progress: str
     workspace_identity: WorkspaceIdentity | None
     managed_private_endpoints: list[Any]
-    spark_settings: SparkSettings
-    role_assignments: list[RoleAssignment]
+    spark_settings: SparkSettings | None = None
+    role_assignments: list[RoleAssignment] = field(default_factory=list)
 
 
 @dataclass
