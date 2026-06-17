@@ -28,21 +28,22 @@ class FabricCapacityManager(CapacityManager):
     async def execute(self) -> None:
         self.logger.info("Executing FabricCapacityManager")
         tasks = []
+        deployed_capacities = []
         for workspace in self.common_params.fabric.workspaces:
             if workspace.skip_deploy:
                 self.logger.info(f"Skipping capacity '{workspace.capacity.name}' for workspace '{workspace.name}' due to skipDeploy=true")
                 continue
             task = asyncio.create_task(self.reconcile(workspace.capacity), name=f"reconcile-capacity-{workspace.capacity.name}")
             tasks.append(task)
+            deployed_capacities.append(workspace.capacity)
 
         if tasks:
             self.logger.info(f"Executing capacity reconciliation for {len(tasks)} workspaces in parallel")
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = []
-            for i, result in enumerate(results):
+            for capacity, result in zip(deployed_capacities, results):
                 if isinstance(result, Exception):
-                    workspace_name = self.common_params.fabric.workspaces[i].capacity.name
-                    error_msg = f"Failed to reconcile capacity '{workspace_name}': {result}"
+                    error_msg = f"Failed to reconcile capacity '{capacity.name}': {result}"
                     self.logger.error(error_msg)
                     errors.append(error_msg)
 
@@ -99,8 +100,12 @@ class FabricCapacityManager(CapacityManager):
         return output.strip().lstrip("* ").strip().lower() == "true"
 
     async def get(self, capacity_params: FabricCapacityParams) -> FabricCapacityInfo:
-        output = self.fabric_cli.run_command(f"get .capacities/{capacity_params.name}.Capacity -q .")
-        capacity_data = json.loads(output.strip())
+        # `fab get .capacities/<name>.Capacity` is slow and crashes for some
+        # capacities (`x 'str' object has no attribute 'get'`), so read the ARM
+        # resource directly and resolve the Fabric capacity id via the REST API.
+        resource_id = f"/subscriptions/{self.common_params.arm.subscription_id}/resourceGroups/{self.common_params.arm.resource_group}/providers/Microsoft.Fabric/capacities/{capacity_params.name}"  # noqa: E501
+        stdout, _ = self.az_cli.run(["resource", "show", "--ids", resource_id, "--latest-include-preview"])
+        capacity_data = json.loads(stdout.strip())
         properties = capacity_data.get("properties", {})
         sku = capacity_data.get("sku", {})
         administration = properties.get("administration", {})
@@ -112,11 +117,31 @@ class FabricCapacityManager(CapacityManager):
             sku_name=sku.get("name", ""),
             sku_tier=sku.get("tier", ""),
             tags=capacity_data.get("tags", {}),
-            fabric_id=capacity_data.get("fabricId", ""),
+            fabric_id=await self._get_fabric_id(capacity_params.name),
             provisioning_state=properties.get("provisioningState", ""),
             state=properties.get("state", ""),
             administrators=administration.get("members", []),
         )
+
+    async def _get_fabric_id(self, capacity_name: str) -> str:
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service)
+        retry_handler = HttpRetryHandler(logger=self.logger)
+        response = retry_handler.execute(
+            requests.get,
+            f"{self.common_params.endpoint.power_bi}/v1/capacities",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        for capacity in response.json().get("value", []):
+            if capacity.get("displayName", "").lower() == capacity_name.lower():
+                return capacity.get("id", "")
+
+        error = f"Could not resolve Fabric capacity id for '{capacity_name}' from {self.common_params.endpoint.power_bi}/v1/capacities"
+        self.logger.error(error)
+        raise RuntimeError(error)
 
     async def create(self, capacity_params: FabricCapacityParams) -> None:
         """
