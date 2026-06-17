@@ -40,7 +40,8 @@
 1. Install copilot:
 
    ```bash
-   wget -qO- https://gh.io/copilot-install | bash
+   curl -fsSL https://gh.io/copilot-install | bash
+   $HOME/.local/bin/copilot --yolo
    ```
 
 1. If ADO gives you a hard time, generate a PAT:
