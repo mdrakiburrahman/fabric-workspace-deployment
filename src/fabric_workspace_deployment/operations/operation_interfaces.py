@@ -2807,7 +2807,8 @@ class OperationParams:
         }
 
     def _get_unique_env_id(self) -> str:
-        return os.getenv("UNIQUE_ENV_ID") or self.get_user_alias()
+        raw = os.getenv("UNIQUE_ENV_ID") or self.get_user_alias()
+        return re.sub(r"[^a-zA-Z0-9]", "", raw.lower())
 
     def _get_user_appid(self) -> str:
         return os.getenv("USER_APP_ID") or self.az_cli.get_user_appid()

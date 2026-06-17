@@ -60,22 +60,23 @@ class FabricCicdManager(CicdManager):
     async def execute(self) -> None:
         self.logger.info("Executing FabricCicdManager")
         tasks = []
+        deployed_workspaces = []
         for workspace_params in self.common_params.fabric.workspaces:
             if workspace_params.skip_deploy:
                 self.logger.info(f"Skipping CICD for workspace '{workspace_params.name}' due to skipDeploy=true")
                 continue
             workspace_info = await self.workspace.get(workspace_params)
-            task = asyncio.create_task(self.reconcile(workspace_info.id, workspace_params.template), name=f"reconcile-cicd-{workspace_params.name}")
+            task = asyncio.create_task(self.reconcile(workspace_info.id, workspace_params, workspace_params.template), name=f"reconcile-cicd-{workspace_params.name}")
             tasks.append(task)
+            deployed_workspaces.append(workspace_params)
 
         if tasks:
             self.logger.info(f"Executing CICD reconciliation for {len(tasks)} workspaces in parallel")
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = []
-            for i, result in enumerate(results):
+            for workspace_params, result in zip(deployed_workspaces, results):
                 if isinstance(result, Exception):
-                    workspace_name = self.common_params.fabric.workspaces[i].name
-                    error_msg = f"Failed to reconcile CICD for workspace '{workspace_name}': {result}"
+                    error_msg = f"Failed to reconcile CICD for workspace '{workspace_params.name}': {result}"
                     self.logger.error(error_msg)
                     errors.append(error_msg)
 
@@ -87,7 +88,7 @@ class FabricCicdManager(CicdManager):
 
         self.logger.info("Finished executing FabricCicdManager")
 
-    async def reconcile(self, workspace_id: str, template_params: FabricWorkspaceTemplateParams) -> None:
+    async def reconcile(self, workspace_id: str, workspace_params: FabricWorkspaceParams, template_params: FabricWorkspaceTemplateParams) -> None:
         """
         Reconcile CICD for a single workspace.
 
@@ -107,19 +108,7 @@ class FabricCicdManager(CicdManager):
 
         self.logger.info("Processing monitoring template generation")
         if template_params.generator.monitoring:
-            workspace_params = None
-            for wp in self.common_params.fabric.workspaces:
-                workspace_info = await self.workspace.get(wp)
-                if workspace_info.id == workspace_id:
-                    workspace_params = wp
-                    break
-
-            if workspace_params:
-                await self._generate_template(workspace_id, workspace_params, template_params)
-            else:
-                error_msg = f"Could not find workspace params for workspace ID: {workspace_id}"
-                self.logger.error(error_msg)
-                raise RuntimeError(error_msg)
+            await self._generate_template(workspace_id, workspace_params, template_params)
         else:
             self.logger.info("No monitoring templates configured, skipping template generation")
 
@@ -173,7 +162,7 @@ class FabricCicdManager(CicdManager):
             self.logger.info(f"Completed batch {batch_idx}/{len(deployment_batches)}")
 
             if "Environment" in batch:
-                await self._post_process_environment_spark_settings(workspace_id, template_params)
+                await self._post_process_environment_spark_settings(workspace_id, workspace_params, template_params)
 
         if template_params.unpublish_orphans:
             self.logger.info("Unpublishing orphan items")
@@ -198,6 +187,7 @@ class FabricCicdManager(CicdManager):
     async def _post_process_environment_spark_settings(
         self,
         workspace_id: str,
+        workspace_params: FabricWorkspaceParams,
         template_params: FabricWorkspaceTemplateParams,
     ) -> None:
         """
@@ -208,17 +198,6 @@ class FabricCicdManager(CicdManager):
         - https://github.com/microsoft/fabric-cicd/issues/954
         - https://github.com/microsoft/fabric-cicd/issues/955
         """
-        workspace_params = None
-        for wp in self.common_params.fabric.workspaces:
-            workspace_info = await self.workspace.get(wp)
-            if workspace_info.id == workspace_id:
-                workspace_params = wp
-                break
-
-        if not workspace_params:
-            self.logger.warning(f"Could not find workspace params for workspace ID: {workspace_id}, skipping SparkCore post-processing")
-            return
-
         capacity_id = (await self.workspace.get(workspace_params)).capacity_id
         artifacts_root = Path(self.common_params.local.root_folder) / template_params.artifacts_folder
 

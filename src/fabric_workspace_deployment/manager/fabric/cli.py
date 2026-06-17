@@ -8,6 +8,22 @@ from subprocess import PIPE, Popen, TimeoutExpired
 import os
 
 
+class FabricCliError(Exception):
+    """
+    Raised when a ``fab`` command exits non-zero.
+
+    Carries the captured streams because the Fabric CLI writes its error text to
+    stdout (e.g. ``x get: [NotFound] ...``), not stderr, so callers must inspect
+    ``stdout`` to recover the real cause.
+    """
+
+    def __init__(self, message: str, *, returncode: int | None = None, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class FabricCli:
     """
     A Fabric CLI wrapper.
@@ -69,7 +85,8 @@ class FabricCli:
         self.logger.debug(f"Stderr: {stderr_str}")
 
         if proc.returncode != 0 and self.exit_on_error:
-            raise Exception(stderr_str)
+            message = stderr_str.strip() or stdout_str.strip() or f"fab command failed with exit code {proc.returncode}"
+            raise FabricCliError(message, returncode=proc.returncode, stdout=stdout_str, stderr=stderr_str)
 
         return (stdout_str, stderr_str)
 
@@ -106,8 +123,12 @@ class FabricCli:
             return stdout.strip()
         except Exception as e:
             self.logger.error(f"Error running Fabric CLI command: {command}")
-            if hasattr(e, "stderr"):
-                self.logger.error(e.stderr)
+            stderr_detail = (getattr(e, "stderr", "") or "").strip()
+            stdout_detail = (getattr(e, "stdout", "") or "").strip()
+            if stderr_detail:
+                self.logger.error(f"stderr: {stderr_detail}")
+            if stdout_detail:
+                self.logger.error(f"stdout: {stdout_detail}")
             if self.exit_on_error:
                 raise
             return str(e).strip()
