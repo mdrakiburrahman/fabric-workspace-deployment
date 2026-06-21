@@ -231,10 +231,7 @@ class AzCli:
             if len(parts) != 3:  # noqa: PLR2004
                 raise RuntimeError("Invalid JWT token format")  # noqa: EM101
             payload = parts[1]
-            padding = len(payload) % 4
-            if padding:
-                payload += "=" * (4 - padding)
-            decoded_payload = base64.b64decode(payload)
+            decoded_payload = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
             claims = json.loads(decoded_payload)
             claim_value = claims.get(claim_name)
             if not claim_value:
