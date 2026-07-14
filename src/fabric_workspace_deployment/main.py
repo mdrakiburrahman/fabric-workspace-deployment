@@ -6,55 +6,16 @@ Fabric Workspace Deployment.
 import argparse
 import asyncio
 import logging
+import os
 from datetime import datetime
 
+from fabric_workspace_deployment.logging_config import setup_logging_from_config
 from fabric_workspace_deployment.operations.operation_interfaces import OperationParams
 from fabric_workspace_deployment.operations.operators import CentralOperator
-import os
 
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
-
-
-class _ExcludeByNamePrefix(logging.Filter):
-    """Reject log records whose logger name starts with a given prefix."""
-
-    def __init__(self, prefix: str) -> None:
-        super().__init__()
-        self._prefix = prefix
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return not record.name.startswith(self._prefix)
-
-
-def setup_logging() -> str:
-    """
-    Configure logging with timestamp-based filename.
-
-    Returns:
-        str: The log filename that was created.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
-    log_filename = f"app_{timestamp}.log"
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-    formatter = logging.Formatter(log_format)
-
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(getattr(logging, log_level))
-    stream_handler.setFormatter(formatter)
-    stream_handler.addFilter(_ExcludeByNamePrefix("fabric_cicd"))
-
-    logging.basicConfig(
-        level=logging.DEBUG,
-        handlers=[file_handler, stream_handler],
-    )
-    return log_filename
 
 
 def dump_env_vars() -> None:
@@ -65,18 +26,32 @@ def dump_env_vars() -> None:
         logging.debug(f"{key}={value}")
 
 
-def parse_config() -> OperationParams:
+def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments.
 
     Returns:
-        OperationParams: The parsed operation parameters.
+        argparse.Namespace: The parsed command line arguments.
     """
     parser = argparse.ArgumentParser(description="Deploys Fabric Workspace.")
     parser.add_argument("--config-file-absolute-path", type=str, help="Absolute path to the configuration file.")
     parser.add_argument("--operation", type=str, help="The operation to execute.")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def build_operation_params(args: argparse.Namespace) -> OperationParams:
+    """
+    Build and validate operation parameters from parsed arguments.
+
+    Args:
+        args: The parsed command line arguments.
+
+    Returns:
+        OperationParams: The validated operation parameters.
+
+    Raises:
+        ValueError: If the configuration is invalid.
+    """
     logging.info(f"Config file absolute path: {args.config_file_absolute_path}")
     logging.info(f"Operation: {args.operation}")
 
@@ -100,9 +75,17 @@ async def async_main() -> None:
     """
     Async entry point.
     """
-    logging.info(f"Starting Fabric Deployer with logs at: {setup_logging()}.")
+    args = parse_args()
+    if not args.config_file_absolute_path:
+        error_message = "The --config-file-absolute-path argument is required."
+        raise ValueError(error_message)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
+    log_dir = setup_logging_from_config(args.config_file_absolute_path, timestamp)
+    logging.info(f"Starting Fabric Deployer with logs at: {log_dir}.")
+
     dump_env_vars()
-    operation_params = parse_config()
+    operation_params = build_operation_params(args)
     await CentralOperator(operation_params).execute()
     logging.info("Fabric Deployment complete.")
 
