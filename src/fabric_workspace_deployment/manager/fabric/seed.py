@@ -4,11 +4,11 @@
 
 import asyncio
 import logging
-from pathlib import Path
 
 from fabric_workspace_deployment.manager.azure.storage import AzStorageManager
 from fabric_workspace_deployment.operations.operation_interfaces import (
     CommonParams,
+    SeedFile,
     SeedManager,
 )
 
@@ -56,8 +56,7 @@ class FabricSeedManager(SeedManager):
                             index=i,
                             account=storage.account,
                             container=storage.container,
-                            local_file_path=seed_file.local_concrete_file.file_path,
-                            azure_file_path=seed_file.storage_account_file.file_path,
+                            seed_file=seed_file,
                         ),
                         name=f"upload-seed-{storage.account}-{i}",
                     )
@@ -84,8 +83,7 @@ class FabricSeedManager(SeedManager):
         index: int,
         account: str,
         container: str,
-        local_file_path: str,
-        azure_file_path: str,
+        seed_file: SeedFile,
     ) -> None:
         """
         Upload a single seed file to Azure Storage.
@@ -94,16 +92,17 @@ class FabricSeedManager(SeedManager):
             index: The index of the seed file (for logging)
             account: The storage account name
             container: The storage container name
-            local_file_path: The relative local file path (from root folder)
-            azure_file_path: The Azure file path (relative path in container)
+            seed_file: The seed file configuration (concrete or searched local file)
 
         Raises:
-            FileNotFoundError: If the local file does not exist
+            FileNotFoundError: If the local file does not exist or a searched file matches nothing
+            AssertionError: If a searched file matches more than one file
             RuntimeError: If blob upload fails
         """
-        absolute_local_path = str(Path(self.common_params.local.root_folder) / local_file_path)
+        absolute_local_path = str(seed_file.resolve_local_absolute_path(self.common_params.local.root_folder))
+        azure_file_path = seed_file.storage_account_file.file_path
 
-        self.logger.info(f"Uploading seed file [{index}]: {local_file_path} -> {azure_file_path}")
+        self.logger.info(f"Uploading seed file [{index}]: {absolute_local_path} -> {azure_file_path}")
 
         # Run the synchronous upload_blob in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
@@ -116,4 +115,4 @@ class FabricSeedManager(SeedManager):
             azure_file_path,
         )
 
-        self.logger.info(f"Successfully uploaded seed file [{index}]: {local_file_path}")
+        self.logger.info(f"Successfully uploaded seed file [{index}]: {absolute_local_path}")
