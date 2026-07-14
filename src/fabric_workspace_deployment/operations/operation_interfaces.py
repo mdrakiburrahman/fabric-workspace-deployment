@@ -1358,6 +1358,15 @@ class LocalConcreteFile:
 
 
 @dataclass
+class LocalSearchedFile:
+    """Local file reference resolved by globbing ``prefix*suffix`` under a folder."""
+
+    folder_path: str
+    prefix: str
+    suffix: str
+
+
+@dataclass
 class StorageAccountFile:
     """Storage account file reference."""
 
@@ -1366,10 +1375,57 @@ class StorageAccountFile:
 
 @dataclass
 class SeedFile:
-    """Seed file mapping between local and storage account."""
+    """Seed file mapping between local and storage account.
 
-    local_concrete_file: LocalConcreteFile
+    Exactly one of ``local_concrete_file`` or ``local_searched_file`` must be set.
+    """
+
     storage_account_file: StorageAccountFile
+    local_concrete_file: LocalConcreteFile | None = None
+    local_searched_file: LocalSearchedFile | None = None
+
+    def resolve_local_absolute_path(self, root_folder: str) -> Path:
+        """
+        Resolve this seed file to a single absolute local path.
+
+        Concrete files are joined with ``root_folder``. Searched files glob
+        ``f"{prefix}*{suffix}"`` under ``folder_path`` (used as-is when absolute, else
+        relative to ``root_folder``) and must match exactly one file.
+
+        Args:
+            root_folder: The local root folder to resolve relative paths against.
+
+        Returns:
+            Path: The resolved absolute local path.
+
+        Raises:
+            FileNotFoundError: If a searched file matches zero files.
+            AssertionError: If a searched file matches more than one file.
+            ValueError: If neither local file reference is set.
+        """
+        if self.local_concrete_file is not None:
+            return Path(root_folder) / self.local_concrete_file.file_path
+
+        if self.local_searched_file is not None:
+            source_folder = Path(self.local_searched_file.folder_path)
+            if not source_folder.is_absolute():
+                source_folder = Path(root_folder) / self.local_searched_file.folder_path
+
+            pattern = f"{self.local_searched_file.prefix}*{self.local_searched_file.suffix}"
+            matching_files = sorted(source_folder.glob(pattern))
+
+            if len(matching_files) == 0:
+                msg = f"No files match pattern '{pattern}' in {source_folder}"
+                raise FileNotFoundError(msg)
+
+            if len(matching_files) > 1:
+                msg = f"Multiple files match pattern '{pattern}' in {source_folder}: {[f.name for f in matching_files]}"
+                raise AssertionError(msg)
+
+            return matching_files[0]
+
+        msg = "SeedFile must set exactly one of 'localConcreteFile' or 'localSearchedFile'"
+        raise ValueError(msg)
 
 
 class StorageRbacAuthMode(Enum):
@@ -3283,17 +3339,34 @@ class OperationParams:
             return False
 
         for i, seed_file in enumerate(storage.seed_files):
-            if not seed_file.local_concrete_file.file_path:
-                self.logger.error(f"Seed file localConcreteFile.filePath at index {i} cannot be empty")
+            if seed_file.local_concrete_file is not None and seed_file.local_searched_file is not None:
+                self.logger.error(f"Seed file at index {i} must set only one of localConcreteFile or localSearchedFile")
                 return False
 
-            local_file_full_path = Path(self.common.local.root_folder) / seed_file.local_concrete_file.file_path
+            if seed_file.local_concrete_file is not None:
+                if not seed_file.local_concrete_file.file_path:
+                    self.logger.error(f"Seed file localConcreteFile.filePath at index {i} cannot be empty")
+                    return False
+            elif seed_file.local_searched_file is not None:
+                if not seed_file.local_searched_file.folder_path:
+                    self.logger.error(f"Seed file localSearchedFile.folderPath at index {i} cannot be empty")
+                    return False
+            else:
+                self.logger.error(f"Seed file at index {i} must set one of localConcreteFile or localSearchedFile")
+                return False
+
+            try:
+                local_file_full_path = seed_file.resolve_local_absolute_path(self.common.local.root_folder)
+            except (FileNotFoundError, AssertionError, ValueError) as e:
+                self.logger.error(f"Seed file at index {i} could not be resolved to a single local file: {e}")
+                return False
+
             if not local_file_full_path.exists():
-                self.logger.error(f"Seed file localConcreteFile does not exist at index {i}: {local_file_full_path}")
+                self.logger.error(f"Seed file local path does not exist at index {i}: {local_file_full_path}")
                 return False
 
             if not local_file_full_path.is_file():
-                self.logger.error(f"Seed file localConcreteFile is not a file at index {i}: {local_file_full_path}")
+                self.logger.error(f"Seed file local path is not a file at index {i}: {local_file_full_path}")
                 return False
 
             if not seed_file.storage_account_file.file_path:
@@ -4062,12 +4135,31 @@ class OperationParams:
         return StorageRbacParams(auth=StorageRbacAuthParams(mode=mode, jwt=jwt_params))
 
     def _parse_seed_file(self, data: dict[str, Any]) -> SeedFile:
-        """Parse seed file configuration."""
-        local_concrete_file = LocalConcreteFile(file_path=data["localConcreteFile"]["filePath"])
+        """
+        Parse seed file configuration.
+
+        Exactly one of ``localConcreteFile`` or ``localSearchedFile`` must be present.
+        """
+        has_concrete = "localConcreteFile" in data
+        has_searched = "localSearchedFile" in data
+
+        if has_concrete == has_searched:
+            msg = "Seed file must set exactly one of 'localConcreteFile' or 'localSearchedFile'"
+            raise ValueError(msg)
+
+        local_concrete_file = None
+        local_searched_file = None
+        if has_concrete:
+            local_concrete_file = LocalConcreteFile(file_path=data["localConcreteFile"]["filePath"])
+        else:
+            searched = data["localSearchedFile"]
+            local_searched_file = LocalSearchedFile(folder_path=searched["folderPath"], prefix=searched["prefix"], suffix=searched["suffix"])
+
         storage_account_file = StorageAccountFile(file_path=data["storageAccountFile"]["filePath"])
         return SeedFile(
-            local_concrete_file=local_concrete_file,
             storage_account_file=storage_account_file,
+            local_concrete_file=local_concrete_file,
+            local_searched_file=local_searched_file,
         )
 
     def _parse_shortcut_params(self, data: dict[str, Any]) -> ShortcutParams:
