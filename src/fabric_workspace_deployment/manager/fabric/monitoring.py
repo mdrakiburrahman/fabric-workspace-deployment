@@ -4,6 +4,7 @@
 
 import asyncio
 import logging
+import time
 
 import dacite
 import requests
@@ -15,6 +16,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     CapacityManager,
     CommonParams,
     FabricWorkspaceParams,
+    HTTP_RETRYABLE_STATUS_CODES,
     HttpRetryHandler,
     KustoDatabaseDetail,
     MONITORING_KUSTO_DATABASE,
@@ -177,14 +179,24 @@ class FabricMonitoringManager(MonitoringManager):
         self.logger.info(f"Monitoring is enabled for workspace ID: {workspace_id}")
         return True
 
-    async def enable_monitoring_database(self, workspace_id: str) -> None:
+    async def enable_monitoring_database(self, workspace_id: str, poll_interval_seconds: int = 15, timeout_seconds: int = 600) -> None:
         """
-        Enable monitoring database for a workspace.
+        Enable the monitoring database for a workspace, idempotently.
 
-        This operation takes 2-3 minutes as it provisions the Kusto database synchronously.
+        First-time enablement kicks off multi-minute Kusto/Eventhouse provisioning behind an
+        asynchronous backend. The enable POST is issued once (not via the retrying HTTP handler);
+        a transient 5xx/timeout or a 409 Conflict ("provisioning already in progress") is treated
+        as "provisioning in progress" and converges by polling ``is_monitoring_enabled`` until the
+        database exists or ``timeout_seconds`` elapses.
 
         Args:
             workspace_id: The workspace ID
+            poll_interval_seconds: Seconds between status checks while provisioning
+            timeout_seconds: Maximum seconds to wait for provisioning to complete
+
+        Raises:
+            RuntimeError: If provisioning does not complete within ``timeout_seconds``
+            requests.exceptions.HTTPError: If the enable POST fails with a non-transient status
         """
         self.logger.info(f"Enabling monitoring database for workspace ID: {workspace_id}")
 
@@ -193,23 +205,62 @@ class FabricMonitoringManager(MonitoringManager):
 
         payload = {"artifactType": "KustoDatabase", "workloadPayload": "{}"}
 
-        # Use 10 minute timeout for this long-running operation
-        response = self.http_retry.execute(
-            requests.post,
-            url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=600,  # 10 minutes
-        )
+        try:
+            response = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=600,  # 10 minutes (client-side); the gateway may still time out sooner
+            )
+            response.raise_for_status()
 
-        response_data = response.json()
-        artifact_name = response_data.get("artifact", {}).get("displayName", "Unknown")
-        ingestion_state = response_data.get("ingestionState", "Unknown")
+            response_data = response.json()
+            artifact_name = response_data.get("artifact", {}).get("displayName", "Unknown")
+            ingestion_state = response_data.get("ingestionState", "Unknown")
 
-        self.logger.info(f"Monitoring database enabled for workspace ID: {workspace_id}. " f"Artifact: {artifact_name}, Ingestion State: {ingestion_state}")
+            self.logger.info(f"Monitoring database enabled for workspace ID: {workspace_id}. " f"Artifact: {artifact_name}, Ingestion State: {ingestion_state}")
+            return
+
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            if status_code != 409 and status_code not in HTTP_RETRYABLE_STATUS_CODES:  # noqa: PLR2004
+                raise
+            self.logger.warning(f"Enable-monitoring POST for workspace ID {workspace_id} returned HTTP {status_code}; treating as provisioning-in-progress and polling until enabled.")
+
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            self.logger.warning(f"Enable-monitoring POST for workspace ID {workspace_id} failed with {type(e).__name__}; treating as provisioning-in-progress and polling until enabled.")
+
+        await self._wait_for_monitoring_enabled(workspace_id, poll_interval_seconds, timeout_seconds)
+
+    async def _wait_for_monitoring_enabled(self, workspace_id: str, poll_interval_seconds: int, timeout_seconds: int) -> None:
+        """
+        Poll until monitoring is enabled for a workspace, or a timeout elapses.
+
+        Args:
+            workspace_id: The workspace ID
+            poll_interval_seconds: Seconds to wait between status checks
+            timeout_seconds: Maximum seconds to wait before failing
+
+        Raises:
+            RuntimeError: If monitoring is not enabled within ``timeout_seconds``
+        """
+        self.logger.info(f"Polling monitoring status for workspace ID: {workspace_id} " f"(timeout: {timeout_seconds}s, poll interval: {poll_interval_seconds}s)")
+
+        start_time = time.monotonic()
+        while True:
+            if await self.is_monitoring_enabled(workspace_id):
+                return
+
+            elapsed = time.monotonic() - start_time
+            if elapsed >= timeout_seconds:
+                error_msg = f"Timed out after {timeout_seconds}s waiting for monitoring to be enabled for workspace ID: {workspace_id}"
+                self.logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            await asyncio.sleep(poll_interval_seconds)
 
     async def set_ingestion_state(self, workspace_id: str, state: str) -> None:
         """
