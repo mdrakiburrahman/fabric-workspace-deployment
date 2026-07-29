@@ -682,6 +682,7 @@ class SparkAutoscale:
     """Spark core autoscale configuration."""
 
     workload_autoscale_limit: int
+    justification: str
 
 
 @dataclass
@@ -689,6 +690,7 @@ class WarehouseAutoscale:
     """Warehouse autoscale configuration."""
 
     workload_autoscale_limit: int
+    justification: str
 
 
 @dataclass
@@ -705,6 +707,7 @@ class FabricCapacityParams:
 
     name: str
     sku: str
+    justification: str
     administrators: list[str]
     autoscale: CapacityAutoscale
 
@@ -3230,6 +3233,10 @@ class OperationParams:
                 self.logger.error(f"Workspace capacity sku at index {i} cannot be empty")
                 return False
 
+            if not workspace.capacity.justification:
+                self.logger.error(f"Workspace capacity justification at index {i} cannot be empty")
+                return False
+
             if not workspace.capacity.administrators or not len(workspace.capacity.administrators) >= 1:
                 self.logger.error(f"Workspace capacity administrators at index {i} must contain at least one administrator")
                 return False
@@ -3247,6 +3254,10 @@ class OperationParams:
                 self.logger.error(f"Workspace capacity autoscale sparkCore workloadAutoscaleLimit at index {i} must be 0 or >= 2, got {spark_limit}")
                 return False
 
+            if not workspace.capacity.autoscale.spark_core.justification:
+                self.logger.error(f"Workspace capacity autoscale sparkCore justification at index {i} cannot be empty")
+                return False
+
             warehouse_limit = workspace.capacity.autoscale.warehouse.workload_autoscale_limit
             if warehouse_limit < 0:
                 self.logger.error(f"Workspace capacity autoscale warehouse workloadAutoscaleLimit at index {i} must be >= 0, got {warehouse_limit}")
@@ -3254,6 +3265,10 @@ class OperationParams:
 
             if warehouse_limit > 0 and warehouse_limit < 32:
                 self.logger.error(f"Workspace capacity autoscale warehouse workloadAutoscaleLimit at index {i} must be 0 or >= 32, got {warehouse_limit}")
+                return False
+
+            if not workspace.capacity.autoscale.warehouse.justification:
+                self.logger.error(f"Workspace capacity autoscale warehouse justification at index {i} cannot be empty")
                 return False
 
             if not workspace.shortcut_auth_z_role_name:
@@ -4094,14 +4109,15 @@ class OperationParams:
             administrators=list(dict.fromkeys(data["administrators"])),
             name=data["name"],
             sku=data["sku"],
+            justification=data["justification"],
             autoscale=self._parse_capacity_autoscale(data["autoscale"]),
         )
 
     def _parse_capacity_autoscale(self, data: dict[str, Any]) -> CapacityAutoscale:
         """Parse capacity autoscale parameters."""
         return CapacityAutoscale(
-            spark_core=SparkAutoscale(workload_autoscale_limit=data["sparkCore"]["workloadAutoscaleLimit"]),
-            warehouse=WarehouseAutoscale(workload_autoscale_limit=data["warehouse"]["workloadAutoscaleLimit"]),
+            spark_core=SparkAutoscale(workload_autoscale_limit=data["sparkCore"]["workloadAutoscaleLimit"], justification=data["sparkCore"]["justification"]),
+            warehouse=WarehouseAutoscale(workload_autoscale_limit=data["warehouse"]["workloadAutoscaleLimit"], justification=data["warehouse"]["justification"]),
         )
 
     def _parse_fabric_storage_params(self, data: dict[str, Any]) -> FabricStorageParams:
