@@ -11,6 +11,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     AlertManager,
     CapacityManager,
     CicdManager,
+    EntitlementManager,
     EntryPointOperator,
     MonitoringManager,
     Operation,
@@ -49,6 +50,7 @@ class CentralOperator(EntryPointOperator):
         self.rbac_manager: RbacManager = self.management_factory.create_fabric_rbac_manager()
         self.model_manager: ModelManager = self.management_factory.create_semantic_model_manager()
         self.monitoring_manager: MonitoringManager = self.management_factory.create_fabric_monitoring_manager()
+        self.entitlement_manager: EntitlementManager = self.management_factory.create_entitlement_manager()
 
     async def execute(self) -> None:
         """Execute the operation based on the operation type."""
@@ -109,6 +111,7 @@ class CentralOperator(EntryPointOperator):
         """
         Execute dry run operation.
         """
+        await self.entitlement_manager.execute()
         self.logger.info("Dry run completed.")
 
     async def _execute_deploy_alert(self) -> None:

@@ -58,6 +58,14 @@ PARAMETER_FILE_EXTENSION_YML = ".yml"
 PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
 
 # ---------------------------------------------------------------------------- #
+# ------------------------- ENTITLEMENT CONSTANTS ---------------------------- #
+# ---------------------------------------------------------------------------- #
+
+GUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+GRAPH_TOKEN_ENV_VAR = "FAB_TOKEN_GRAPH"
+JWT_SEGMENT_COUNT = 3
+
+# ---------------------------------------------------------------------------- #
 # -------------------------- MONITORING CONSTANTS ---------------------------- #
 # ---------------------------------------------------------------------------- #
 
@@ -203,6 +211,18 @@ class PrincipalType(Enum):
     GROUP = "Group"
     USER = "User"
     SERVICE_PRINCIPAL = "ServicePrincipal"
+
+
+class EntitlementMatchMode(Enum):
+    """
+    Enumeration of match modes for entitlement group membership checks.
+
+    ANY: The principal must be a member of at least one of the configured groups.
+    ALL: The principal must be a member of every one of the configured groups.
+    """
+
+    ANY = "any"
+    ALL = "all"
 
 
 class NodeSizeFamily(Enum):
@@ -407,6 +427,7 @@ class EndpointParams:
     analysis_service: str
     cicd: str
     power_bi: str
+    graph: str
 
 
 @dataclass
@@ -414,6 +435,7 @@ class ScopeParams:
     """Scope configuration parameters."""
 
     analysis_service: str
+    graph: str
 
 
 @dataclass
@@ -1028,6 +1050,41 @@ class Identity:
 
 
 @dataclass
+class Entitlement:
+    """
+    A required Entra group membership assertion for a principal.
+
+    An entitlement declares that the principal identified by object_id must be a
+    transitive member of the configured groups, according to the match mode.
+    """
+
+    reason: str
+    object_id: str
+    match: EntitlementMatchMode | None
+    group_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class EntitlementResult:
+    """Outcome of evaluating a single entitlement against the directory."""
+
+    entitlement: Entitlement
+    matched_group_ids: set[str] = field(default_factory=set)
+    satisfied: bool = False
+    skipped: bool = False
+
+    @property
+    def missing_group_ids(self) -> list[str]:
+        """
+        Group ids the principal was not found to be a member of.
+
+        Returns:
+            list[str]: The configured group ids, in order, that did not match.
+        """
+        return [group_id for group_id in self.entitlement.group_ids if group_id.lower() not in self.matched_group_ids]
+
+
+@dataclass
 class WorkspaceRbacParams:
     """Workspace RBAC assignment parameters."""
 
@@ -1494,6 +1551,7 @@ class CommonParams:
     fabric: FabricParams
     identities: list[Identity]
     contacts: dict[str, ContactDetail] | None = None
+    entitlements: list[Entitlement] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------- #
@@ -1526,6 +1584,25 @@ class EntryPointOperator(Manager):
         super().__init__(operation_params.common)
         self.operation_params = operation_params
         self.operation = operation_params.operation
+
+
+class EntitlementManager(Manager):
+    """
+    Interface for verifying that principals hold their required directory entitlements.
+
+    Implementations own the policy layer — match-mode semantics, skip rules and failure
+    reporting — and delegate all directory I/O to a GraphClient.
+    """
+
+    @abstractmethod
+    async def evaluate(self) -> list["EntitlementResult"]:
+        """
+        Evaluate every configured entitlement without raising on failure.
+
+        Returns:
+            list[EntitlementResult]: One result per configured entitlement, in config order
+        """
+        pass
 
 
 class AlertManager(ABC):
@@ -2656,6 +2733,48 @@ class AzureStorageManager(ABC):
 # ---------------------------------------------------------------------------- #
 
 
+class GraphClient(ABC):
+    """
+    Interface for Microsoft Graph directory operations.
+
+    Implementations own transport concerns only — authentication, request batching,
+    retries and error surfacing — and hold no policy logic. Additional directory
+    operations (for example adding or removing group members) belong on this
+    interface alongside the read operations.
+    """
+
+    def __init__(self, common_params: "CommonParams"):
+        """
+        Initialize the Graph client with common parameters.
+
+        Args:
+            common_params: Common configuration parameters
+        """
+        self.common_params = common_params
+
+    @abstractmethod
+    async def check_member_groups(self, object_id: str, group_ids: list[str]) -> set[str]:
+        """
+        Determine which of the supplied groups a directory object is a transitive member of.
+
+        Args:
+            object_id: The AAD object id of the principal (user, group or service principal)
+            group_ids: The group object ids to test membership against
+
+        Returns:
+            set[str]: The subset of group_ids the principal is a member of, lowercased
+
+        Raises:
+            RuntimeError: If the directory call fails
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+
 class AzureRbacManager(ABC):
     """
     Interface for managing Azure RBAC role assignments via the ARM REST API.
@@ -2988,7 +3107,7 @@ class OperationParams:
 
     def _validate_common_params(self) -> bool:
         """Validate common parameters."""
-        return self._validate_local_params() and self._validate_endpoint_params() and self._validate_scope_params() and self._validate_arm_params() and self._validate_identities_params() and self._validate_contacts_params() and self._validate_fabric_params()
+        return self._validate_local_params() and self._validate_endpoint_params() and self._validate_scope_params() and self._validate_arm_params() and self._validate_identities_params() and self._validate_entitlements_params() and self._validate_contacts_params() and self._validate_fabric_params()
 
     def _validate_local_params(self) -> bool:
         """Validate local parameters."""
@@ -3008,6 +3127,9 @@ class OperationParams:
         if not self.common.endpoint.power_bi:
             self.logger.error(f"powerBi endpoint cannot be empty: {self.common.endpoint.power_bi}")
             return False
+        if not self.common.endpoint.graph:
+            self.logger.error(f"graph endpoint cannot be empty: {self.common.endpoint.graph}")
+            return False
         if not self.common.endpoint.analysis_service.startswith("https://"):
             self.logger.error(f"analysisService endpoint must be a valid HTTPS URL: {self.common.endpoint.analysis_service}")
             return False
@@ -3016,6 +3138,9 @@ class OperationParams:
             return False
         if not self.common.endpoint.power_bi.startswith("https://"):
             self.logger.error(f"powerBi endpoint must be a valid HTTPS URL: {self.common.endpoint.power_bi}")
+            return False
+        if not self.common.endpoint.graph.startswith("https://"):
+            self.logger.error(f"graph endpoint must be a valid HTTPS URL: {self.common.endpoint.graph}")
             return False
 
         return True
@@ -3027,6 +3152,12 @@ class OperationParams:
             return False
         if not self.common.scope.analysis_service.startswith("https://"):
             self.logger.error(f"analysisService scope must be a valid HTTPS URL: {self.common.scope.analysis_service}")
+            return False
+        if not self.common.scope.graph:
+            self.logger.error(f"graph scope cannot be empty: {self.common.scope.graph}")
+            return False
+        if not self.common.scope.graph.startswith("https://"):
+            self.logger.error(f"graph scope must be a valid HTTPS URL: {self.common.scope.graph}")
             return False
 
         return True
@@ -3053,6 +3184,134 @@ class OperationParams:
                 return False
 
         return True
+
+    def _validate_entitlements_params(self) -> bool:
+        """
+        Validate entitlements parameters.
+
+        Performs static, offline validation only; the live directory membership check
+        is executed by the EntitlementManager during the dryRun operation.
+        """
+        if self.common.entitlements is None:
+            self.logger.error("Common entitlements cannot be None")
+            return False
+
+        if len(self.common.entitlements) == 0:
+            return True
+
+        for i, entitlement in enumerate(self.common.entitlements):
+            if not self._validate_entitlement_params(entitlement, i):
+                return False
+
+        return self._validate_graph_token_env()
+
+    def _validate_entitlement_params(self, entitlement: Entitlement, entitlement_index: int) -> bool:
+        """
+        Validate a single entitlement entry.
+
+        Args:
+            entitlement: The entitlement to validate
+            entitlement_index: Index of the entitlement for error reporting
+
+        Returns:
+            bool: True if the entitlement is valid, False otherwise
+        """
+        if not entitlement.reason or not entitlement.reason.strip():
+            self.logger.error(f"entitlements[{entitlement_index}].reason cannot be empty")
+            return False
+
+        if not entitlement.object_id:
+            self.logger.error(f"entitlements[{entitlement_index}].objectId cannot be empty")
+            return False
+
+        if not self._is_valid_guid(entitlement.object_id):
+            self.logger.error(f"entitlements[{entitlement_index}].objectId is not a valid GUID: {entitlement.object_id}")
+            return False
+
+        if entitlement.match is None:
+            allowed = ", ".join(f"'{mode.value}'" for mode in EntitlementMatchMode)
+            self.logger.error(f"entitlements[{entitlement_index}].match is required and must be one of: {allowed}")
+            return False
+
+        if not isinstance(entitlement.group_ids, list):
+            self.logger.error(f"entitlements[{entitlement_index}].groupIds must be a list of GUIDs")
+            return False
+
+        for k, group_id in enumerate(entitlement.group_ids):
+            if not isinstance(group_id, str) or not group_id:
+                self.logger.error(f"entitlements[{entitlement_index}].groupIds[{k}] must be a non-empty string")
+                return False
+            if not self._is_valid_guid(group_id):
+                self.logger.error(f"entitlements[{entitlement_index}].groupIds[{k}] is not a valid GUID: {group_id}")
+                return False
+
+        entitlement.group_ids = self._deduplicate_group_ids(entitlement.group_ids, entitlement_index)
+
+        if len(entitlement.group_ids) == 0:
+            self.logger.info(f"entitlements[{entitlement_index}] has no groupIds — the membership check will be skipped")
+
+        return True
+
+    def _deduplicate_group_ids(self, group_ids: list[str], entitlement_index: int) -> list[str]:
+        """
+        Remove case-insensitive duplicate group ids while preserving order.
+
+        Args:
+            group_ids: The configured group ids
+            entitlement_index: Index of the entitlement for logging
+
+        Returns:
+            list[str]: Deduplicated group ids
+        """
+        seen: set[str] = set()
+        deduplicated: list[str] = []
+        for group_id in group_ids:
+            normalized = group_id.lower()
+            if normalized in seen:
+                self.logger.debug(f"Removing duplicate groupId in entitlements[{entitlement_index}]: {group_id}")
+                continue
+            seen.add(normalized)
+            deduplicated.append(group_id)
+        return deduplicated
+
+    def _validate_graph_token_env(self) -> bool:
+        """
+        Validate the Microsoft Graph token environment variable when entitlements are configured.
+
+        The variable is optional — when absent the run falls back to the Azure CLI — but when
+        it is supplied it must be a well-formed JWT.
+
+        Returns:
+            bool: True if the environment is usable, False otherwise
+        """
+        token = os.getenv(GRAPH_TOKEN_ENV_VAR, "").strip()
+        if not token:
+            self.logger.info(f"Environment variable '{GRAPH_TOKEN_ENV_VAR}' is not set — entitlement checks will fall back to the Azure CLI for a '{self.common.scope.graph}' token")
+            return True
+
+        if len(token.split(".")) != JWT_SEGMENT_COUNT:
+            self.logger.error(f"Environment variable '{GRAPH_TOKEN_ENV_VAR}' does not contain a valid JWT (expected {JWT_SEGMENT_COUNT} dot-separated parts)")
+            return False
+
+        return True
+
+    def _is_valid_guid(self, value: str) -> bool:
+        """
+        Check whether a value is a well-formed GUID.
+
+        Values still containing an unresolved magic placeholder are accepted, so that
+        configurations parsed with replace_placeholders=False still validate.
+
+        Args:
+            value: The value to check
+
+        Returns:
+            bool: True if the value is a GUID or an unresolved placeholder
+        """
+        if "{" in value:
+            self.logger.debug(f"Skipping GUID validation for unresolved placeholder: {value}")
+            return True
+        return GUID_PATTERN.match(value) is not None
 
     def _validate_monitoring_params(self, monitoring: MonitoringParams, workspace_index: int) -> bool:
         """Validate monitoring parameters."""
@@ -3836,6 +4095,7 @@ class OperationParams:
             fabric=self._parse_fabric_params(data["fabric"], root_folder),
             identities=self._parse_identities_params(data.get("identities", [])),
             contacts=self._parse_contacts_params(data.get("contacts", None)),
+            entitlements=self._parse_entitlements_params(data.get("entitlements", [])),
         )
 
     def _parse_identities_params(self, data: list[dict[str, Any]]) -> list[Identity]:
@@ -3845,17 +4105,54 @@ class OperationParams:
             identities.append(self._parse_identity_params(identity_data))
         return self._deduplicate_list(identities)
 
+    def _parse_entitlements_params(self, data: list[dict[str, Any]]) -> list[Entitlement]:
+        """Parse entitlements parameters."""
+        entitlements = []
+        for entitlement_data in data:
+            entitlements.append(self._parse_entitlement_params(entitlement_data))
+        return self._deduplicate_list(entitlements)
+
+    def _parse_entitlement_params(self, data: dict[str, Any]) -> Entitlement:
+        """Parse a single entitlement."""
+        return Entitlement(
+            reason=data.get("reason", ""),
+            object_id=data.get("objectId", ""),
+            match=self._parse_entitlement_match_mode(data),
+            group_ids=data.get("groupIds", []),
+        )
+
+    def _parse_entitlement_match_mode(self, data: dict[str, Any]) -> EntitlementMatchMode | None:
+        """
+        Parse the entitlement match mode from JSON data.
+
+        Returns None for a missing or unrecognized value so that validation, rather
+        than parsing, reports the error with full context.
+
+        Args:
+            data: The raw entitlement dictionary
+
+        Returns:
+            EntitlementMatchMode | None: The parsed match mode, or None if absent/invalid
+        """
+        match_str = data.get("match")
+        if not isinstance(match_str, str):
+            return None
+        try:
+            return EntitlementMatchMode(match_str.strip().lower())
+        except ValueError:
+            return None
+
     def _parse_local_params(self, data: dict[str, Any]) -> LocalParams:
         """Parse local parameters."""
         return LocalParams(root_folder=data["rootFolder"])
 
     def _parse_endpoint_params(self, data: dict[str, Any]) -> EndpointParams:
         """Parse endpoint parameters."""
-        return EndpointParams(analysis_service=data["analysisService"], cicd=data["cicd"], power_bi=data["powerBi"])
+        return EndpointParams(analysis_service=data["analysisService"], cicd=data["cicd"], power_bi=data["powerBi"], graph=data["graph"])
 
     def _parse_scope_params(self, data: dict[str, Any]) -> ScopeParams:
         """Parse scope parameters."""
-        return ScopeParams(analysis_service=data["analysisService"])
+        return ScopeParams(analysis_service=data["analysisService"], graph=data["graph"])
 
     def _parse_arm_params(self, data: dict[str, Any]) -> ArmParams:
         """Parse ARM parameters."""

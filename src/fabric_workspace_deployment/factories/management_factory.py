@@ -16,6 +16,7 @@ from fabric_workspace_deployment.client.fabric_pipeline_run import FabricPipelin
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.azure.entitlement import AzEntitlementManager
 from fabric_workspace_deployment.manager.azure.rbac import ArmRbacManager
 from fabric_workspace_deployment.manager.azure.storage import AzStorageManager
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
@@ -29,7 +30,7 @@ from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
-from fabric_workspace_deployment.operations.operation_interfaces import HttpRetryHandler, MwcTokenClient, OperationParams, SparkEnvironmentClient
+from fabric_workspace_deployment.operations.operation_interfaces import GraphClient, HttpRetryHandler, MwcTokenClient, OperationParams, SparkEnvironmentClient
 
 
 class ManagementFactory(ABC):
@@ -69,6 +70,20 @@ class ManagementFactory(ABC):
     def create_arm_rbac_manager(self) -> ArmRbacManager:
         """
         Create an ARM RBAC Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_graph_client(self) -> "GraphClient":
+        """
+        Create a Microsoft Graph Client instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_entitlement_manager(self) -> AzEntitlementManager:
+        """
+        Create an Entitlement Manager instance.
         """
         pass
 
@@ -212,6 +227,23 @@ class ContainerizedManagementFactory(ManagementFactory):
 
     def create_arm_rbac_manager(self) -> ArmRbacManager:
         return ArmRbacManager(self.operation_params.common, self.http_retry_handler, self.logger)
+
+    def create_graph_client(self) -> "GraphClient":
+        from fabric_workspace_deployment.client.graph_membership import MsGraphMembershipClient
+
+        return MsGraphMembershipClient(
+            self.operation_params.common,
+            self.create_azure_cli(),
+            self.http_retry_handler,
+            self.logger,
+        )
+
+    def create_entitlement_manager(self) -> AzEntitlementManager:
+        return AzEntitlementManager(
+            self.operation_params.common,
+            self.create_graph_client(),
+            self.logger,
+        )
 
     def create_fabric_workspace_manager(self) -> FabricWorkspaceManager:
         return FabricWorkspaceManager(

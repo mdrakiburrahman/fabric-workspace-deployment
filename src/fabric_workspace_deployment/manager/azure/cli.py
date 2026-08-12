@@ -10,6 +10,21 @@ import sys
 from subprocess import PIPE, Popen, TimeoutExpired
 import os
 
+# ---------------------------------------------------------------------------- #
+# --------------------------- TOKEN ENV VARIABLES ---------------------------- #
+# ---------------------------------------------------------------------------- #
+
+# Maps a target resource scope to the environment variable holding a pre-issued
+# access token for it. When the variable is unset the token is fetched via `az`.
+SCOPE_TOKEN_ENV_VARS = {
+    "https://analysis.windows.net/powerbi/api": "FAB_TOKEN",
+    "https://management.azure.com": "FAB_TOKEN_AZURE",
+    "https://graph.microsoft.com": "FAB_TOKEN_GRAPH",
+    "https://graph.microsoft.us": "FAB_TOKEN_GRAPH",
+    "https://dod-graph.microsoft.us": "FAB_TOKEN_GRAPH",
+    "https://microsoftgraph.chinacloudapi.cn": "FAB_TOKEN_GRAPH",
+}
+
 
 class AzCli:
     """
@@ -127,10 +142,12 @@ class AzCli:
             RuntimeError: If the token cannot be retrieved or is empty
         """
         if not force_run_az:
-            if scope == "https://analysis.windows.net/powerbi/api" and os.getenv("FAB_TOKEN"):
-                return os.getenv("FAB_TOKEN")
-            elif scope == "https://management.azure.com" and os.getenv("FAB_TOKEN_AZURE"):
-                return os.getenv("FAB_TOKEN_AZURE")
+            env_var = SCOPE_TOKEN_ENV_VARS.get(scope.rstrip("/"))
+            if env_var:
+                token_from_env = os.getenv(env_var, "").strip()
+                if token_from_env:
+                    self.logger.debug(f"Using access token from environment variable '{env_var}' for scope {scope}")
+                    return token_from_env
 
         try:
             token = self.run_command(f"account get-access-token --resource {scope} --query accessToken -o tsv", timeout=60)
