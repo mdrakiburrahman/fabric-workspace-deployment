@@ -15,12 +15,12 @@ optional and defaults to `[]`.
     "scope": { "graph": "https://graph.microsoft.com" },
     "entitlements": [
       {
-        "reason": "User needs to be part of the SQL Telemetry & Intelligence entitlement",
+        "reason": "User needs to be part of the A, B, C entitlement",
         "objectId": "{user-oid}",
         "match": "any",
         "groupIds": [
-          "71b64a94-52b3-41f7-b0f7-dd864bfc9949",
-          "317cf3e4-fbfc-4e47-a344-a3309c74f962"
+          "...",
+          "..."
         ]
       }
     ]
@@ -65,7 +65,7 @@ reported in one aggregated error:
 
 ```
 1 entitlement check(s) failed:
-  - User needs to be part of the SQL Telemetry & Intelligence entitlement
+  - User needs to be part of the A, B, C entitlement
       objectId: b99a3530-636d-4621-8662-bc5c8022b125
       match: any
       missing groupIds: 00000000-1111-2222-3333-444444444444
