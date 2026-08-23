@@ -25,11 +25,10 @@ class FabricSeedManager(SeedManager):
             storage_manager: Azure Storage manager for uploading blobs
             logger: Optional logger instance
         """
-        super().__init__(common_params)
+        super().__init__(common_params, logger)
         self.storage_manager = storage_manager
-        self.logger = logger or logging.getLogger(__name__)
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """
         Execute seed file upload operations.
 

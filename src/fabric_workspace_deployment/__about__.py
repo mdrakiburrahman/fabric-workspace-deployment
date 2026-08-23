@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: 2025-present Raki Rahman <mdrakiburrahman@gmail.com>
 #
 # SPDX-License-Identifier: MIT
-import subprocess
+
 import os
+import runpy
+import subprocess
 import time
+
+PACKAGE_VERSION_ENV_VAR = runpy.run_path(os.path.join(os.path.dirname(__file__), "environment_variables.py"))["PACKAGE_VERSION_ENV_VAR"]
 
 
 def get_version():
     # Allow CI to pin a stable version via environment variable, ensuring
     # sdist and wheel get the same version in a single build invocation.
-    env_version = os.environ.get("PACKAGE_VERSION")
+    env_version = os.environ.get(PACKAGE_VERSION_ENV_VAR)
     if env_version:
         return env_version
 

@@ -4,7 +4,6 @@
 
 import asyncio
 import json
-import logging
 
 import dacite
 import requests
@@ -43,11 +42,10 @@ class FabricShortcutManager(ShortcutManager):
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
         self.workspace = workspace
-        self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
         self.mwc_token_client = mwc_token_client
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         self.logger.info("Executing FabricShortcutManager")
         tasks = []
         for workspace_params in self.common_params.fabric.workspaces:

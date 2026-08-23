@@ -6,24 +6,11 @@ import base64
 import functools
 import json
 import logging
+import os
 import sys
 from subprocess import PIPE, Popen, TimeoutExpired
-import os
 
-# ---------------------------------------------------------------------------- #
-# --------------------------- TOKEN ENV VARIABLES ---------------------------- #
-# ---------------------------------------------------------------------------- #
-
-# Maps a target resource scope to the environment variable holding a pre-issued
-# access token for it. When the variable is unset the token is fetched via `az`.
-SCOPE_TOKEN_ENV_VARS = {
-    "https://analysis.windows.net/powerbi/api": "FAB_TOKEN",
-    "https://management.azure.com": "FAB_TOKEN_AZURE",
-    "https://graph.microsoft.com": "FAB_TOKEN_GRAPH",
-    "https://graph.microsoft.us": "FAB_TOKEN_GRAPH",
-    "https://dod-graph.microsoft.us": "FAB_TOKEN_GRAPH",
-    "https://microsoftgraph.chinacloudapi.cn": "FAB_TOKEN_GRAPH",
-}
+from fabric_workspace_deployment.environment_variables import SCOPE_TOKEN_ENV_VARS
 
 
 class AzCli:

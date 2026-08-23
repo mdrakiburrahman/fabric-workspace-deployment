@@ -4,7 +4,6 @@
 
 import asyncio
 import json
-import logging
 
 import requests
 
@@ -23,9 +22,9 @@ class FabricCapacityManager(CapacityManager):
         super().__init__(common_params)
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
-        self.logger = logging.getLogger(__name__)
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
+        self._prepare_azure_resources()
         self.logger.info("Executing FabricCapacityManager")
         tasks = []
         deployed_capacities = []
@@ -54,6 +53,11 @@ class FabricCapacityManager(CapacityManager):
             self.logger.info("No workspaces found to reconcile")
 
         self.logger.info("Finished executing FabricCapacityManager")
+
+    def _prepare_azure_resources(self) -> None:
+        self.az_cli.run_command(f"account set --subscription {self.common_params.arm.subscription_id}")
+        self.az_cli.run_command("provider register --namespace Microsoft.Fabric")
+        self.az_cli.run_command(f"group create --name {self.common_params.arm.resource_group} --location {self.common_params.arm.location}")  # fmt: skip  # noqa: E501
 
     async def reconcile(self, capacity_params: FabricCapacityParams) -> None:
         self.logger.info(f"Reconciling capacity: {capacity_params.name}")

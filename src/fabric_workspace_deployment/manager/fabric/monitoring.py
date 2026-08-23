@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 
 import asyncio
-import logging
 import time
 
 import dacite
@@ -61,9 +60,8 @@ class FabricMonitoringManager(MonitoringManager):
         self.folder_client = folder_client
         self.mwc_token_client = mwc_token_client
         self.capacity_manager = capacity_manager
-        self.logger = logging.getLogger(__name__)
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """
         Execute monitoring deployment operations for all workspaces.
 

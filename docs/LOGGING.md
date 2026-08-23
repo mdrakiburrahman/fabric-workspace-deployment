@@ -58,7 +58,7 @@ configured `level`. Console output additionally filters out noisy `fabric_cicd` 
 
 ## Placeholders
 
-The `rootFolder` value supports the `{git-root}` placeholder, resolved from the `GIT_ROOT`
+The `rootFolder` value supports the `{git-root}` placeholder, resolved from the [`GIT_ROOT`](ENV_VARS.md)
 environment variable or `git rev-parse --show-toplevel`. The per-invocation subfolder is already
 timestamped, so no `{timestamp}` placeholder is needed.
 

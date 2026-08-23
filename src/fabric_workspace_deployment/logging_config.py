@@ -20,6 +20,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from fabric_workspace_deployment.environment_variables import GIT_ROOT_ENV_VAR
+
 _LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
 
 _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -58,7 +60,7 @@ def _resolve_git_root(logger: logging.Logger) -> str:
     Raises:
         RuntimeError: If no git root can be resolved.
     """
-    git_root = os.getenv("GIT_ROOT")
+    git_root = os.getenv(GIT_ROOT_ENV_VAR)
     if git_root:
         return git_root
 

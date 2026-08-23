@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: MIT
 
 import logging
+import os
 import sys
 from subprocess import PIPE, Popen, TimeoutExpired
-import os
+
+from fabric_workspace_deployment.environment_variables import FAB_PATH_ENV_VAR
 
 
 class FabricCliError(Exception):
@@ -59,7 +61,7 @@ class FabricCli:
         if not commands or commands[0] != "fab":
             commands.insert(0, "fab")
 
-        fab_path = os.getenv("FAB_PATH")
+        fab_path = os.getenv(FAB_PATH_ENV_VAR)
         if fab_path:
             commands[0] = os.path.join(fab_path, "fab")
 

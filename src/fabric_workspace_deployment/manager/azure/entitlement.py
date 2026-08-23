@@ -37,15 +37,14 @@ class AzEntitlementManager(EntitlementManager):
             graph_client: Directory client used to resolve group membership
             logger: Optional logger; defaults to module logger
         """
-        super().__init__(common_params)
+        super().__init__(common_params, logger)
         self.graph_client = graph_client
-        self.logger = logger or logging.getLogger(__name__)
 
     # ---------------------------------------------------------------------- #
     # Public interface
     # ---------------------------------------------------------------------- #
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """
         Verify every configured entitlement, failing the run if any is not satisfied.
 
