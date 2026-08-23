@@ -10,6 +10,7 @@ A production-ready Fabric Workspace Deployment application
 ## Table of Contents
 
 - [Installation](#installation)
+- [Documentation](#documentation)
 - [License](#license)
 
 ## Installation
@@ -17,6 +18,12 @@ A production-ready Fabric Workspace Deployment application
 ```console
 pip install fabric-workspace-deployment
 ```
+
+## Documentation
+
+- [Environment variables](docs/ENV_VARS.md)
+- [Entitlements](docs/ENTITLEMENTS.md)
+- [Logging](docs/LOGGING.md)
 
 ## License
 

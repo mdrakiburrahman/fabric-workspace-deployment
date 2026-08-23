@@ -22,8 +22,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, final
 from PIL import Image
+from fabric_workspace_deployment.environment_variables import FAB_TOKEN_GRAPH_ENV_VAR, GIT_ROOT_ENV_VAR, MANAGER_SKIP_ENABLED_VALUE, SKIP_ALERT_DEPLOYMENT_ENV_VAR, SKIP_ENTITLEMENT_CHECK_ENV_VAR, SKIP_FABRIC_CAPACITY_DEPLOYMENT_ENV_VAR, SKIP_FABRIC_WORKSPACE_DEPLOYMENT_ENV_VAR, SKIP_GIT_LINK_DEPLOYMENT_ENV_VAR, SKIP_MODEL_DEPLOYMENT_ENV_VAR, SKIP_MONITORING_DEPLOYMENT_ENV_VAR, SKIP_RBAC_DEPLOYMENT_ENV_VAR, SKIP_SEED_DEPLOYMENT_ENV_VAR, SKIP_SHORTCUT_DEPLOYMENT_ENV_VAR, SKIP_SPARK_DEPLOYMENT_ENV_VAR, SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR, UNIQUE_ENV_ID_ENV_VAR, USER_APP_ID_ENV_VAR, USER_DISPLAY_NAME_ENV_VAR, USER_OBJECT_ID_ENV_VAR, USER_PRINCIPAL_TYPE_ENV_VAR
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 
 # ---------------------------------------------------------------------------- #
@@ -62,7 +63,7 @@ PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
 # ---------------------------------------------------------------------------- #
 
 GUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-GRAPH_TOKEN_ENV_VAR = "FAB_TOKEN_GRAPH"
+GRAPH_TOKEN_ENV_VAR = FAB_TOKEN_GRAPH_ENV_VAR
 JWT_SEGMENT_COUNT = 3
 
 # ---------------------------------------------------------------------------- #
@@ -1560,15 +1561,27 @@ class CommonParams:
 
 
 class Manager(ABC):
-    """Base interface for all managers."""
+    """Base class for operation-facing managers."""
 
-    def __init__(self, common_params: "CommonParams"):
+    skip_environment_variable: ClassVar[str | None] = None
+
+    def __init__(self, common_params: "CommonParams", logger: logging.Logger | None = None):
         """Initialize the manager with common parameters."""
         self.common_params = common_params
+        self.logger = logger or logging.getLogger(self.__class__.__module__)
+
+    @final
+    async def execute(self) -> None:
+        """Execute the manager unless its environment-variable override is enabled."""
+        if self.skip_environment_variable and os.getenv(self.skip_environment_variable, "").strip() == MANAGER_SKIP_ENABLED_VALUE:
+            self.logger.warning(f"Skipping {self.__class__.__name__} because environment variable '{self.skip_environment_variable}' is set to '{MANAGER_SKIP_ENABLED_VALUE}'.")
+            return
+
+        await self._execute()
 
     @abstractmethod
-    async def execute(self) -> None:
-        """Execute the manager's operation."""
+    async def _execute(self) -> None:
+        """Execute the manager-specific operation."""
         pass
 
 
@@ -1594,6 +1607,8 @@ class EntitlementManager(Manager):
     reporting — and delegate all directory I/O to a GraphClient.
     """
 
+    skip_environment_variable = SKIP_ENTITLEMENT_CHECK_ENV_VAR
+
     @abstractmethod
     async def evaluate(self) -> list["EntitlementResult"]:
         """
@@ -1605,23 +1620,18 @@ class EntitlementManager(Manager):
         pass
 
 
-class AlertManager(ABC):
+class GitLinkManager(Manager):
+    """Interface for managing Fabric Git-link deployment."""
+
+    skip_environment_variable = SKIP_GIT_LINK_DEPLOYMENT_ENV_VAR
+
+
+class AlertManager(Manager):
     """
     Interface for managing artifact alert contacts operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the Alert manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute alert contact deployment for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_ALERT_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_params: "FabricWorkspaceParams") -> None:
@@ -1634,23 +1644,12 @@ class AlertManager(ABC):
         pass
 
 
-class CicdManager(ABC):
+class CicdManager(Manager):
     """
     Interface for managing Fabric CICD operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the CICD manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_id: str, template_params: "FabricWorkspaceTemplateParams") -> None:
@@ -1664,25 +1663,12 @@ class CicdManager(ABC):
         pass
 
 
-class MonitoringManager(ABC):
+class MonitoringManager(Manager):
     """
     Interface for managing monitoring operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the Monitoring manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute monitoring deployment operations.
-
-        Configures monitoring resources based on the configuration in MonitoringParams.
-        """
-        pass
+    skip_environment_variable = SKIP_MONITORING_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def get_monitoring_metadata(self, workspace_id: str, workspace_params: "FabricWorkspaceParams") -> "MonitoringMetadata":
@@ -1699,49 +1685,20 @@ class MonitoringManager(ABC):
         pass
 
 
-class SeedManager(ABC):
+class SeedManager(Manager):
     """
     Interface for managing seed file uploads to Azure Storage.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the Seed manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute seed file upload operations.
-
-        Uploads all configured seed files from local storage to Azure Storage
-        based on the configuration in FabricStorageParams.seed_files.
-
-        Raises:
-            FileNotFoundError: If a local seed file does not exist
-            RuntimeError: If blob upload fails
-        """
-        pass
+    skip_environment_variable = SKIP_SEED_DEPLOYMENT_ENV_VAR
 
 
-class ShortcutManager(ABC):
+class ShortcutManager(Manager):
     """
     Interface for managing Fabric shortcut operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the shortcut manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_SHORTCUT_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_id: str, shortcut_params: "ShortcutParams") -> None:
@@ -1780,23 +1737,12 @@ class ShortcutManager(ABC):
         pass
 
 
-class SparkManager(ABC):
+class SparkManager(Manager):
     """
     Interface for managing Fabric Spark operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the Spark manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_SPARK_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_id: str, capacity_id: str, spark_params: "FabricSparkParams") -> None:
@@ -1824,23 +1770,12 @@ class SparkManager(ABC):
         pass
 
 
-class ModelManager(ABC):
+class ModelManager(Manager):
     """
     Interface for managing Fabric Model operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the Model manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_MODEL_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_id: str, model_params: "ModelParams") -> None:
@@ -1867,23 +1802,12 @@ class ModelManager(ABC):
         pass
 
 
-class RbacManager(ABC):
+class RbacManager(Manager):
     """
     Interface for managing Fabric RBAC operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the RBAC manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_RBAC_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_id: str, rbac_params: "RbacParams") -> None:
@@ -1970,23 +1894,12 @@ class RbacManager(ABC):
         pass
 
 
-class CapacityManager(ABC):
+class CapacityManager(Manager):
     """
     Interface for managing Fabric capacity operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the capacity manager with capacity parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all capacities in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_FABRIC_CAPACITY_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, capacity_params: "FabricCapacityParams") -> None:
@@ -2120,23 +2033,12 @@ class CapacityManager(ABC):
         pass
 
 
-class WorkspaceManager(ABC):
+class WorkspaceManager(Manager):
     """
     Interface for managing Fabric workspace operations.
     """
 
-    def __init__(self, common_params: "CommonParams"):
-        """
-        Initialize the workspace manager with common parameters.
-        """
-        self.common_params = common_params
-
-    @abstractmethod
-    async def execute(self) -> None:
-        """
-        Execute reconciliation for all workspaces in parallel.
-        """
-        pass
+    skip_environment_variable = SKIP_FABRIC_WORKSPACE_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
     async def reconcile(self, workspace_params: FabricWorkspaceParams) -> None:
@@ -2904,7 +2806,7 @@ class OperationParams:
         Returns:
             str: The user's alias (cleaned from display name or email)
         """
-        user_alias = os.getenv("USER_DISPLAY_NAME", "")
+        user_alias = os.getenv(USER_DISPLAY_NAME_ENV_VAR, "")
         if user_alias:
             cleaned_alias = re.sub(r"[^a-zA-Z0-9]", "", user_alias.lower())
             if cleaned_alias:
@@ -2952,7 +2854,7 @@ class OperationParams:
         """
         err_str = "No git root found. Please ensure you are in a git repository."
 
-        git_root = os.getenv("GIT_ROOT")
+        git_root = os.getenv(GIT_ROOT_ENV_VAR)
         if git_root:
             return git_root
 
@@ -2985,20 +2887,20 @@ class OperationParams:
         }
 
     def _get_unique_env_id(self) -> str:
-        raw = os.getenv("UNIQUE_ENV_ID") or self.get_user_alias()
+        raw = os.getenv(UNIQUE_ENV_ID_ENV_VAR) or self.get_user_alias()
         return re.sub(r"[^a-zA-Z0-9]", "", raw.lower())
 
     def _get_user_appid(self) -> str:
-        return os.getenv("USER_APP_ID") or self.az_cli.get_user_appid()
+        return os.getenv(USER_APP_ID_ENV_VAR) or self.az_cli.get_user_appid()
 
     def _get_user_display_name(self) -> str:
-        return os.getenv("USER_DISPLAY_NAME") or self.az_cli.get_user_principal_name()
+        return os.getenv(USER_DISPLAY_NAME_ENV_VAR) or self.az_cli.get_user_principal_name()
 
     def _get_user_oid(self) -> str:
-        return os.getenv("USER_OBJECT_ID") or self.az_cli.get_user_oid()
+        return os.getenv(USER_OBJECT_ID_ENV_VAR) or self.az_cli.get_user_oid()
 
     def _get_user_principal_type(self) -> str:
-        return os.getenv("USER_PRINCIPAL_TYPE", "User")
+        return os.getenv(USER_PRINCIPAL_TYPE_ENV_VAR, "User")
 
     def _user_fabric_admin_func(self) -> str:
         user_principal_type = self._get_user_principal_type()
@@ -3284,13 +3186,13 @@ class OperationParams:
         Returns:
             bool: True if the environment is usable, False otherwise
         """
-        token = os.getenv(GRAPH_TOKEN_ENV_VAR, "").strip()
+        token = os.getenv(FAB_TOKEN_GRAPH_ENV_VAR, "").strip()
         if not token:
-            self.logger.info(f"Environment variable '{GRAPH_TOKEN_ENV_VAR}' is not set — entitlement checks will fall back to the Azure CLI for a '{self.common.scope.graph}' token")
+            self.logger.info(f"Environment variable '{FAB_TOKEN_GRAPH_ENV_VAR}' is not set — entitlement checks will fall back to the Azure CLI for a '{self.common.scope.graph}' token")
             return True
 
         if len(token.split(".")) != JWT_SEGMENT_COUNT:
-            self.logger.error(f"Environment variable '{GRAPH_TOKEN_ENV_VAR}' does not contain a valid JWT (expected {JWT_SEGMENT_COUNT} dot-separated parts)")
+            self.logger.error(f"Environment variable '{FAB_TOKEN_GRAPH_ENV_VAR}' does not contain a valid JWT (expected {JWT_SEGMENT_COUNT} dot-separated parts)")
             return False
 
         return True

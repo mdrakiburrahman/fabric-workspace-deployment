@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 
 import asyncio
-import logging
 
 import dacite
 import requests
@@ -58,10 +57,9 @@ class FabricRbacManager(RbacManager):
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
         self.workspace = workspace
-        self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         self.logger.info("Executing FabricRbacManager")
         tasks = []
         for workspace_params in self.common_params.fabric.workspaces:

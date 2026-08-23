@@ -5,7 +5,6 @@
 import logging
 
 from fabric_workspace_deployment.factories.management_factory import ContainerizedManagementFactory, ManagementFactory
-from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     AlertManager,
@@ -13,11 +12,13 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     CicdManager,
     EntitlementManager,
     EntryPointOperator,
+    GitLinkManager,
+    Manager,
     MonitoringManager,
+    ModelManager,
     Operation,
     OperationParams,
     RbacManager,
-    ModelManager,
     SeedManager,
     ShortcutManager,
     SparkManager,
@@ -38,7 +39,6 @@ class CentralOperator(EntryPointOperator):
         super().__init__(operation_params)
         self.logger = logging.getLogger(__name__)
         self.management_factory: ManagementFactory = ContainerizedManagementFactory(operation_params)
-        self.azure_cli: AzCli = self.management_factory.create_azure_cli()
         self.fabric_cli: FabricCli = self.management_factory.create_fabric_cli()
         self.capacity_manager: CapacityManager = self.management_factory.create_fabric_capacity_manager()
         self.alert_manager: AlertManager = self.management_factory.create_fabric_alert_manager()
@@ -51,137 +51,38 @@ class CentralOperator(EntryPointOperator):
         self.model_manager: ModelManager = self.management_factory.create_semantic_model_manager()
         self.monitoring_manager: MonitoringManager = self.management_factory.create_fabric_monitoring_manager()
         self.entitlement_manager: EntitlementManager = self.management_factory.create_entitlement_manager()
+        self.git_link_manager: GitLinkManager = self.management_factory.create_fabric_git_link_manager()
+        self.managers: dict[Operation, Manager] = {
+            Operation.DRY_RUN: self.entitlement_manager,
+            Operation.DEPLOY_ALERT: self.alert_manager,
+            Operation.DEPLOY_FABRIC_CAPACITY: self.capacity_manager,
+            Operation.DEPLOY_FABRIC_WORKSPACE: self.workspace_manager,
+            Operation.DEPLOY_GIT_LINK: self.git_link_manager,
+            Operation.DEPLOY_TEMPLATE: self.cicd_manager,
+            Operation.DEPLOY_RBAC: self.rbac_manager,
+            Operation.DEPLOY_SEED: self.seed_manager,
+            Operation.DEPLOY_SHORTCUT: self.shortcut_manager,
+            Operation.DEPLOY_SPARK: self.spark_manager,
+            Operation.DEPLOY_MODEL: self.model_manager,
+            Operation.DEPLOY_MONITORING: self.monitoring_manager,
+        }
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """Execute the operation based on the operation type."""
         try:
             self.logger.info(f"Fabric CLI version: {self.fabric_cli.run_command('version')}")
             self.logger.info(f"Executing operation: {self.operation.value}")
 
-            match self.operation:
-                case Operation.DRY_RUN:
-                    await self._execute_dry_run()
+            manager = self.managers.get(self.operation)
+            if manager is None:
+                raise ValueError(f"Unknown operation: {self.operation}")
 
-                case Operation.DEPLOY_ALERT:
-                    await self._execute_deploy_alert()
-
-                case Operation.DEPLOY_FABRIC_CAPACITY:
-                    await self._execute_deploy_fabric_capacity()
-
-                case Operation.DEPLOY_FABRIC_WORKSPACE:
-                    await self._execute_deploy_fabric_workspace()
-
-                case Operation.DEPLOY_GIT_LINK:
-                    await self._execute_deploy_git_link()
-
-                case Operation.DEPLOY_TEMPLATE:
-                    await self._execute_deploy_template()
-
-                case Operation.DEPLOY_RBAC:
-                    await self._execute_deploy_rbac()
-
-                case Operation.DEPLOY_SEED:
-                    await self._execute_deploy_seed()
-
-                case Operation.DEPLOY_SHORTCUT:
-                    await self._execute_deploy_shortcut()
-
-                case Operation.DEPLOY_SPARK:
-                    await self._execute_deploy_spark()
-
-                case Operation.DEPLOY_MODEL:
-                    await self._execute_deploy_model()
-
-                case Operation.DEPLOY_MONITORING:
-                    await self._execute_deploy_monitoring()
-
-                case _:
-                    error_message = f"Unknown operation: {self.operation}"
-                    raise ValueError(error_message)
+            await manager.execute()
+            if self.operation == Operation.DRY_RUN:
+                self.logger.info("Dry run completed.")
 
             self.logger.info(f"Successfully completed operation: {self.operation.value}")
 
         except Exception as e:
             self.logger.error(f"Failed to execute operation {self.operation.value}: {e}")
             raise
-
-    # ---------------------------------------------------------------------------- #
-
-    async def _execute_dry_run(self) -> None:
-        """
-        Execute dry run operation.
-        """
-        await self.entitlement_manager.execute()
-        self.logger.info("Dry run completed.")
-
-    async def _execute_deploy_alert(self) -> None:
-        """
-        Execute deploy alert contacts operation.
-        """
-        await self.alert_manager.execute()
-
-    async def _execute_deploy_fabric_capacity(self) -> None:
-        """
-        Execute deploy Fabric capacity operation.
-        """
-        self._azure_set()
-        await self.capacity_manager.execute()
-
-    async def _execute_deploy_fabric_workspace(self) -> None:
-        """
-        Execute deploy Fabric workspace operation.
-        """
-        await self.workspace_manager.execute()
-
-    async def _execute_deploy_git_link(self) -> None:
-        """
-        Execute deploy Git link operation.
-        """
-        self.logger.info("Deploy Git link operation not yet implemented.")
-
-    async def _execute_deploy_template(self) -> None:
-        """
-        Execute deploy template operation.
-        """
-        await self.cicd_manager.execute()
-
-    async def _execute_deploy_rbac(self) -> None:
-        """
-        Execute deploy RBAC operation.
-        """
-        await self.rbac_manager.execute()
-
-    async def _execute_deploy_seed(self) -> None:
-        """
-        Execute deploy seed operation.
-        """
-        await self.seed_manager.execute()
-
-    async def _execute_deploy_shortcut(self) -> None:
-        """
-        Execute deploy shortcut operation.
-        """
-        await self.shortcut_manager.execute()
-
-    async def _execute_deploy_spark(self) -> None:
-        """
-        Execute deploy Spark operation.
-        """
-        await self.spark_manager.execute()
-
-    async def _execute_deploy_model(self) -> None:
-        """
-        Execute deploy model operation.
-        """
-        await self.model_manager.execute()
-
-    async def _execute_deploy_monitoring(self) -> None:
-        """
-        Execute deploy monitoring operation.
-        """
-        await self.monitoring_manager.execute()
-
-    def _azure_set(self) -> None:
-        self.azure_cli.run_command(f"account set --subscription {self.operation_params.common.arm.subscription_id}")
-        self.azure_cli.run_command("provider register --namespace Microsoft.Fabric")
-        self.azure_cli.run_command(f"group create --name {self.operation_params.common.arm.resource_group} --location {self.operation_params.common.arm.location}")  # fmt: skip  # noqa: E501

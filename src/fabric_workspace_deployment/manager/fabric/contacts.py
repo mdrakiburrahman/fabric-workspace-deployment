@@ -4,7 +4,6 @@
 
 import asyncio
 import json
-import logging
 import os
 
 import requests
@@ -48,9 +47,8 @@ class FabricAlertManager(AlertManager):
         self.workspace_manager = workspace_manager
         self.folder_client = folder_client
         self.http_retry = http_retry_handler
-        self.logger = logging.getLogger(__name__)
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """
         Execute alert contact deployment for all workspaces in parallel.
         """

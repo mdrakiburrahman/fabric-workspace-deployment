@@ -42,7 +42,11 @@
    ```bash
    curl -fsSL https://gh.io/copilot-install | bash
    $HOME/.local/bin/copilot --yolo
+   ```
 
+1. Install `gh` CLI:
+
+   ```bash
    (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
 	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
 	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \

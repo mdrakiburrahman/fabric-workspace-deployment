@@ -55,9 +55,8 @@ class FabricCicdManager(CicdManager):
         self.folder_client = folder_client
         self.monitoring_manager = monitoring_manager
         self.spark_environment_client = spark_environment_client
-        self.logger = logging.getLogger(__name__)
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         self.logger.info("Executing FabricCicdManager")
         tasks = []
         deployed_workspaces = []

@@ -14,6 +14,7 @@ from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
 from fabric_workspace_deployment.client.fabric_pipeline import FabricPipelineClient
 from fabric_workspace_deployment.client.fabric_pipeline_run import FabricPipelineRunClient
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
+from fabric_workspace_deployment.environment_variables import FAB_TOKEN_CICD_ENV_VAR
 from fabric_workspace_deployment.identity.token_credential import StaticTokenCredential
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.azure.entitlement import AzEntitlementManager
@@ -23,6 +24,7 @@ from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityMa
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.manager.fabric.contacts import FabricAlertManager
+from fabric_workspace_deployment.manager.fabric.git_link import FabricGitLinkManager
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
 from fabric_workspace_deployment.manager.fabric.monitoring import FabricMonitoringManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
@@ -84,6 +86,13 @@ class ManagementFactory(ABC):
     def create_entitlement_manager(self) -> AzEntitlementManager:
         """
         Create an Entitlement Manager instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_fabric_git_link_manager(self) -> FabricGitLinkManager:
+        """
+        Create a Fabric Git Link Manager instance.
         """
         pass
 
@@ -245,6 +254,9 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.logger,
         )
 
+    def create_fabric_git_link_manager(self) -> FabricGitLinkManager:
+        return FabricGitLinkManager(self.operation_params.common)
+
     def create_fabric_workspace_manager(self) -> FabricWorkspaceManager:
         return FabricWorkspaceManager(
             self.operation_params.common,
@@ -255,7 +267,7 @@ class ContainerizedManagementFactory(ManagementFactory):
         )
 
     def create_fabric_cicd_manager(self) -> FabricCicdManager:
-        fab_token_cicd = os.getenv("FAB_TOKEN_CICD", "").strip()
+        fab_token_cicd = os.getenv(FAB_TOKEN_CICD_ENV_VAR, "").strip()
         if fab_token_cicd:
             expiry = int(time.time()) + (365 * 24 * 60 * 60)
             token_credential = StaticTokenCredential(fab_token_cicd, expiry)

@@ -4,7 +4,6 @@
 
 import asyncio
 import json
-import logging
 import os
 
 import dacite
@@ -37,11 +36,10 @@ class FabricWorkspaceManager(WorkspaceManager):
         super().__init__(common_params)
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
-        self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
         self.arm_rbac_manager = arm_rbac_manager
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         self.logger.info("Executing FabricWorkspaceManager")
         tasks = []
         for workspace in self.common_params.fabric.workspaces:

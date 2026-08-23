@@ -4,7 +4,6 @@
 
 import asyncio
 import json
-import logging
 
 import requests
 
@@ -47,14 +46,13 @@ class FabricSparkOperations(SparkManager):
             mwc_token_client: MWC token client instance
         """
         super().__init__(common_params)
-        self.logger = logging.getLogger(__name__)
         self.az_cli = az_cli
         self.capacity_manager = capacity_manager
         self.workspace_manager = workspace_manager
         self.http_retry = http_retry_handler
         self.mwc_token_client = mwc_token_client
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """
         Execute reconciliation for all workspaces in parallel.
         """

@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 
 import asyncio
-import logging
 
 import requests
 
@@ -37,10 +36,9 @@ class SemanticModelManager(ModelManager):
         self.az_cli = az_cli
         self.workspace = workspace
         self.folder_client = folder_client
-        self.logger = logging.getLogger(__name__)
         self.http_retry = http_retry_handler
 
-    async def execute(self) -> None:
+    async def _execute(self) -> None:
         """
         Execute reconciliation for all workspaces in parallel.
         """
