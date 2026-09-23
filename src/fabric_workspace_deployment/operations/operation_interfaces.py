@@ -3364,8 +3364,8 @@ class OperationParams:
                 self.logger.error(f"Workspace template feature_flags at index {i} must be a list")
                 return False
 
-            if not workspace.template.unpublish_orphans:
-                self.logger.error(f"Workspace template unpublish_orphans at index {i} cannot be empty")
+            if not isinstance(workspace.template.unpublish_orphans, bool):
+                self.logger.error(f"Workspace template unpublish_orphans at index {i} must be a boolean")
                 return False
 
             param_file_full_path = str(Path(self.common.local.root_folder) / workspace.template.parameter_file_path)
