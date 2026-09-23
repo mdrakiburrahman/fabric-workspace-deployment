@@ -3360,8 +3360,8 @@ class OperationParams:
                 self.logger.error(f"Workspace template environment_key at index {i} cannot be empty")
                 return False
 
-            if not workspace.template.feature_flags:
-                self.logger.error(f"Workspace template feature_flags at index {i} cannot be empty")
+            if not isinstance(workspace.template.feature_flags, list):
+                self.logger.error(f"Workspace template feature_flags at index {i} must be a list")
                 return False
 
             if not workspace.template.unpublish_orphans:
