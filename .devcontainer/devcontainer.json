@@ -1,19 +1,65 @@
 {
-    "name": "devcontainer",
-    "image": "rakirahman.azurecr.io/devcontainer/spark:2d6281b13738c8576a232df9a708f5c083820105d8d3f6d4696c28aa99bb091e",
-    "remoteUser": "vscode",
-    "containerUser": "vscode",
-    "mounts": [
-        "type=bind,source=${localEnv:HOME}/.azure,target=/home/vscode/.azure"
-    ],
-    "customizations": {
-        "vscode": {
-            "settings": {
-                "terminal.integrated.gpuAcceleration": "off",
-                "terminal.integrated.enablePersistentSessions": false,
-                "terminal.integrated.scrollback": 5000,
-                "remote.autoForwardPorts": false
-            }
-        }
+  "name": "fabric-workspace-deployment",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "enableShared": true,
+      "installTools": false,
+      "installJupyterlab": false,
+      "optimize": false
+    },
+    "ghcr.io/devcontainers/features/node:2": {
+      "version": "24",
+      "nodeGypDependencies": false
+    },
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "version": "latest",
+      "extensions": "",
+      "installBicep": false,
+      "installUsingPython": false
     }
+  },
+  "containerUser": "vscode",
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "initializeCommand": [
+    "mkdir",
+    "-p",
+    "${localEnv:HOME}/.azure"
+  ],
+  "postCreateCommand": [
+    "node",
+    ".devcontainer/scripts/post-create.ts"
+  ],
+  "waitFor": "postCreateCommand",
+  "containerEnv": {
+    "UV_PROJECT_ENVIRONMENT": "${containerWorkspaceFolder}/.venv",
+    "VIRTUAL_ENV": "${containerWorkspaceFolder}/.venv"
+  },
+  "remoteEnv": {
+    "PATH": "${containerWorkspaceFolder}/.venv/bin:/home/vscode/.local/bin:${containerEnv:PATH}",
+    "PYTHONPATH": "${containerWorkspaceFolder}/src"
+  },
+  "runArgs": [
+    "--label",
+    "com.github.mdrakiburrahman.fabric-workspace-deployment.devcontainer=true"
+  ],
+  "mounts": [
+    "type=bind,source=${localEnv:HOME}/.azure,target=/home/vscode/.azure"
+  ],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+        "terminal.integrated.gpuAcceleration": "off",
+        "terminal.integrated.enablePersistentSessions": false,
+        "terminal.integrated.scrollback": 5000,
+        "remote.autoForwardPorts": false
+      }
+    }
+  }
 }

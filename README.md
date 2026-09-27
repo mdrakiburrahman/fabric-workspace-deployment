@@ -24,6 +24,8 @@ pip install fabric-workspace-deployment
 - [Environment variables](docs/ENV_VARS.md)
 - [Entitlements](docs/ENTITLEMENTS.md)
 - [Logging](docs/LOGGING.md)
+- [Headless devcontainer operations](docs/devcontainer/headless-operations.md)
+- [Contributing](contrib/README.md)
 
 ## License
 

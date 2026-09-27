@@ -84,12 +84,9 @@ no pytest config. `mypy` is the main static gate.
 
 ## Dev environment
 
-- Work happens inside the pinned devcontainer image
-  (`rakirahman.azurecr.io/devcontainer/spark:…`), which mounts `~/.azure` for `az` auth and
-  provides `fab`, `hatch`, `uv`, and Python deps.
-- One-time host bootstrap: `contrib/bootstrap-dev-env.sh` (installs docker + native-Linux `az` +
-  node, and writes `.npmrc` with an `az`-derived token for the internal npm feed). See
-  `contrib/README.md` for the full WSL/devcontainer flow.
+- Work happens inside the repository-owned devcontainer; its only explicit host mount is `~/.azure`.
+- Headless lifecycle: `npx nx run devcontainer:build`, `:up`, `:test`, then `:down`.
+- Authenticate with `az login` on the host and `fab auth login --azure-cli` in the container.
 
 ## Git / PRs
 

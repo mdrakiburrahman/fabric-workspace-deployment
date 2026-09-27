@@ -37,6 +37,15 @@
    code --folder-uri "vscode-remote://dev-container+${HEX}/workspaces/fabric-workspace-deployment"
    ```
 
+   Or run the same environment headlessly:
+
+   ```bash
+   npx --no-install nx run devcontainer:build
+   npx --no-install nx run devcontainer:up
+   npx --no-install nx run devcontainer:test
+   npx --no-install nx run devcontainer:down
+   ```
+
 1. Install GitHub tooling:
 
    ```bash

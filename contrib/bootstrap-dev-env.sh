@@ -62,7 +62,6 @@ sudo systemctl restart docker
 sudo chmod 666 /var/run/docker.sock
 docker container ls
 docker ps -q | xargs -r docker kill
-docker pull "$(jq -r .image "$REPO_ROOT/.devcontainer/devcontainer.json")"
 
 # Remove Windows paths from PATH to avoid using Windows az CLI
 # This allows us to mount ~/.azure from WSL.
@@ -101,6 +100,9 @@ fi
 cp $NPMRC_TMPL $NPMRC
 sed -i "s/_authToken=.*/_authToken=$(az account get-access-token --resource '499b84ac-1321-427f-aa17-267ca6975798' --query accessToken --output tsv --tenant '72f988bf-86f1-41af-91ab-2d7cd011db47')/" $NPMRC
 
+cd "$REPO_ROOT"
+npm ci
+
 echo ""
 echo "┌──────────┐"
 echo "│ Versions │"
@@ -110,3 +112,4 @@ echo ""
 echo "Docker: $(docker --version)"
 echo "Azure CLI: $(az version)"
 echo "npm: $(npm version)"
+echo "Dev Container CLI: $(npx --no-install devcontainer --version)"
