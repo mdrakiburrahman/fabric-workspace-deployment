@@ -59,12 +59,15 @@ foreach ($distro in $distros) {
     wsl --unregister $distro
 }
 
-$RECOMMENDED_CORES = 16
-$RECOMMENDED_FREE_GB = 128
+$RECOMMENDED_CORES = 4
+$WSL_MEMORY_CAP_GB = 16
+$RECOMMENDED_FREE_GB = 64
 
 $memGB=[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)
 $cpu=[Environment]::ProcessorCount
-$swap=[math]::Floor($memGB/4)
+$wslMemoryGB=[math]::Min($WSL_MEMORY_CAP_GB, [math]::Floor($memGB/2))
+$wslProcessors=[math]::Min($RECOMMENDED_CORES, $cpu)
+$swap=[math]::Min(4, [math]::Max(2, [math]::Floor($wslMemoryGB/4)))
 
 if ($cpu -lt $RECOMMENDED_CORES) {
     Write-Host "WARNING: This machine has $cpu cores, which is below the recommended $RECOMMENDED_CORES cores." -ForegroundColor DarkYellow
@@ -75,6 +78,7 @@ if ($cpu -lt $RECOMMENDED_CORES) {
 } else {
     Write-Host "(detected $cpu cores, ${memGB}GB RAM)" -ForegroundColor Green
 }
+Write-Host "Configuring WSL with $wslProcessors cores, ${wslMemoryGB}GB RAM, and ${swap}GB swap." -ForegroundColor Cyan
 
 $driveOptions = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
     Sort-Object -Property FreeSpace -Descending |
@@ -152,8 +156,8 @@ if ($skipped) { Write-Host "  Process exclusions already exist: $($skipped -join
 
 @"
 [wsl2]
-memory=${memGB}GB
-processors=$cpu
+memory=${wslMemoryGB}GB
+processors=$wslProcessors
 swap=${swap}GB
 networkingMode=NAT
 "@ | Set-Content -Path "$env:USERPROFILE\.wslconfig"

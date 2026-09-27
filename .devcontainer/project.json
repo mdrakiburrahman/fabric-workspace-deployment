@@ -1,0 +1,51 @@
+{
+  "name": "devcontainer",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "npx --no-install devcontainer build --workspace-folder .",
+        "cwd": "."
+      }
+    },
+    "up": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "npx --no-install devcontainer up --workspace-folder .",
+        "cwd": "."
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "npx --no-install tsc --project .devcontainer/tsconfig.json --noEmit",
+        "cwd": "."
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": [
+        "up",
+        "typecheck"
+      ],
+      "options": {
+        "command": "npx --no-install devcontainer exec --workspace-folder . npx --no-install nx run fabric-workspace-deployment:verify",
+        "cwd": "."
+      }
+    },
+    "down": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node .devcontainer/scripts/down.ts",
+        "cwd": "."
+      }
+    }
+  }
+}
