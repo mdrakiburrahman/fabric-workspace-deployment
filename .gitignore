@@ -2,8 +2,12 @@
 node_modules/
 nx
 .nx/
+.venv/
+.mypy_cache/
+.pytest_cache/
 dist/
 build/
+reports/
 __pycache__/
 .env.*
 .temp/

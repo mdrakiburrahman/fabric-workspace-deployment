@@ -7,6 +7,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 
+from azure.core.credentials import TokenCredential
 from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.client.fabric_artifact import FabricArtifactClient
@@ -268,6 +269,7 @@ class ContainerizedManagementFactory(ManagementFactory):
 
     def create_fabric_cicd_manager(self) -> FabricCicdManager:
         fab_token_cicd = os.getenv(FAB_TOKEN_CICD_ENV_VAR, "").strip()
+        token_credential: TokenCredential
         if fab_token_cicd:
             expiry = int(time.time()) + (365 * 24 * 60 * 60)
             token_credential = StaticTokenCredential(fab_token_cicd, expiry)

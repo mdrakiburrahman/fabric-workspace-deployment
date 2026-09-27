@@ -1,0 +1,10 @@
+.git
+.github
+.mypy_cache
+.nx
+.pytest_cache
+.venv
+build
+dist
+node_modules
+reports

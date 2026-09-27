@@ -1,14 +1,56 @@
 {
-    "name": "devcontainer",
-    "image": "rakirahman.azurecr.io/devcontainer/spark:2d6281b13738c8576a232df9a708f5c083820105d8d3f6d4696c28aa99bb091e",
+    "name": "fabric-workspace-deployment",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/python:1.8.0": {
+            "version": "3.12.14",
+            "installTools": false,
+            "installJupyterlab": false,
+            "optimize": false,
+            "enableShared": true
+        },
+        "ghcr.io/devcontainers/features/node:2.1.0": {
+            "version": "24.21.0",
+            "nodeGypDependencies": false,
+            "npmVersion": "11.19.0",
+            "pnpmVersion": "none",
+            "nvmVersion": "0.40.8",
+            "installYarnUsingApt": false
+        },
+        "ghcr.io/devcontainers/features/azure-cli:1.3.0": {
+            "version": "2.90.0",
+            "extensions": "",
+            "installBicep": false,
+            "installUsingPython": false
+        }
+    },
     "remoteUser": "vscode",
     "containerUser": "vscode",
+    "updateRemoteUserUID": true,
+    "initializeCommand": "bash .devcontainer/scripts/initialize.sh",
+    "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+    "containerEnv": {
+        "UV_PROJECT_ENVIRONMENT": "${containerWorkspaceFolder}/.venv",
+        "VIRTUAL_ENV": "${containerWorkspaceFolder}/.venv"
+    },
+    "remoteEnv": {
+        "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:PATH}",
+        "PYTHONPATH": "${containerWorkspaceFolder}/src"
+    },
+    "runArgs": [
+        "--label",
+        "com.github.mdrakiburrahman.fabric-workspace-deployment.devcontainer=true"
+    ],
     "mounts": [
         "type=bind,source=${localEnv:HOME}/.azure,target=/home/vscode/.azure"
     ],
     "customizations": {
         "vscode": {
             "settings": {
+                "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
                 "terminal.integrated.gpuAcceleration": "off",
                 "terminal.integrated.enablePersistentSessions": false,
                 "terminal.integrated.scrollback": 5000,

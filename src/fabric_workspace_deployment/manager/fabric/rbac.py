@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import asyncio
+from typing import Any
 
 import dacite
 import requests
@@ -327,7 +328,7 @@ class FabricRbacManager(RbacManager):
         is_service_principal = identity.principal_type == PrincipalType.SERVICE_PRINCIPAL
         is_group = identity.principal_type == PrincipalType.GROUP
 
-        artifact_data = {
+        artifact_data: dict[str, Any] = {
             "artifactObjectId": item_id,
             "permissions": assignment.permissions,
             "isServicePrincipal": is_service_principal,
@@ -382,7 +383,7 @@ class FabricRbacManager(RbacManager):
         is_group = identity.principal_type == PrincipalType.GROUP
 
         if assignment.permissions == 0:
-            folder_data = {"id": folder_id, "permissions": assignment.permissions}
+            folder_data: dict[str, Any] = {"id": folder_id, "permissions": assignment.permissions}
             if is_group:
                 folder_data["groupId"] = identity.fabric_principal_id
             else:
@@ -498,6 +499,7 @@ class FabricRbacManager(RbacManager):
         if desired_state.purge_unmatched_role_assignments:
             for object_id, current_detail in current_assignments.items():
                 if object_id not in desired_assignments:
+                    fabric_principal_id: int | None
                     if current_detail.group_id:
                         principal_type = PrincipalType.GROUP
                         fabric_principal_id = current_detail.group_id
@@ -556,16 +558,16 @@ class FabricRbacManager(RbacManager):
         self.logger.info(f"Reconciling permissions for item {desired_item.display_name} (ID: {current_item.id})")
 
         current_permissions_by_object_id: dict[str, list[FabricWorkspaceItemRbacDetail]] = {}
-        for detail in current_item.detail:
-            if detail.object_id not in current_permissions_by_object_id:
-                current_permissions_by_object_id[detail.object_id] = []
-            current_permissions_by_object_id[detail.object_id].append(detail)
+        for current_permission in current_item.detail:
+            if current_permission.object_id not in current_permissions_by_object_id:
+                current_permissions_by_object_id[current_permission.object_id] = []
+            current_permissions_by_object_id[current_permission.object_id].append(current_permission)
 
         desired_permissions_by_object_id: dict[str, list[ItemRbacDetailParams]] = {}
-        for detail in desired_item.detail:
-            if detail.object_id not in desired_permissions_by_object_id:
-                desired_permissions_by_object_id[detail.object_id] = []
-            desired_permissions_by_object_id[detail.object_id].append(detail)
+        for desired_permission in desired_item.detail:
+            if desired_permission.object_id not in desired_permissions_by_object_id:
+                desired_permissions_by_object_id[desired_permission.object_id] = []
+            desired_permissions_by_object_id[desired_permission.object_id].append(desired_permission)
 
         item_assignments_to_add: list[tuple[ItemRbacDetailParams, Identity]] = []
         item_assignments_to_update: list[tuple[ItemRbacDetailParams, Identity]] = []
@@ -576,7 +578,7 @@ class FabricRbacManager(RbacManager):
 
             identity = rbac_params.get_identity_by_object_id(object_id, self.common_params.identities)
             for desired_detail in desired_details:
-                matching_current = None
+                matching_current: FabricWorkspaceItemRbacDetail | None = None
                 for current_detail in current_details:
                     if current_detail.permissions == desired_detail.permissions and self._artifact_permissions_match(current_detail.artifact_permissions, desired_detail.artifact_permissions):
                         matching_current = current_detail
@@ -590,7 +592,7 @@ class FabricRbacManager(RbacManager):
             desired_details = desired_permissions_by_object_id.get(object_id, [])
 
             for current_detail in current_details:
-                matching_desired = None
+                matching_desired: ItemRbacDetailParams | None = None
                 for desired_detail in desired_details:
                     if current_detail.permissions == desired_detail.permissions and self._artifact_permissions_match(current_detail.artifact_permissions, desired_detail.artifact_permissions):
                         matching_desired = desired_detail

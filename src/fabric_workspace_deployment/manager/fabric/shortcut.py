@@ -52,8 +52,12 @@ class FabricShortcutManager(ShortcutManager):
             if workspace_params.skip_deploy:
                 self.logger.info(f"Skipping shortcuts for workspace '{workspace_params.name}' due to skipDeploy=true")
                 continue
+            shortcut_params = workspace_params.shortcut
+            if shortcut_params is None:
+                self.logger.info(f"No shortcut configuration found for workspace '{workspace_params.name}', skipping")
+                continue
             workspace_info = await self.workspace.get(workspace_params)
-            task = asyncio.create_task(self.reconcile(workspace_info.id, workspace_params.shortcut), name=f"reconcile-shortcut-{workspace_params.name}")
+            task = asyncio.create_task(self.reconcile(workspace_info.id, shortcut_params), name=f"reconcile-shortcut-{workspace_params.name}")
             tasks.append(task)
 
         if tasks:

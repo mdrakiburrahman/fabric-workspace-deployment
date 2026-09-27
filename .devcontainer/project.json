@@ -1,0 +1,35 @@
+{
+    "$schema": "../node_modules/nx/schemas/project-schema.json",
+    "name": "devcontainer",
+    "projectType": "application",
+    "targets": {
+        "build": {
+            "executor": "nx:run-commands",
+            "cache": false,
+            "options": {
+                "command": "bash .devcontainer/scripts/build.sh"
+            }
+        },
+        "up": {
+            "executor": "nx:run-commands",
+            "cache": false,
+            "options": {
+                "command": "bash .devcontainer/scripts/up.sh"
+            }
+        },
+        "test": {
+            "executor": "nx:run-commands",
+            "cache": false,
+            "options": {
+                "command": "bash .devcontainer/scripts/test.sh"
+            }
+        },
+        "down": {
+            "executor": "nx:run-commands",
+            "cache": false,
+            "options": {
+                "command": "bash .devcontainer/scripts/down.sh"
+            }
+        }
+    }
+}

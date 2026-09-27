@@ -126,7 +126,7 @@ class HttpRetryHandler:
         Raises:
             The last exception encountered if all retries are exhausted
         """
-        last_exception = None
+        last_exception: requests.exceptions.RequestException | None = None
 
         for attempt in range(1, self.max_attempts + 1):
 
@@ -1384,7 +1384,7 @@ class FabricWorkspaceParams:
 
                 while True:
                     if scale < 1.0:
-                        tmp = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+                        tmp = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
                     else:
                         tmp = img
                     tmp.save(temp_path, optimize=True, quality=q)
@@ -1652,12 +1652,13 @@ class CicdManager(Manager):
     skip_environment_variable = SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
-    async def reconcile(self, workspace_id: str, template_params: "FabricWorkspaceTemplateParams") -> None:
+    async def reconcile(self, workspace_id: str, workspace_params: "FabricWorkspaceParams", template_params: "FabricWorkspaceTemplateParams") -> None:
         """
         Reconcile a single workspace to desired state cicd.
 
         Args:
             workspace_id: The Fabric workspace id
+            workspace_params: Parameters for the Fabric workspace
             template_params: Parameters for the fabric workspace template
         """
         pass
@@ -1859,12 +1860,13 @@ class RbacManager(Manager):
         pass
 
     @abstractmethod
-    async def get_fabric_workspace_item_rbac_info(self, item_id: int) -> FabricWorkspaceItemRbacInfo:
+    async def get_fabric_workspace_item_rbac_info(self, item_id: str, item_type: str) -> FabricWorkspaceItemRbacInfo:
         """
         Get Fabric workspace item RBAC information.
 
         Args:
             item_id: The Fabric workspace item id
+            item_type: The Fabric workspace item type
 
         Returns:
             FabricWorkspaceItemRbacInfo: Fabric workspace item RBAC information
@@ -1872,24 +1874,26 @@ class RbacManager(Manager):
         pass
 
     @abstractmethod
-    async def update_item_role_assignment(self, item_id: str, assignment: ItemRbacDetailParams) -> None:
+    async def update_item_role_assignment(self, item_id: str, assignment: ItemRbacDetailParams, identity: Identity) -> None:
         """
         Update a single item role assignment via API call.
 
         Args:
             item_id: The workspace item ID
             assignment: The item role assignment to update
+            identity: The resolved identity for the assignment
         """
         pass
 
     @abstractmethod
-    async def update_workspace_role_assignment(self, folder_id: int, assignment: WorkspaceRbacParams) -> None:
+    async def update_workspace_role_assignment(self, folder_id: int, assignment: WorkspaceRbacParams, identity: Identity) -> None:
         """
         Update a single workspace role assignment via API call.
 
         Args:
             folder_id: The workspace folder ID
             assignment: The role assignment to update
+            identity: The resolved identity for the assignment
         """
         pass
 

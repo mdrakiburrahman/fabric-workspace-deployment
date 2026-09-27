@@ -8,13 +8,20 @@ a PyInstaller binary and as a package on an internal Azure DevOps PyPI feed.
 
 ## Build, run, lint, type-check
 
-Nx wraps Hatch; both are available. Prefer these:
+Nx drives the committed npm and `uv` locks. Use the explicit project name:
 
-- Format (the lint gate): `npx nx lint` → `black --line-length 2000 .`
-- Type check: `hatch run types:check` → `mypy src/fabric_workspace_deployment tests`
-- Build the onefile binary: `npx nx build` (clean + `hatch run build:binary`, uses `fabric-workspace-deployment.spec`)
+- Frozen dependency sync: `npx nx run fabric-workspace-deployment:sync`
+- Format: `npx nx run fabric-workspace-deployment:format`
+- Non-mutating format/lint gate: `npx nx run fabric-workspace-deployment:format-check`
+- Tests: `npx nx run fabric-workspace-deployment:test`
+- Type check: `npx nx run fabric-workspace-deployment:type-check`
+- Build wheel + sdist: `npx nx run fabric-workspace-deployment:build:package`
+- Build the committed PyInstaller spec: `npx nx run fabric-workspace-deployment:build:binary`
+- Build both package forms: `npx nx run fabric-workspace-deployment:build`
+- Binary/tool/image smoke: `npx nx run fabric-workspace-deployment:smoke`
+- Full deterministic gate: `npx nx run fabric-workspace-deployment:verify`
 - Build + invoke the binary from `dist/`: `npx nx run fabric-workspace-deployment:run -- --config-file-absolute-path <abs.json> --operation <op>`
-- Publish (lint → `contrib/publish.sh` → hatch build + twine to the ADO feed): `npx nx publish`
+- Publish to the internal ADO PyPI feed: `npx nx run fabric-workspace-deployment:publish`
 
 Invoke the installed console script directly with two required args:
 
@@ -26,8 +33,9 @@ fabric-workspace-deployment --config-file-absolute-path <ABSOLUTE path to config
 `deployFabricWorkspace`, `deployTemplate`, `deployRbac`, `deploySeed`, `deployShortcut`,
 `deploySpark`, `deployModel`, `deployMonitoring`, `deployAlert`, `deployGitLink`.
 
-There is **no automated test suite yet** — `tests/` holds only a package marker, and there is
-no pytest config. `mypy` is the main static gate.
+`tests/test_logging_config.py` is an active pytest suite and emits `reports/pytest.xml` in the
+Nx test target. Pytest, mypy, Black, package build, PyInstaller build, and smoke checks are all
+required by `fabric-workspace-deployment:verify`.
 
 ## Architecture (the parts that span files)
 
@@ -67,7 +75,8 @@ no pytest config. `mypy` is the main static gate.
 ## Conventions specific to this repo
 
 - **Formatting**: `black --line-length 2000` — effectively "never wrap". Do not hand-wrap long
-  lines; run `npx nx lint` before pushing. `# fmt: skip` / `# noqa` are used for the rare exceptions.
+  lines; run `npx nx run fabric-workspace-deployment:format-check` before pushing. `# fmt: skip` /
+  `# noqa` are used for the rare exceptions.
 - **License header**: every source file starts with the SPDX block
   (`# SPDX-FileCopyrightText: 2025-present Raki Rahman ...` / `# SPDX-License-Identifier: MIT`).
 - **Adding an operation**: add an `Operation` enum value + a `match` case in `CentralOperator`,
@@ -84,12 +93,18 @@ no pytest config. `mypy` is the main static gate.
 
 ## Dev environment
 
-- Work happens inside the pinned devcontainer image
-  (`rakirahman.azurecr.io/devcontainer/spark:…`), which mounts `~/.azure` for `az` auth and
-  provides `fab`, `hatch`, `uv`, and Python deps.
-- One-time host bootstrap: `contrib/bootstrap-dev-env.sh` (installs docker + native-Linux `az` +
-  node, and writes `.npmrc` with an `az`-derived token for the internal npm feed). See
-  `contrib/README.md` for the full WSL/devcontainer flow.
+- Work happens inside the repository-owned, digest-pinned Ubuntu 24.04 devcontainer. Features,
+  npm packages, Python dependencies, and downloaded tool images are exact/locked.
+- The only explicit mount is WSL `~/.azure` to `/home/vscode/.azure`.
+- The image intentionally excludes Spark/Delta/Livy, Java/Scala/SBT/Maven, FUSE/blobfuse,
+  ODBC, and Docker-in-Docker.
+- Headless lifecycle targets are `devcontainer:build`, `devcontainer:up`, `devcontainer:test`,
+  and `devcontainer:down`. The test target runs `fabric-workspace-deployment:verify` inside the
+  exact running workspace container.
+- The Windows and Linux bootstrap scripts are intentionally destructive. Read
+  `contrib/README.md` before running them; they are never invoked by devcontainer startup or CI.
+- Local live auth is `az login` on WSL, then `fab auth login --azure-cli` inside the
+  devcontainer. CI must never log in, deploy, call live Azure/Fabric resources, or publish.
 
 ## Git / PRs
 

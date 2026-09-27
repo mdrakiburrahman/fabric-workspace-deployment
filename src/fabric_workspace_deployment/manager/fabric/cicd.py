@@ -74,7 +74,7 @@ class FabricCicdManager(CicdManager):
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = []
             for workspace_params, result in zip(deployed_workspaces, results):
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     error_msg = f"Failed to reconcile CICD for workspace '{workspace_params.name}': {result}"
                     self.logger.error(error_msg)
                     errors.append(error_msg)
@@ -411,7 +411,7 @@ class FabricCicdManager(CicdManager):
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = []
             for i, result in enumerate(results):
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     sjd_name = template_params.spark_job_definitions[i].display_name
                     error_msg = f"Failed to create Spark Job Definition '{sjd_name}': {result}"
                     self.logger.error(error_msg)

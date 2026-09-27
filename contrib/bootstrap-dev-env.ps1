@@ -1,16 +1,28 @@
 <#
 
 .SYNOPSIS
-  Bootstraps a Windows Cloud DevBox with WSL pre-reqs .
+  Destructively rebuilds a Windows Cloud DevBox for FWD development.
 
 .NOTES
 
   - The script uninstalls Docker Desktop as it interferes with WSL2.
+  - The script unregisters every WSL distribution and replaces the WSL configuration.
   - Must be run as Administrator in PowerShell 7+.
 
 #>
 
 #Requires -RunAsAdministrator
+
+$BLOCKLISTED_SLOW_PERF_EXTENSIONS = @(
+    "Microsoft.wavework"
+)
+$installedExtensions = @(code --list-extensions)
+foreach ($extension in $BLOCKLISTED_SLOW_PERF_EXTENSIONS) {
+    if ($extension -in $installedExtensions) {
+        Write-Host "Uninstalling blocklisted VS Code extension: $extension"
+        code --uninstall-extension $extension
+    }
+}
 
 code --install-extension ms-vscode-remote.remote-wsl
 code --install-extension ms-vscode-remote.remote-containers
@@ -59,8 +71,8 @@ foreach ($distro in $distros) {
     wsl --unregister $distro
 }
 
-$RECOMMENDED_CORES = 16
-$RECOMMENDED_FREE_GB = 128
+$RECOMMENDED_CORES = 32
+$RECOMMENDED_FREE_GB = 512
 
 $memGB=[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)
 $cpu=[Environment]::ProcessorCount

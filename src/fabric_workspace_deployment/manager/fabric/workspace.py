@@ -263,7 +263,15 @@ class FabricWorkspaceManager(WorkspaceManager):
             if mode == StorageRbacAuthMode.CLI:
                 self.az_cli.run(["role", "assignment", "create", "--assignee-object-id", object_id, "--assignee-principal-type", "ServicePrincipal", "--role", role, "--scope", scope])
             elif mode == StorageRbacAuthMode.JWT:
-                self.arm_rbac_manager.create_role_assignment(os.getenv(storage_params.rbac.auth.jwt.env), scope, role, object_id, PrincipalType.SERVICE_PRINCIPAL)
+                if self.arm_rbac_manager is None:
+                    raise RuntimeError("ARM RBAC manager is required for JWT storage RBAC")
+                jwt_params = storage_params.rbac.auth.jwt
+                if jwt_params is None:
+                    raise RuntimeError("JWT storage RBAC parameters are required")
+                jwt_token = os.getenv(jwt_params.env)
+                if not jwt_token:
+                    raise RuntimeError(f"JWT storage RBAC token environment variable is not set: {jwt_params.env}")
+                self.arm_rbac_manager.create_role_assignment(jwt_token, scope, role, object_id, PrincipalType.SERVICE_PRINCIPAL)
             else:
                 raise RuntimeError(f"Unsupported storage rbac auth mode: {mode}")
 

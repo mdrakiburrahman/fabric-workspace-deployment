@@ -3,28 +3,123 @@
     "$schema": "node_modules/nx/schemas/project-schema.json",
     "projectType": "application",
     "targets": {
+        "sync": {
+            "executor": "nx:run-commands",
+            "cache": false,
+            "options": {
+                "command": "uv sync --frozen --all-groups --no-install-project"
+            }
+        },
+        "format": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "sync"
+            ],
+            "options": {
+                "command": "uv run --frozen black --line-length 2000 ."
+            }
+        },
+        "format-check": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "sync"
+            ],
+            "options": {
+                "command": "uv run --frozen black --check --diff --line-length 2000 ."
+            }
+        },
+        "lint": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "sync"
+            ],
+            "options": {
+                "command": "uv run --frozen black --check --diff --line-length 2000 ."
+            }
+        },
+        "test": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "sync"
+            ],
+            "outputs": [
+                "{workspaceRoot}/reports/pytest.xml"
+            ],
+            "options": {
+                "command": "mkdir -p reports && uv run --frozen pytest --junitxml=reports/pytest.xml tests"
+            }
+        },
+        "type-check": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "sync"
+            ],
+            "options": {
+                "command": "uv run --frozen mypy src/fabric_workspace_deployment tests"
+            }
+        },
         "build": {
             "executor": "nx:run-commands",
             "dependsOn": [
-                "clean"
+                "sync"
             ],
             "options": {
                 "commands": [
-                    "hatch run build:binary"
+                    "bash contrib/build-package.sh",
+                    "bash contrib/build-binary.sh"
                 ],
                 "parallel": false
+            },
+            "configurations": {
+                "package": {
+                    "commands": [
+                        "bash contrib/build-package.sh"
+                    ]
+                },
+                "binary": {
+                    "commands": [
+                        "bash contrib/build-binary.sh"
+                    ]
+                }
             }
         },
         "clean": {
             "executor": "nx:run-commands",
             "options": {
-                "commands": [
-                    "rm -rf build dist src/*/__pycache__ .venv",
-                    "hatch env prune",
-                    "hatch env create",
-                    "hatch run build:clean"
-                ],
-                "parallel": false
+                "command": "rm -rf build dist reports .mypy_cache .pytest_cache"
+            }
+        },
+        "smoke": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "build"
+            ],
+            "options": {
+                "command": "bash contrib/smoke.sh"
+            },
+            "configurations": {
+                "binary": {
+                    "command": "test -x dist/fabric-workspace-deployment && dist/fabric-workspace-deployment --help >/dev/null"
+                },
+                "tools": {
+                    "command": "bash contrib/verify-tools.sh"
+                },
+                "image": {
+                    "command": "bash contrib/assert-minimal-image.sh"
+                }
+            }
+        },
+        "verify": {
+            "executor": "nx:run-commands",
+            "dependsOn": [
+                "format-check",
+                "test",
+                "type-check",
+                "build",
+                "smoke"
+            ],
+            "options": {
+                "command": "echo 'FWD verification complete.'"
             }
         },
         "run": {
@@ -42,25 +137,15 @@
                 ]
             }
         },
-        "lint": {
-            "executor": "nx:run-commands",
-            "options": {
-                "commands": [
-                    "black --line-length 2000 ."
-                ],
-                "parallel": false
-            }
-        },
         "publish": {
             "executor": "nx:run-commands",
             "dependsOn": [
-                "lint"
+                "format-check",
+                "test",
+                "type-check"
             ],
             "options": {
-                "commands": [
-                    "bash contrib/publish.sh"
-                ],
-                "parallel": false
+                "command": "bash contrib/publish.sh"
             }
         }
     }

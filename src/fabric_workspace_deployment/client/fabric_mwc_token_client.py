@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import logging
+from typing import Any
 
 import dacite
 import requests
@@ -85,7 +86,7 @@ class FabricMwcTokenClient(MwcTokenClient):
             "Content-Type": "application/json",
         }
 
-        payload = {
+        payload: dict[str, Any] = {
             "type": "[Start] GetMWCToken",
             "workloadType": "SparkCore",
             "workspaceObjectId": workspace_id,

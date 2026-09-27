@@ -2,19 +2,26 @@
     "$schema": "./node_modules/nx/schemas/nx-schema.json",
     "useDaemonProcess": false,
     "targetDefaults": {
-        "lint": {
-            "configurations": {
-                "ci": {}
-            },
+        "build": {
             "cache": false
         },
-        "test": {
-            "dependsOn": [
-                "build"
-            ]
+        "publish": {
+            "cache": false
+        },
+        "run": {
+            "cache": false
+        },
+        "smoke": {
+            "cache": false
+        },
+        "sync": {
+            "cache": false
+        },
+        "verify": {
+            "cache": false
         }
     },
     "installation": {
-        "version": "18.3.5"
+        "version": "23.2.1"
     }
 }

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import logging
+from typing import Any
 
 import requests
 import yaml
@@ -38,7 +39,7 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
         capacity_id_upper = capacity_id.upper()
         return f"https://{capacity_id_no_dashes}.pbidedicated.windows.net" f"/webapi/capacities/{capacity_id_upper}" f"/workloads/SparkCore/SparkCoreService/automatic/v1"
 
-    def _convert_yaml_to_sparkcore_payload(self, yaml_body: dict) -> dict:
+    def _convert_yaml_to_sparkcore_payload(self, yaml_body: dict[str, Any]) -> dict[str, Any]:
         """
         Convert a parsed Sparkcompute.yml dict to the SparkCore PUT payload format.
 
@@ -48,7 +49,7 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
         - instance_pool_id -> instancePoolId (string)
         - Add sparkEnvVar: {} and mountPoints: {} defaults if not present
         """
-        payload = {}
+        payload: dict[str, Any] = {}
 
         for key, value in yaml_body.items():
             if key == "spark_conf":
@@ -72,9 +73,9 @@ class FabricSparkEnvironmentClient(SparkEnvironmentClient):
 
         return payload
 
-    def _convert_nested(self, d: dict) -> dict:
+    def _convert_nested(self, d: dict[str, Any]) -> dict[str, Any]:
         """Convert a nested dict's keys from snake_case to camelCase."""
-        result = {}
+        result: dict[str, Any] = {}
         for key, value in d.items():
             parts = key.split("_")
             camel_key = parts[0] + "".join(p.title() for p in parts[1:])

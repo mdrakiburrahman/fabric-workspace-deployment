@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['src/fabric_workspace_deployment/main.py'],
+    ["src/fabric_workspace_deployment/main.py"],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,11 +22,11 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='fabric-workspace-deployment',
+    name="fabric-workspace-deployment",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
