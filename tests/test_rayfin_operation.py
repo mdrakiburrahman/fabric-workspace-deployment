@@ -69,7 +69,10 @@ def _write_app(app_root: Path, aliases: list[str] | None = None, data: dict | No
 def _operation_params_for_private_methods(root: Path):
     params = OperationParams.__new__(OperationParams)
     params.logger = logging.getLogger("test-rayfin-operation-params")
-    params.common = SimpleNamespace(local=SimpleNamespace(root_folder=str(root)))
+    params.common = SimpleNamespace(
+        local=SimpleNamespace(root_folder=str(root)),
+        fabric=SimpleNamespace(rayfins=[]),
+    )
     return params
 
 
@@ -77,33 +80,46 @@ def test_operation_enum_exposes_deploy_rayfin():
     assert Operation("deployRayfin") is Operation.DEPLOY_RAYFIN
 
 
-def test_parse_absent_rayfin_config_is_empty_list(tmp_path):
+def test_parse_absent_rayfins_config_is_empty_list(tmp_path):
     params = _operation_params_for_private_methods(tmp_path)
 
     assert params._parse_rayfin_params([]) == []
 
 
+def test_parse_fabric_params_defaults_rayfins_to_empty_list(tmp_path):
+    params = _operation_params_for_private_methods(tmp_path)
+
+    result = params._parse_fabric_params({"workspaces": [], "storages": []}, str(tmp_path))
+
+    assert result.rayfins == []
+
+
 def test_parse_rayfin_binding(tmp_path):
     params = _operation_params_for_private_methods(tmp_path)
 
-    result = params._parse_rayfin_params(
-        [
-            {
-                "rootPath": "apps/sales",
-                "workspaceName": "Analytics",
-                "semanticModels": {
-                    "sales": {
-                        "workspaceName": "Semantic Models",
-                        "itemName": "Sales Model",
+    result = params._parse_fabric_params(
+        {
+            "workspaces": [],
+            "storages": [],
+            "rayfins": [
+                {
+                    "rootPath": "apps/sales",
+                    "workspaceName": "Analytics",
+                    "semanticModels": {
+                        "sales": {
+                            "workspaceName": "Semantic Models",
+                            "itemName": "Sales Model",
+                        },
                     },
-                },
-            }
-        ]
+                }
+            ],
+        },
+        str(tmp_path),
     )
 
-    assert result[0].root_path == "apps/sales"
-    assert result[0].workspace_name == "Analytics"
-    assert result[0].semantic_models == {
+    assert result.rayfins[0].root_path == "apps/sales"
+    assert result.rayfins[0].workspace_name == "Analytics"
+    assert result.rayfins[0].semantic_models == {
         "sales": RayfinSemanticModelParams(
             workspace_name="Semantic Models",
             item_name="Sales Model",
@@ -112,17 +128,25 @@ def test_parse_rayfin_binding(tmp_path):
 
 
 @pytest.mark.parametrize("value", [None, {}, "apps"])
-def test_parse_rejects_non_list_rayfin_config(tmp_path, value):
+def test_parse_rejects_non_list_rayfins_config(tmp_path, value):
     params = _operation_params_for_private_methods(tmp_path)
 
-    with pytest.raises(ValueError, match="must be a list"):
+    with pytest.raises(ValueError, match="common.fabric.rayfins must be a list"):
         params._parse_rayfin_params(value)
+
+
+def test_rejects_obsolete_top_level_rayfin(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"common": {}, "rayfin": []}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="common.fabric.rayfins"):
+        OperationParams(str(config_path), Operation.DEPLOY_RAYFIN.value)
 
 
 def test_validate_rayfin_binding_and_manifest(tmp_path):
     _write_app(tmp_path / "apps" / "sales", aliases=["sales"])
     params = _operation_params_for_private_methods(tmp_path)
-    params.rayfin = params._parse_rayfin_params(
+    params.common.fabric.rayfins = params._parse_rayfin_params(
         [
             {
                 "rootPath": "apps/sales",
@@ -143,7 +167,7 @@ def test_validate_rayfin_binding_and_manifest(tmp_path):
 def test_validate_rejects_binding_alias_mismatch(tmp_path, caplog):
     _write_app(tmp_path / "apps" / "sales", aliases=["sales"])
     params = _operation_params_for_private_methods(tmp_path)
-    params.rayfin = params._parse_rayfin_params(
+    params.common.fabric.rayfins = params._parse_rayfin_params(
         [
             {
                 "rootPath": "apps/sales",
@@ -168,7 +192,7 @@ def test_validate_requires_schema_when_managed_data_is_enabled(tmp_path, caplog)
     app_root = tmp_path / "apps" / "sales"
     _write_app(app_root, data={"enabled": True, "dialect": "mssql"})
     params = _operation_params_for_private_methods(tmp_path)
-    params.rayfin = params._parse_rayfin_params(
+    params.common.fabric.rayfins = params._parse_rayfin_params(
         [
             {
                 "rootPath": "apps/sales",
@@ -236,7 +260,7 @@ def test_parse_rejects_duplicate_normalized_semantic_model_aliases(tmp_path):
 @pytest.mark.parametrize("root_path", ["/absolute/app", "../outside"])
 def test_validate_rejects_root_path_outside_common_root(tmp_path, root_path, caplog):
     params = _operation_params_for_private_methods(tmp_path)
-    params.rayfin = params._parse_rayfin_params(
+    params.common.fabric.rayfins = params._parse_rayfin_params(
         [
             {
                 "rootPath": root_path,
@@ -313,7 +337,10 @@ def test_central_operator_dispatches_deploy_rayfin(monkeypatch):
             raise AttributeError(name)
 
     monkeypatch.setattr(operators, "ContainerizedManagementFactory", FakeFactory)
-    operation_params = SimpleNamespace(common=SimpleNamespace(), operation=Operation.DEPLOY_RAYFIN, rayfin=[SimpleNamespace()])
+    operation_params = SimpleNamespace(
+        common=SimpleNamespace(fabric=SimpleNamespace(rayfins=[SimpleNamespace()])),
+        operation=Operation.DEPLOY_RAYFIN,
+    )
 
     asyncio.run(operators.CentralOperator(operation_params).execute())
 
@@ -352,7 +379,10 @@ def test_central_operator_empty_rayfin_config_is_noop_without_fabric_cli(monkeyp
             raise AttributeError(name)
 
     monkeypatch.setattr(operators, "ContainerizedManagementFactory", FakeFactory)
-    operation_params = SimpleNamespace(common=SimpleNamespace(), operation=Operation.DEPLOY_RAYFIN, rayfin=[])
+    operation_params = SimpleNamespace(
+        common=SimpleNamespace(fabric=SimpleNamespace(rayfins=[])),
+        operation=Operation.DEPLOY_RAYFIN,
+    )
 
     asyncio.run(operators.CentralOperator(operation_params).execute())
 

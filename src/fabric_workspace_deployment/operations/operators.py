@@ -73,7 +73,7 @@ class CentralOperator(EntryPointOperator):
     async def _execute(self) -> None:
         """Execute the operation based on the operation type."""
         try:
-            is_empty_rayfin_deployment = self.operation == Operation.DEPLOY_RAYFIN and not self.operation_params.rayfin
+            is_empty_rayfin_deployment = self.operation == Operation.DEPLOY_RAYFIN and not self.operation_params.common.fabric.rayfins
             if not is_empty_rayfin_deployment:
                 self.logger.info(f"Fabric CLI version: {self.fabric_cli.run_command('version')}")
             self.logger.info(f"Executing operation: {self.operation.value}")

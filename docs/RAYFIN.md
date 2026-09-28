@@ -1,6 +1,6 @@
 # Rayfin deployments
 
-`fabric-workspace-deployment` (FWD) can build and deploy one or more Rayfin applications with the explicit `deployRayfin` operation. Rayfin support is opt-in: an existing FWD configuration with no top-level `rayfin` property remains valid, and `deployRayfin` completes as a no-op.
+`fabric-workspace-deployment` (FWD) can build and deploy one or more Rayfin applications with the explicit `deployRayfin` operation. Rayfin support is opt-in: an existing FWD configuration with no `common.fabric.rayfins` property remains valid, and `deployRayfin` completes as a no-op.
 
 ## Prerequisites
 
@@ -16,29 +16,31 @@ FWD uses its packaged `Compose.rayfin.yaml` and the rolling MCR-hosted `mcr.micr
 
 ## FWD configuration contract
 
-Add an optional top-level `rayfin` list alongside `common`:
+Add an optional `rayfins` list under `common.fabric`:
 
 ```json
 {
   "common": {
-    "...": "existing FWD configuration"
-  },
-  "rayfin": [
-    {
-      "rootPath": "apps/sales-insights",
-      "workspaceName": "Analytics Production",
-      "semanticModels": {
-        "sales": {
-          "workspaceName": "Shared Models Production",
-          "itemName": "Sales Model"
-        },
-        "inventory": {
-          "workspaceName": "Supply Chain Production",
-          "itemName": "Inventory Model"
+    "fabric": {
+      "...": "existing Fabric configuration",
+      "rayfins": [
+        {
+          "rootPath": "apps/sales-insights",
+          "workspaceName": "Analytics Production",
+          "semanticModels": {
+            "sales": {
+              "workspaceName": "Shared Models Production",
+              "itemName": "Sales Model"
+            },
+            "inventory": {
+              "workspaceName": "Supply Chain Production",
+              "itemName": "Inventory Model"
+            }
+          }
         }
-      }
+      ]
     }
-  ]
+  }
 }
 ```
 

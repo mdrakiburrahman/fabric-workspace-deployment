@@ -370,7 +370,7 @@ class ContainerizedManagementFactory(ManagementFactory):
     def create_rayfin_manager(self) -> RayfinDeploymentManager:
         return RayfinDeploymentManager(
             self.operation_params.common,
-            self.operation_params.rayfin,
+            self.operation_params.common.fabric.rayfins,
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_docker_cli(),

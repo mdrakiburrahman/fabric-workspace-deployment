@@ -65,7 +65,7 @@ class RayfinDeploymentManager(RayfinManager):
 
     async def _execute(self) -> None:
         if not self.rayfin_params:
-            self.logger.info("No top-level Rayfin configuration found; deployRayfin is a no-op.")
+            self.logger.info("No common.fabric.rayfins configuration found; deployRayfin is a no-op.")
             return
 
         for params in self.rayfin_params:
