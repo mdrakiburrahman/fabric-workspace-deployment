@@ -10,7 +10,7 @@
             ],
             "options": {
                 "commands": [
-                    "hatch run build:binary"
+                    "bash contrib/run-hatch.sh run build:binary"
                 ],
                 "parallel": false
             }
@@ -20,9 +20,9 @@
             "options": {
                 "commands": [
                     "rm -rf build dist src/*/__pycache__ .venv",
-                    "hatch env prune",
-                    "hatch env create",
-                    "hatch run build:clean"
+                    "bash contrib/run-hatch.sh env prune",
+                    "bash contrib/run-hatch.sh env create",
+                    "bash contrib/run-hatch.sh run build:clean"
                 ],
                 "parallel": false
             }
@@ -46,7 +46,7 @@
             "executor": "nx:run-commands",
             "options": {
                 "commands": [
-                    "hatch run black --line-length 2000 ."
+                    "bash contrib/run-hatch.sh run black --line-length 2000 ."
                 ],
                 "parallel": false
             }

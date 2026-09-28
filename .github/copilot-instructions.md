@@ -10,9 +10,9 @@ a PyInstaller binary and as a package on an internal Azure DevOps PyPI feed.
 
 Nx wraps Hatch; both are available. Prefer these:
 
-- Format (the lint gate): `npx nx lint` → `hatch run black --line-length 2000 .`
-- Type check: `hatch run types:check` → `mypy src/fabric_workspace_deployment tests`
-- Build the onefile binary: `npx nx build` (clean + `hatch run build:binary`, uses `fabric-workspace-deployment.spec`)
+- Format (the lint gate): `npx nx lint` → `bash contrib/run-hatch.sh run black --line-length 2000 .`
+- Type check: `bash contrib/run-hatch.sh run types:check` → `mypy src/fabric_workspace_deployment tests`
+- Build the onefile binary: `npx nx build` (clean + `bash contrib/run-hatch.sh run build:binary`, uses `fabric-workspace-deployment.spec`)
 - Build + invoke the binary from `dist/`: `npx nx run fabric-workspace-deployment:run -- --config-file-absolute-path <abs.json> --operation <op>`
 - Publish (lint → `contrib/publish.sh` → hatch build + twine to the ADO feed): `npx nx publish`
 
@@ -66,7 +66,7 @@ no pytest config. `mypy` is the main static gate.
 
 ## Conventions specific to this repo
 
-- **Formatting**: `hatch run black --line-length 2000` — effectively "never wrap". Do not hand-wrap long
+- **Formatting**: `bash contrib/run-hatch.sh run black --line-length 2000` — effectively "never wrap". Do not hand-wrap long
   lines; run `npx nx lint` before pushing. `# fmt: skip` / `# noqa` are used for the rare exceptions.
 - **License header**: every source file starts with the SPDX block
   (`# SPDX-FileCopyrightText: 2025-present Raki Rahman ...` / `# SPDX-License-Identifier: MIT`).

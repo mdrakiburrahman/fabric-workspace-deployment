@@ -28,7 +28,7 @@ This installs or validates the host prerequisites, restarts Docker, and intentio
 )
 ```
 
-`up` starts or reuses the container. Both `exec` calls use its exact ID, stream stdout/stderr, and return the command's exit status. The publish script requests a short-lived Azure DevOps token through the mounted Azure CLI session. The container remains running.
+`up` starts or reuses the container. Both `exec` calls use its exact ID, stream stdout/stderr, and return the command's exit status. The repository installs pinned Hatch with `uv` if the reused container does not already have it, and the publish script requests a short-lived Azure DevOps token through the mounted Azure CLI session. The container remains running.
 
 ## Publish and remove the devcontainer
 
