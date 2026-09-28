@@ -76,10 +76,7 @@ class RayfinDeploymentManager(RayfinManager):
         manifest = self.manifest_loader.load(source_root)
         self.manifest_loader.validate_node_package(source_root, manifest)
         self.manifest_loader.validate_data_schema(source_root, manifest)
-        expected_workspace_id = self._get_expected_workspace_id()
         workspace_id = self._resolve_workspace_id(params.workspace_name)
-        if workspace_id.lower() != expected_workspace_id.lower():
-            raise ValueError(f"Rayfin workspace safety guard failed: workspaceName '{params.workspace_name}' resolved to {workspace_id}, but {RAYFIN_WORKSPACE_ID_ENV_VAR} requires {expected_workspace_id}")
         semantic_models = self._resolve_semantic_models(params, workspace_id)
         token = self._get_rayfin_token()
 
@@ -163,14 +160,6 @@ class RayfinDeploymentManager(RayfinManager):
             return configured_token
         self.logger.debug(f"Environment variable '{RAYFIN_TOKEN_ENV_VAR}' is not set; acquiring a Fabric token through Azure CLI")
         return self.az_cli.get_access_token(self.common_params.scope.analysis_service)
-
-    def _get_expected_workspace_id(self) -> str:
-        expected_workspace_id = os.getenv(RAYFIN_WORKSPACE_ID_ENV_VAR, "").strip()
-        if not expected_workspace_id:
-            raise ValueError(f"Environment variable '{RAYFIN_WORKSPACE_ID_ENV_VAR}' is required as the deployRayfin workspace safety guard")
-        if _GUID_PATTERN.fullmatch(expected_workspace_id) is None:
-            raise ValueError(f"Environment variable '{RAYFIN_WORKSPACE_ID_ENV_VAR}' must contain a valid Fabric workspace GUID")
-        return expected_workspace_id
 
     def _create_staging_tree(self, source_root: Path, manifest: RayfinAppManifest, workspace_id: str) -> Path:
         self._remove_stale_staging()

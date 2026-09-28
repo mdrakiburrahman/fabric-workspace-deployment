@@ -22,11 +22,6 @@ ITEM_ID = "33333333-3333-3333-3333-333333333333"
 TENANT_ID = "44444444-4444-4444-4444-444444444444"
 
 
-@pytest.fixture(autouse=True)
-def set_workspace_safety_guard(monkeypatch):
-    monkeypatch.setenv("RAYFIN_WORKSPACE_ID", WORKSPACE_ID)
-
-
 def _write_app(root: Path) -> Path:
     app_root = root / "apps" / "sales"
     (app_root / "rayfin" / "data").mkdir(parents=True)
@@ -504,39 +499,6 @@ def test_friendly_semantic_model_resolution_error_stops_before_docker(tmp_path, 
     with pytest.raises(ValueError, match="Unable to resolve semantic model 'Sales Model' for alias 'sales' in workspace 'Semantic Models'"):
         asyncio.run(manager.execute())
 
-    assert docker_cli.calls == []
-    assert not staging_root.exists()
-
-
-def test_missing_workspace_safety_guard_stops_before_fabric_and_docker(tmp_path, monkeypatch):
-    _write_app(tmp_path)
-    staging_root = tmp_path / "staging"
-    docker_cli = FakeDockerCli()
-    fabric_cli = FakeFabricCli()
-    monkeypatch.delenv("RAYFIN_WORKSPACE_ID")
-    manager = _manager(tmp_path, staging_root, tmp_path / "state", fabric_cli=fabric_cli, docker_cli=docker_cli)
-
-    with pytest.raises(ValueError, match="required as the deployRayfin workspace safety guard"):
-        asyncio.run(manager.execute())
-
-    assert fabric_cli.calls == []
-    assert docker_cli.calls == []
-    assert not staging_root.exists()
-
-
-def test_workspace_safety_guard_rejects_resolved_workspace_mismatch(tmp_path, monkeypatch):
-    _write_app(tmp_path)
-    staging_root = tmp_path / "staging"
-    docker_cli = FakeDockerCli()
-    fabric_cli = FakeFabricCli()
-    monkeypatch.setenv("RAYFIN_WORKSPACE_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    manager = _manager(tmp_path, staging_root, tmp_path / "state", fabric_cli=fabric_cli, docker_cli=docker_cli)
-
-    with pytest.raises(ValueError, match="workspace safety guard failed"):
-        asyncio.run(manager.execute())
-
-    assert len(fabric_cli.calls) == 1
-    assert fabric_cli.calls[0][0][1] == "Analytics.Workspace"
     assert docker_cli.calls == []
     assert not staging_root.exists()
 

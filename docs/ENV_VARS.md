@@ -13,11 +13,11 @@ This is the canonical reference for environment variables read directly by
 | `FAB_TOKEN_CICD`      | Token used to construct the `fabric-cicd` credential. Falls back to `AzureCliCredential` when unset.                                                  |
 | `FAB_PATH`            | Directory containing the `fab` executable.                                                                                                            |
 | `RAYFIN_TOKEN`        | Optional pre-acquired token for headless Rayfin deployment. Falls back to Fabric token acquisition through Azure CLI when unset.                      |
-| `RAYFIN_WORKSPACE_ID` | Required `deployRayfin` safety guard. The friendly `workspaceName` must resolve to this exact Fabric workspace ID before Docker or Rayfin is invoked. |
+| `RAYFIN_WORKSPACE_ID` | Internal Compose variable populated by FWD from the configured friendly `workspaceName`. Callers do not set it. |
 | `GIT_ROOT`            | Git-root override used by `{git-root}` placeholder and logging path resolution.                                                                       |
 | `PACKAGE_VERSION`     | Build-time package version override.                                                                                                                  |
 
-After the safety check, `deployRayfin` injects the verified `RAYFIN_WORKSPACE_ID` and configured
+After workspace resolution, `deployRayfin` injects the resolved `RAYFIN_WORKSPACE_ID` and configured
 `RAYFIN_TENANT_ID` into the isolated Compose service.
 
 Environment-variable diagnostics redact names containing `TOKEN`, `PASSWORD`, `SECRET`,

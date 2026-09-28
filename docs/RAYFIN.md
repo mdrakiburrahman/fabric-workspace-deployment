@@ -9,7 +9,6 @@
 - Either:
   - `RAYFIN_TOKEN` containing a pre-acquired Fabric/Power BI token, or
   - Azure CLI authentication that can acquire a token for the configured `common.scope.analysisService`
-- `RAYFIN_WORKSPACE_ID` set to the only Fabric workspace ID the invocation is allowed to deploy into
 - A committed `package.json` and `package-lock.json` in each app root
 - `@microsoft/rayfin-cli` pinned exactly in the app dependency graph to the version declared by the app manifest
 
@@ -48,7 +47,7 @@ Each entry has exactly these fields:
 | Field            | Type   | Meaning                                                                                                                                                                                |
 | ---------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rootPath`       | string | App root relative to `common.local.rootFolder`. The resolved path must remain under that root.                                                                                         |
-| `workspaceName`  | string | Friendly display name of the target workspace where the Rayfin AppBackend is deployed. FWD resolves it to an ID and applies the `RAYFIN_WORKSPACE_ID` safety guard.                    |
+| `workspaceName`  | string | Friendly display name of the target workspace where the Rayfin AppBackend is deployed. FWD resolves it and injects the resulting ID into Rayfin.                                      |
 | `semanticModels` | object | Mapping from app connection alias to a strict `{ "workspaceName", "itemName" }` binding. Each semantic model can come from a different friendly workspace. Empty mappings are allowed. |
 
 Each semantic-model binding has exactly these fields:
@@ -159,7 +158,6 @@ When a Rayfin semantic-model binding targets a model managed by the same FWD con
 Run:
 
 ```bash
-RAYFIN_WORKSPACE_ID=39db68f1-2443-43ee-bb56-ebf4ba4e39a7 \
 fabric-workspace-deployment \
   --config-file-absolute-path /absolute/path/to/config.json \
   --operation deployRayfin
@@ -168,10 +166,10 @@ fabric-workspace-deployment \
 For each configured app, FWD:
 
 1. Loads and validates the app manifest.
-2. Resolves the friendly workspace with Fabric CLI and fails unless its ID exactly matches the required `RAYFIN_WORKSPACE_ID` safety guard.
-3. Independently resolves each semantic model's configured friendly workspace and item name; semantic-model workspaces may differ from the guarded AppBackend target workspace.
+2. Resolves the friendly workspace with Fabric CLI.
+3. Independently resolves each semantic model's configured friendly workspace and item name; semantic-model workspaces may differ from the AppBackend target workspace.
 4. Creates isolated staging and generates `fabric.yaml` and `rayfin/rayfin.yml`.
-5. Injects `RAYFIN_TOKEN`, verified `RAYFIN_WORKSPACE_ID`, and `RAYFIN_TENANT_ID` into the Compose service.
+5. Injects `RAYFIN_TOKEN`, the resolved `RAYFIN_WORKSPACE_ID`, and `RAYFIN_TENANT_ID` into the Compose service.
 6. Runs `npm ci`.
 7. Verifies the local Rayfin CLI exact version.
 8. Runs canonical unattended `./node_modules/.bin/rayfin up --yes`, which confirms reuse of an existing AppBackend without prompting, deploys the app, and provisions/applies the managed MSSQL data schema when enabled.
