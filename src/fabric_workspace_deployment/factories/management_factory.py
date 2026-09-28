@@ -343,6 +343,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
+            self.create_fabric_folder_client(),
             self.http_retry_handler,
         )
 

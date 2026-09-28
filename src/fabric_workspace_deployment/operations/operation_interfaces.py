@@ -268,6 +268,7 @@ class ArtifactType(Enum):
 class CicdArtifactType(Enum):
     """Enumeration of Fabric artifact types."""
 
+    APP_BACKEND = "AppBackend"
     DATA_PIPELINE = "DataPipeline"
     ENVIRONMENT = "Environment"
     EVENTHOUSE = "Eventhouse"
@@ -973,8 +974,8 @@ class FabricWorkspaceItemRbacDetail:
     permissions: int
     given_name: str
     object_id: str
-    artifact_permissions: int | None
-    aad_app_id: str | None
+    artifact_permissions: int | None = None
+    aad_app_id: str | None = None
     access_source: AccessSource | None = None
 
 
@@ -1884,12 +1885,13 @@ class RbacManager(Manager):
         pass
 
     @abstractmethod
-    async def get_fabric_workspace_item_rbac_info(self, item_id: int) -> FabricWorkspaceItemRbacInfo:
+    async def get_fabric_workspace_item_rbac_info(self, item_id: str, item_type: str) -> FabricWorkspaceItemRbacInfo:
         """
         Get Fabric workspace item RBAC information.
 
         Args:
             item_id: The Fabric workspace item id
+            item_type: The Fabric workspace item type
 
         Returns:
             FabricWorkspaceItemRbacInfo: Fabric workspace item RBAC information
@@ -1897,24 +1899,51 @@ class RbacManager(Manager):
         pass
 
     @abstractmethod
-    async def update_item_role_assignment(self, item_id: str, assignment: ItemRbacDetailParams) -> None:
+    async def get_fabric_model_rbac_info(self, model_id: int) -> FabricWorkspaceItemRbacInfo:
+        """
+        Get SemanticModel RBAC information by its internal model id.
+
+        Args:
+            model_id: The internal Analysis Services model id
+
+        Returns:
+            FabricWorkspaceItemRbacInfo: SemanticModel RBAC information
+        """
+        pass
+
+    @abstractmethod
+    async def update_item_role_assignment(self, item_id: str, assignment: ItemRbacDetailParams, identity: Identity) -> None:
         """
         Update a single item role assignment via API call.
 
         Args:
             item_id: The workspace item ID
             assignment: The item role assignment to update
+            identity: The identity receiving the assignment
         """
         pass
 
     @abstractmethod
-    async def update_workspace_role_assignment(self, folder_id: int, assignment: WorkspaceRbacParams) -> None:
+    async def update_model_role_assignment(self, model_id: int, assignment: ItemRbacDetailParams, identity: Identity) -> None:
+        """
+        Update a single SemanticModel role assignment via API call.
+
+        Args:
+            model_id: The internal Analysis Services model id
+            assignment: The model role assignment to update
+            identity: The identity receiving the assignment
+        """
+        pass
+
+    @abstractmethod
+    async def update_workspace_role_assignment(self, folder_id: int, assignment: WorkspaceRbacParams, identity: Identity) -> None:
         """
         Update a single workspace role assignment via API call.
 
         Args:
             folder_id: The workspace folder ID
             assignment: The role assignment to update
+            identity: The identity receiving the assignment
         """
         pass
 
@@ -4009,7 +4038,7 @@ class OperationParams:
             return False
 
         for j, detail_rbac in enumerate(item_rbac.detail):
-            if not self._validate_item_rbac_detail_params(detail_rbac, workspace_index, item_index, j, identity_object_ids):
+            if not self._validate_item_rbac_detail_params(detail_rbac, workspace_index, item_index, j, identity_object_ids, item_rbac.type):
                 return False
 
         return True
@@ -4021,10 +4050,24 @@ class OperationParams:
         item_index: int,
         detail_index: int,
         identity_object_ids: set[str],
+        item_type: str | None = None,
     ) -> bool:
         """Validate item RBAC detail parameters."""
         if detail_rbac.permissions is None:
             self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].permissions at index {workspace_index} cannot be None")
+            return False
+
+        valid_permissions_by_type = {
+            CicdArtifactType.SEMANTIC_MODEL.value: {1, 3, 5, 7, 9, 11, 13, 15},
+            CicdArtifactType.APP_BACKEND.value: {65, 67, 69, 71},
+        }
+        if item_type in valid_permissions_by_type and detail_rbac.permissions not in valid_permissions_by_type[item_type]:
+            valid_permissions = sorted(valid_permissions_by_type[item_type])
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].permissions at index {workspace_index} " f"must be one of {valid_permissions} for {item_type}, got {detail_rbac.permissions}")
+            return False
+
+        if item_type in valid_permissions_by_type and detail_rbac.artifact_permissions not in (None, 0):
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].artifactPermissions at index {workspace_index} " f"must be omitted or 0 for {item_type}, got {detail_rbac.artifact_permissions}")
             return False
 
         if not detail_rbac.object_id:

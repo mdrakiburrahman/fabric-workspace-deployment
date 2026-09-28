@@ -157,6 +157,35 @@ Add `.fabric-workspace-deployment/` to the consuming repository's `.gitignore`. 
 
 The Rayfin deployment registry is persisted under `rayfin-state` with owner-only permissions so later runs can reuse the same Fabric AppBackend without committing `rayfin/.deployments.json` to the app source. Successful runs remove the staged app directory; failed runs retain it beneath the source root for diagnostics.
 
+## AppBackend RBAC
+
+A deployed Rayfin application is a Fabric `AppBackend`. Configure its direct access through the target workspace's existing `common.fabric.workspaces[].rbac.items[]` collection:
+
+```json
+{
+  "type": "AppBackend",
+  "displayName": "sales-insights",
+  "detail": [
+    {
+      "permissions": 65,
+      "objectId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "purpose": "Run the Rayfin application"
+    }
+  ]
+}
+```
+
+| Portal permissions | `detail[].permissions` |
+| --- | ---: |
+| Read, Execute | `65` |
+| Read, Write, Execute | `67` |
+| Read, Reshare, Execute | `69` |
+| Read, Write, Reshare, Execute | `71` |
+
+`artifactPermissions` must be omitted or `0`. FWD reads and writes AppBackend access through Fabric's artifacts access API using Entra object IDs for groups, users, and service principals. With authoritative purge enabled, unmatched direct grants are removed while rows carrying a workspace-role `accessSource` are preserved. Explicit desired entries are still reconciled.
+
+Removing AppBackend access does not modify the Rayfin-managed SQLDatabase or SQLEndpoint children. Configure a child item separately when it needs direct access. See [Fabric RBAC](RBAC.md) for validation, purge safety, SemanticModel permissions, and missing-item behavior.
+
 ## Deployment workflow
 
 When a Rayfin semantic-model binding targets a model managed by the same FWD configuration, run `deployModel` before `deployRayfin`. A binding without `workspaceName` resolves in its Rayfin app's parent workspace. If the configured model is absent, `deployModel` now publishes the matching `<displayName>.SemanticModel` directory from the workspace template's `artifactsFolder`, waits for it to become visible, and then applies the configured model settings. Missing or ambiguous source directories fail the operation instead of being logged as a successful warning.
