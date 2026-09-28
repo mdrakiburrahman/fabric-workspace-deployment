@@ -1354,6 +1354,7 @@ class FabricWorkspaceParams:
     monitoring: MonitoringParams
     shortcut: ShortcutParams | None = None
     alert: AlertParams | None = None
+    rayfins: list["RayfinParams"] = field(default_factory=list)
 
     def get_icon_payload(self, root_folder: str) -> str:
         """
@@ -1539,16 +1540,15 @@ class FabricStorageParams:
 class RayfinSemanticModelParams:
     """Environment-specific semantic-model binding for a Rayfin connection alias."""
 
-    workspace_name: str
     item_name: str
+    workspace_name: str | None = None
 
 
 @dataclass(frozen=True)
 class RayfinParams:
-    """Fabric-scoped Rayfin application deployment binding."""
+    """Workspace-scoped Rayfin application deployment binding."""
 
     root_path: str
-    workspace_name: str
     semantic_models: dict[str, RayfinSemanticModelParams]
 
 
@@ -1558,7 +1558,6 @@ class FabricParams:
 
     workspaces: list[FabricWorkspaceParams]
     storages: list[FabricStorageParams]
-    rayfins: list[RayfinParams] = field(default_factory=list)
 
 
 @dataclass
@@ -2784,7 +2783,7 @@ class OperationParams:
         try:
             self.config_data = self._load_and_process_config(config_file_absolute_path, replace_placeholders)
             if "rayfin" in self.config_data:
-                raise ValueError("Top-level 'rayfin' is no longer supported; configure Rayfin applications under 'common.fabric.rayfins'")
+                raise ValueError("Top-level 'rayfin' is not supported; configure Rayfin applications under 'common.fabric.workspaces[].rayfins'")
             self.operation = Operation(operation)
             self.common = self._parse_common_params(self.config_data["common"])
 
@@ -3516,83 +3515,80 @@ class OperationParams:
         return self._validate_all_fabric_storage_params()
 
     def _validate_rayfin_params(self) -> bool:
-        """Validate optional Fabric-scoped Rayfin deployment bindings and app manifests."""
-        rayfins = self.common.fabric.rayfins
-        if not rayfins:
-            return True
-
+        """Validate optional workspace-scoped Rayfin deployment bindings and app manifests."""
         configured_root = Path(self.common.local.root_folder).resolve()
-        seen_root_paths: set[Path] = set()
-        seen_deployments: set[tuple[str, str]] = set()
+        seen_root_paths: dict[Path, str] = {}
         manifest_loader = RayfinManifestLoader()
 
-        for index, params in enumerate(rayfins):
-            if not params.root_path:
-                self.logger.error(f"common.fabric.rayfins[{index}].rootPath must be a non-empty string")
-                return False
-            if not params.workspace_name:
-                self.logger.error(f"common.fabric.rayfins[{index}].workspaceName must be a non-empty string")
-                return False
-
-            configured_relative_path = Path(params.root_path)
-            if configured_relative_path.is_absolute() or ".." in configured_relative_path.parts:
-                self.logger.error(f"common.fabric.rayfins[{index}].rootPath must be a relative path contained by common.local.rootFolder: {params.root_path}")
-                return False
-
-            app_root = (configured_root / configured_relative_path).resolve()
-            try:
-                app_root.relative_to(configured_root)
-            except ValueError:
-                self.logger.error(f"common.fabric.rayfins[{index}].rootPath must remain under common.local.rootFolder: {params.root_path}")
-                return False
-
-            if app_root in seen_root_paths:
-                self.logger.error(f"Duplicate Rayfin rootPath at index {index}: {params.root_path}")
-                return False
-            seen_root_paths.add(app_root)
-
-            if not app_root.is_dir():
-                self.logger.error(f"Rayfin app root does not exist or is not a directory at index {index}: {app_root}")
-                return False
-
-            for required_file in (RAYFIN_MANIFEST_FILE_NAME, "package.json", "package-lock.json"):
-                required_path = app_root / required_file
-                if not required_path.is_file():
-                    self.logger.error(f"Rayfin app at index {index} is missing required file: {required_path}")
+        for workspace_index, workspace in enumerate(self.common.fabric.workspaces):
+            seen_app_ids: set[str] = set()
+            for rayfin_index, params in enumerate(workspace.rayfins):
+                config_path = f"common.fabric.workspaces[{workspace_index}].rayfins[{rayfin_index}]"
+                if not params.root_path:
+                    self.logger.error(f"{config_path}.rootPath must be a non-empty string")
                     return False
 
-            for alias, semantic_model in params.semantic_models.items():
-                if not alias or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", alias) is None:
-                    self.logger.error(f"common.fabric.rayfins[{index}].semanticModels contains invalid alias {alias!r}")
-                    return False
-                if not semantic_model.workspace_name:
-                    self.logger.error(f"common.fabric.rayfins[{index}].semanticModels[{alias!r}].workspaceName must be a non-empty workspace display name")
-                    return False
-                if not semantic_model.item_name:
-                    self.logger.error(f"common.fabric.rayfins[{index}].semanticModels[{alias!r}].itemName must be a non-empty semantic-model display name")
+                configured_relative_path = Path(params.root_path)
+                if configured_relative_path.is_absolute() or ".." in configured_relative_path.parts:
+                    self.logger.error(f"{config_path}.rootPath must be a relative path contained by common.local.rootFolder: {params.root_path}")
                     return False
 
-            try:
-                manifest = manifest_loader.load(app_root)
-                manifest_loader.validate_node_package(app_root, manifest)
-                manifest_loader.validate_data_schema(app_root, manifest)
-            except ValueError as e:
-                self.logger.error(f"Invalid Rayfin app manifest at index {index}: {e}")
-                return False
+                app_root = (configured_root / configured_relative_path).resolve()
+                try:
+                    app_root.relative_to(configured_root)
+                except ValueError:
+                    self.logger.error(f"{config_path}.rootPath must remain under common.local.rootFolder: {params.root_path}")
+                    return False
 
-            deployment_key = (manifest.app.id, params.workspace_name.casefold())
-            if deployment_key in seen_deployments:
-                self.logger.error(f"Duplicate Rayfin app ID '{manifest.app.id}' configured for workspace '{params.workspace_name}'")
-                return False
-            seen_deployments.add(deployment_key)
+                previous_config_path = seen_root_paths.get(app_root)
+                if previous_config_path is not None:
+                    self.logger.error(f"{config_path}.rootPath duplicates {previous_config_path}.rootPath: {params.root_path}")
+                    return False
+                seen_root_paths[app_root] = config_path
 
-            configured_aliases = set(params.semantic_models)
-            declared_aliases = set(manifest.connections.semantic_models)
-            if configured_aliases != declared_aliases:
-                missing = sorted(declared_aliases - configured_aliases)
-                unexpected = sorted(configured_aliases - declared_aliases)
-                self.logger.error(f"Rayfin semantic-model bindings do not match the app manifest at index {index}: missing bindings={missing}, unexpected bindings={unexpected}")
-                return False
+                if not app_root.is_dir():
+                    self.logger.error(f"{config_path}.rootPath does not exist or is not a directory: {app_root}")
+                    return False
+
+                for required_file in (RAYFIN_MANIFEST_FILE_NAME, "package.json", "package-lock.json"):
+                    required_path = app_root / required_file
+                    if not required_path.is_file():
+                        self.logger.error(f"{config_path} is missing required file: {required_path}")
+                        return False
+
+                for alias, semantic_model in params.semantic_models.items():
+                    binding_path = f"{config_path}.semanticModels[{alias!r}]"
+                    if not alias or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", alias) is None:
+                        self.logger.error(f"{config_path}.semanticModels contains invalid alias {alias!r}")
+                        return False
+                    if semantic_model.workspace_name is not None and not semantic_model.workspace_name:
+                        self.logger.error(f"{binding_path}.workspaceName must be a non-empty workspace display name when configured")
+                        return False
+                    if not semantic_model.item_name:
+                        self.logger.error(f"{binding_path}.itemName must be a non-empty semantic-model display name")
+                        return False
+
+                try:
+                    manifest = manifest_loader.load(app_root)
+                    manifest_loader.validate_node_package(app_root, manifest)
+                    manifest_loader.validate_data_schema(app_root, manifest)
+                except ValueError as e:
+                    self.logger.error(f"Invalid Rayfin app manifest for {config_path}: {e}")
+                    return False
+
+                app_id_key = manifest.app.id.casefold()
+                if app_id_key in seen_app_ids:
+                    self.logger.error(f"{config_path} duplicates Rayfin app ID '{manifest.app.id}' within parent workspace '{workspace.name}'")
+                    return False
+                seen_app_ids.add(app_id_key)
+
+                configured_aliases = set(params.semantic_models)
+                declared_aliases = set(manifest.connections.semantic_models)
+                if configured_aliases != declared_aliases:
+                    missing = sorted(declared_aliases - configured_aliases)
+                    unexpected = sorted(configured_aliases - declared_aliases)
+                    self.logger.error(f"{config_path}.semanticModels does not exactly match the app manifest: missing bindings={missing}, unexpected bindings={unexpected}")
+                    return False
 
         return True
 
@@ -4109,9 +4105,9 @@ class OperationParams:
             entitlements=self._parse_entitlements_params(data.get("entitlements", [])),
         )
 
-    def _parse_rayfin_params(self, data: Any) -> list[RayfinParams]:
-        """Parse optional Fabric-scoped Rayfin deployment bindings."""
-        config_path = "common.fabric.rayfins"
+    def _parse_rayfin_params(self, data: Any, workspace_index: int) -> list[RayfinParams]:
+        """Parse optional workspace-scoped Rayfin deployment bindings."""
+        config_path = f"common.fabric.workspaces[{workspace_index}].rayfins"
         if not isinstance(data, list):
             raise ValueError(f"{config_path} must be a list when configured")
 
@@ -4120,7 +4116,7 @@ class OperationParams:
             if not isinstance(item, dict):
                 raise ValueError(f"{config_path}[{index}] must be a JSON object")
 
-            expected_keys = {"rootPath", "workspaceName", "semanticModels"}
+            expected_keys = {"rootPath", "semanticModels"}
             missing_keys = expected_keys - set(item)
             unexpected_keys = set(item) - expected_keys
             if missing_keys or unexpected_keys:
@@ -4129,11 +4125,9 @@ class OperationParams:
             semantic_models = item["semanticModels"]
             if not isinstance(semantic_models, dict):
                 raise ValueError(f"{config_path}[{index}].semanticModels must be an alias-to-binding object")
-
             root_path = item["rootPath"]
-            workspace_name = item["workspaceName"]
-            if not isinstance(root_path, str) or not isinstance(workspace_name, str):
-                raise ValueError(f"{config_path}[{index}].rootPath and workspaceName must be strings")
+            if not isinstance(root_path, str):
+                raise ValueError(f"{config_path}[{index}].rootPath must be a string")
 
             parsed_semantic_models: dict[str, RayfinSemanticModelParams] = {}
             for alias, semantic_model_data in semantic_models.items():
@@ -4145,26 +4139,32 @@ class OperationParams:
                 if not isinstance(semantic_model_data, dict):
                     raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}] must be an object")
 
-                expected_semantic_model_keys = {"workspaceName", "itemName"}
-                missing_semantic_model_keys = expected_semantic_model_keys - set(semantic_model_data)
-                unexpected_semantic_model_keys = set(semantic_model_data) - expected_semantic_model_keys
+                required_semantic_model_keys = {"itemName"}
+                allowed_semantic_model_keys = required_semantic_model_keys | {"workspaceName"}
+                missing_semantic_model_keys = required_semantic_model_keys - set(semantic_model_data)
+                unexpected_semantic_model_keys = set(semantic_model_data) - allowed_semantic_model_keys
                 if missing_semantic_model_keys or unexpected_semantic_model_keys:
                     raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}] has invalid fields: missing={sorted(missing_semantic_model_keys)}, unexpected={sorted(unexpected_semantic_model_keys)}")
 
-                semantic_model_workspace_name = semantic_model_data["workspaceName"]
+                workspace_name_configured = "workspaceName" in semantic_model_data
+                semantic_model_workspace_name = semantic_model_data.get("workspaceName")
                 semantic_model_item_name = semantic_model_data["itemName"]
-                if not isinstance(semantic_model_workspace_name, str) or not isinstance(semantic_model_item_name, str):
-                    raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}].workspaceName and itemName must be strings")
+                parsed_workspace_name = None
+                if workspace_name_configured:
+                    if not isinstance(semantic_model_workspace_name, str):
+                        raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}].workspaceName must be a string when configured")
+                    parsed_workspace_name = semantic_model_workspace_name.strip()
+                if not isinstance(semantic_model_item_name, str):
+                    raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}].itemName must be a string")
 
                 parsed_semantic_models[normalized_alias] = RayfinSemanticModelParams(
-                    workspace_name=semantic_model_workspace_name.strip(),
+                    workspace_name=parsed_workspace_name,
                     item_name=semantic_model_item_name.strip(),
                 )
 
             params.append(
                 RayfinParams(
                     root_path=root_path.strip(),
-                    workspace_name=workspace_name.strip(),
                     semantic_models=parsed_semantic_models,
                 )
             )
@@ -4237,20 +4237,21 @@ class OperationParams:
 
     def _parse_fabric_params(self, data: dict[str, Any], root_folder: str) -> FabricParams:
         """Parse Fabric parameters."""
+        if "rayfins" in data:
+            raise ValueError("'common.fabric.rayfins' is no longer supported; move each app under its parent workspace at 'common.fabric.workspaces[].rayfins'")
         return FabricParams(
             workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
             storages=[self._parse_fabric_storage_params(s) for s in data["storages"]],
-            rayfins=self._parse_rayfin_params(data.get("rayfins", [])),
         )
 
     def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
         """Parse Fabric workspaces."""
         workspaces = []
-        for workspace_data in data:
-            workspaces.append(self._parse_fabric_workspace_params(workspace_data, root_folder))
+        for workspace_index, workspace_data in enumerate(data):
+            workspaces.append(self._parse_fabric_workspace_params(workspace_data, root_folder, workspace_index))
         return workspaces
 
-    def _parse_fabric_workspace_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceParams:
+    def _parse_fabric_workspace_params(self, data: dict[str, Any], root_folder: str, workspace_index: int) -> FabricWorkspaceParams:
         """Parse a single Fabric workspace."""
         shortcut = None
         if "shortcut" in data:
@@ -4275,6 +4276,7 @@ class OperationParams:
             skip_deploy=data["skipDeploy"],
             spark=self._parse_spark_params(data["spark"]),
             monitoring=self._parse_monitoring_params(data["monitoring"]),
+            rayfins=self._parse_rayfin_params(data.get("rayfins", []), workspace_index),
         )
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceTemplateParams:

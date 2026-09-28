@@ -18,7 +18,7 @@ from fabric_workspace_deployment.environment_variables import RAYFIN_APP_ROOT_EN
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.docker.cli import DockerCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, RayfinManager, RayfinParams
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricWorkspaceParams, RayfinManager, RayfinParams
 from fabric_workspace_deployment.rayfin.manifest import RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME, RayfinAppManifest, RayfinDeploymentRecord, RayfinManifestLoader, RayfinManifestRenderer, ResolvedSemanticModel
 
 NPM_INSTALL_TIMEOUT_SECONDS = 15 * 60
@@ -38,7 +38,7 @@ class RayfinDeploymentManager(RayfinManager):
     def __init__(
         self,
         common_params: CommonParams,
-        rayfin_params: list[RayfinParams],
+        workspace_params: list[FabricWorkspaceParams],
         az_cli: AzCli,
         fabric_cli: FabricCli,
         docker_cli: DockerCli,
@@ -50,7 +50,7 @@ class RayfinDeploymentManager(RayfinManager):
         logger: logging.Logger | None = None,
     ):
         super().__init__(common_params, logger=logger)
-        self.rayfin_params = rayfin_params
+        self.workspace_params = workspace_params
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
         self.docker_cli = docker_cli
@@ -64,20 +64,27 @@ class RayfinDeploymentManager(RayfinManager):
         self.state_root = state_root or private_root / "rayfin-state"
 
     async def _execute(self) -> None:
-        if not self.rayfin_params:
-            self.logger.info("No common.fabric.rayfins configuration found; deployRayfin is a no-op.")
+        configured_workspaces = [(workspace_index, workspace) for workspace_index, workspace in enumerate(self.workspace_params) if workspace.rayfins]
+        if not configured_workspaces:
+            self.logger.info("No common.fabric.workspaces[].rayfins configuration found; deployRayfin is a no-op.")
             return
 
-        for params in self.rayfin_params:
-            self._deploy(params)
+        for workspace_index, workspace in configured_workspaces:
+            workspace_path = f"common.fabric.workspaces[{workspace_index}]"
+            if workspace.skip_deploy:
+                self.logger.info(f"Skipping {len(workspace.rayfins)} Rayfin app(s) for workspace '{workspace.name}' at {workspace_path} because skipDeploy=true")
+                continue
+            for rayfin_index, params in enumerate(workspace.rayfins):
+                self._deploy(workspace, params, workspace_index, rayfin_index)
 
-    def _deploy(self, params: RayfinParams) -> None:
+    def _deploy(self, workspace: FabricWorkspaceParams, params: RayfinParams, workspace_index: int, rayfin_index: int) -> None:
+        config_path = f"common.fabric.workspaces[{workspace_index}].rayfins[{rayfin_index}]"
         source_root = (Path(self.common_params.local.root_folder).resolve() / params.root_path).resolve()
         manifest = self.manifest_loader.load(source_root)
         self.manifest_loader.validate_node_package(source_root, manifest)
         self.manifest_loader.validate_data_schema(source_root, manifest)
-        workspace_id = self._resolve_workspace_id(params.workspace_name)
-        semantic_models = self._resolve_semantic_models(params, workspace_id)
+        workspace_id = self._resolve_workspace_id(workspace.name, config_path)
+        semantic_models = self._resolve_semantic_models(params, workspace.name, workspace_id, config_path)
         token = self._get_rayfin_token()
 
         staging_path: Path | None = None
@@ -88,7 +95,7 @@ class RayfinDeploymentManager(RayfinManager):
             docker_env = self._build_docker_environment(staging_path, workspace_id, token)
             project_name = self._build_compose_project_name(manifest)
 
-            self.logger.info(f"Installing Rayfin app dependencies for '{manifest.app.name}' with npm ci")
+            self.logger.info(f"Installing Rayfin app dependencies for '{manifest.app.name}' configured at {config_path} with npm ci")
             self.docker_cli.compose_run(
                 compose_path,
                 project_name,
@@ -100,7 +107,7 @@ class RayfinDeploymentManager(RayfinManager):
 
             self._assert_local_rayfin_version(compose_path, project_name, docker_env, manifest)
 
-            self.logger.info(f"Deploying Rayfin app '{manifest.app.name}' to workspace '{params.workspace_name}'")
+            self.logger.info(f"Deploying Rayfin app '{manifest.app.name}' from {config_path} to parent workspace '{workspace.name}'")
             self.docker_cli.compose_run(
                 compose_path,
                 project_name,
@@ -121,35 +128,37 @@ class RayfinDeploymentManager(RayfinManager):
             self.logger.info(f"Successfully deployed Rayfin app '{manifest.app.name}' and removed staging directory {staging_path}")
         except Exception:
             if staging_path is not None:
-                self.logger.error(f"Rayfin deployment failed. Staging directory retained for diagnostics: {staging_path}")
+                self.logger.error(f"Rayfin deployment failed for {config_path}. Staging directory retained for diagnostics: {staging_path}")
             raise
 
-    def _resolve_workspace_id(self, workspace_name: str) -> str:
+    def _resolve_workspace_id(self, workspace_name: str, config_path: str) -> str:
         resource_path = f"{workspace_name}.Workspace"
         try:
             stdout, _ = self.fabric_cli.run(["get", resource_path, "-q", "id"], timeout=60)
             return self._parse_guid(stdout, f"workspace '{workspace_name}'")
         except Exception as e:
-            raise ValueError(f"Unable to resolve Fabric workspace '{workspace_name}'. Verify the display name and the caller's workspace access.") from e
+            raise ValueError(f"Unable to resolve Fabric workspace '{workspace_name}' for {config_path}. Verify the display name and the caller's workspace access.") from e
 
-    def _resolve_semantic_models(self, params: RayfinParams, workspace_id: str) -> dict[str, ResolvedSemanticModel]:
+    def _resolve_semantic_models(self, params: RayfinParams, parent_workspace_name: str, parent_workspace_id: str, config_path: str) -> dict[str, ResolvedSemanticModel]:
         resolved: dict[str, ResolvedSemanticModel] = {}
-        resolved_workspace_ids = {params.workspace_name: workspace_id}
+        resolved_workspace_ids = {parent_workspace_name.casefold(): parent_workspace_id}
         for alias, semantic_model in params.semantic_models.items():
+            binding_path = f"{config_path}.semanticModels[{alias!r}]"
+            model_workspace_name = semantic_model.workspace_name or parent_workspace_name
             try:
-                model_workspace_id = resolved_workspace_ids.get(semantic_model.workspace_name)
+                model_workspace_id = resolved_workspace_ids.get(model_workspace_name.casefold())
                 if model_workspace_id is None:
-                    model_workspace_id = self._resolve_workspace_id(semantic_model.workspace_name)
-                    resolved_workspace_ids[semantic_model.workspace_name] = model_workspace_id
+                    model_workspace_id = self._resolve_workspace_id(model_workspace_name, binding_path)
+                    resolved_workspace_ids[model_workspace_name.casefold()] = model_workspace_id
             except Exception as e:
-                raise ValueError(f"Unable to resolve semantic-model workspace '{semantic_model.workspace_name}' for alias '{alias}'. Verify the friendly workspace name and access.") from e
+                raise ValueError(f"Unable to resolve semantic-model workspace '{model_workspace_name}' for alias '{alias}' at {binding_path}. Verify the friendly workspace name and access.") from e
 
-            resource_path = f"{semantic_model.workspace_name}.Workspace/{semantic_model.item_name}.SemanticModel"
+            resource_path = f"{model_workspace_name}.Workspace/{semantic_model.item_name}.SemanticModel"
             try:
                 stdout, _ = self.fabric_cli.run(["get", resource_path, "-q", "id"], timeout=60)
-                model_id = self._parse_guid(stdout, f"semantic model '{semantic_model.item_name}' in workspace '{semantic_model.workspace_name}'")
+                model_id = self._parse_guid(stdout, f"semantic model '{semantic_model.item_name}' in workspace '{model_workspace_name}'")
             except Exception as e:
-                raise ValueError(f"Unable to resolve semantic model '{semantic_model.item_name}' for alias '{alias}' in workspace '{semantic_model.workspace_name}'. Verify the friendly item name and access.") from e
+                raise ValueError(f"Unable to resolve semantic model '{semantic_model.item_name}' for alias '{alias}' at {binding_path} in workspace '{model_workspace_name}'. Verify the friendly item name and access.") from e
             resolved[alias] = ResolvedSemanticModel(workspace_id=model_workspace_id, item_id=model_id)
         return resolved
 

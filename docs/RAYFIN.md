@@ -1,6 +1,6 @@
 # Rayfin deployments
 
-`fabric-workspace-deployment` (FWD) can build and deploy one or more Rayfin applications with the explicit `deployRayfin` operation. Rayfin support is opt-in: an existing FWD configuration with no `common.fabric.rayfins` property remains valid, and `deployRayfin` completes as a no-op.
+`fabric-workspace-deployment` (FWD) can build and deploy one or more Rayfin applications with the explicit `deployRayfin` operation. Rayfin support is opt-in per workspace: an existing FWD configuration with no `common.fabric.workspaces[].rayfins` properties remains valid, and `deployRayfin` completes as a no-op.
 
 ## Prerequisites
 
@@ -16,27 +16,30 @@ FWD uses its packaged `Compose.rayfin.yaml` and the rolling MCR-hosted `mcr.micr
 
 ## FWD configuration contract
 
-Add an optional `rayfins` list under `common.fabric`:
+Add an optional `rayfins` list to each parent entry in `common.fabric.workspaces`:
 
 ```json
 {
   "common": {
     "fabric": {
-      "...": "existing Fabric configuration",
-      "rayfins": [
+      "workspaces": [
         {
-          "rootPath": "apps/sales-insights",
-          "workspaceName": "Analytics Production",
-          "semanticModels": {
-            "sales": {
-              "workspaceName": "Shared Models Production",
-              "itemName": "Sales Model"
-            },
-            "inventory": {
-              "workspaceName": "Supply Chain Production",
-              "itemName": "Inventory Model"
+          "name": "Analytics Production",
+          "...": "existing workspace configuration",
+          "rayfins": [
+            {
+              "rootPath": "apps/sales-insights",
+              "semanticModels": {
+                "sales": {
+                  "itemName": "Sales Model"
+                },
+                "inventory": {
+                  "workspaceName": "Supply Chain Production",
+                  "itemName": "Inventory Model"
+                }
+              }
             }
-          }
+          ]
         }
       ]
     }
@@ -44,22 +47,23 @@ Add an optional `rayfins` list under `common.fabric`:
 }
 ```
 
-Each entry has exactly these fields:
+Each Rayfin entry inherits its deployment workspace from the parent workspace's `name` and has exactly these fields:
 
-| Field            | Type   | Meaning                                                                                                                                                                                |
-| ---------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rootPath`       | string | App root relative to `common.local.rootFolder`. The resolved path must remain under that root.                                                                                         |
-| `workspaceName`  | string | Friendly display name of the target workspace where the Rayfin AppBackend is deployed. FWD resolves it and injects the resulting ID into Rayfin.                                      |
-| `semanticModels` | object | Mapping from app connection alias to a strict `{ "workspaceName", "itemName" }` binding. Each semantic model can come from a different friendly workspace. Empty mappings are allowed. |
+| Field            | Type   | Meaning                                                                                                                                                                                                                                                                              |
+| ---------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rootPath`       | string | App root relative to `common.local.rootFolder`. The resolved path must remain under that root. Root paths must be unique across every workspace in the configuration.                                                                                                                 |
+| `semanticModels` | object | Mapping from app connection alias to a binding containing required `itemName` and optional `workspaceName`. When `workspaceName` is omitted, the semantic model is resolved in the parent workspace; an explicit value preserves cross-workspace resolution. Empty mappings are allowed. |
 
-Each semantic-model binding has exactly these fields:
+Each semantic-model binding supports these fields:
 
-| Field           | Type   | Meaning                                                                |
-| --------------- | ------ | ---------------------------------------------------------------------- |
-| `workspaceName` | string | Environment-specific friendly workspace containing the semantic model. |
-| `itemName`      | string | Friendly semantic-model display name in that workspace.                |
+| Field           | Type   | Required | Meaning                                                                                                  |
+| --------------- | ------ | -------- | -------------------------------------------------------------------------------------------------------- |
+| `workspaceName` | string | No       | Friendly workspace containing the semantic model. Defaults to the parent workspace when omitted.         |
+| `itemName`      | string | Yes      | Friendly semantic-model display name in the inherited or explicitly configured semantic-model workspace. |
 
-Unknown or missing binding fields are rejected. Aliases must start with a letter and contain only letters, digits, `_`, or `-`. The aliases must match the app manifest's `connections.semanticModels` list exactly.
+Unknown or missing Rayfin fields are rejected. Aliases must start with a letter and contain only letters, digits, `_`, or `-`. The aliases must match the app manifest's `connections.semanticModels` list exactly. Manifest app IDs must be unique within each parent workspace, but the same app ID may be used by a different parent workspace. A parent workspace with `skipDeploy: true` skips all of its nested Rayfin applications.
+
+There is no compatibility period for the former Fabric-scoped location. Configurations containing `common.fabric.rayfins` are rejected with a migration error directing callers to `common.fabric.workspaces[].rayfins`.
 
 ## App-root manifest contract
 
@@ -155,7 +159,7 @@ The Rayfin deployment registry is persisted under `rayfin-state` with owner-only
 
 ## Deployment workflow
 
-When a Rayfin semantic-model binding targets a model managed by the same FWD configuration, run `deployModel` before `deployRayfin`. If the configured model is absent, `deployModel` now publishes the matching `<displayName>.SemanticModel` directory from the workspace template's `artifactsFolder`, waits for it to become visible, and then applies the configured model settings. Missing or ambiguous source directories fail the operation instead of being logged as a successful warning.
+When a Rayfin semantic-model binding targets a model managed by the same FWD configuration, run `deployModel` before `deployRayfin`. A binding without `workspaceName` resolves in its Rayfin app's parent workspace. If the configured model is absent, `deployModel` now publishes the matching `<displayName>.SemanticModel` directory from the workspace template's `artifactsFolder`, waits for it to become visible, and then applies the configured model settings. Missing or ambiguous source directories fail the operation instead of being logged as a successful warning.
 
 Run:
 
@@ -168,8 +172,8 @@ fabric-workspace-deployment \
 For each configured app, FWD:
 
 1. Loads and validates the app manifest.
-2. Resolves the friendly workspace with Fabric CLI.
-3. Independently resolves each semantic model's configured friendly workspace and item name; semantic-model workspaces may differ from the AppBackend target workspace.
+2. Resolves the parent workspace's friendly `name` with Fabric CLI. Workspaces with `skipDeploy: true` are skipped before any app resolution or token acquisition.
+3. Resolves each semantic model's friendly item name in the parent workspace by default, or in its explicit `workspaceName` when cross-workspace resolution is configured.
 4. Creates isolated staging and generates `fabric.yaml` and `rayfin/rayfin.yml`.
 5. Injects `RAYFIN_TOKEN`, the resolved `RAYFIN_WORKSPACE_ID`, and `RAYFIN_TENANT_ID` into the Compose service.
 6. Runs `npm ci`.

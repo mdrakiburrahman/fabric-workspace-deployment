@@ -141,6 +141,10 @@ class FakeFabricCli:
             if self.fail_model:
                 raise RuntimeError("not found")
             return f'"{MODEL_ID}"', ""
+        if resource_path == "Analytics.Workspace/Sales Model.SemanticModel":
+            if self.fail_model:
+                raise RuntimeError("not found")
+            return f'"{MODEL_ID}"', ""
         raise AssertionError(f"Unexpected Fabric CLI path: {resource_path}")
 
 
@@ -207,30 +211,41 @@ class FakeDockerCli:
         return "", ""
 
 
-def _manager(root: Path, staging_root: Path | None, state_root: Path | None, az_cli=None, fabric_cli=None, docker_cli=None, rayfin_params=None):
+def _manager(root: Path, staging_root: Path | None, state_root: Path | None, az_cli=None, fabric_cli=None, docker_cli=None, rayfin_params=None, workspace_params=None):
     kwargs = {}
     if staging_root is not None:
         kwargs["staging_root"] = staging_root
     if state_root is not None:
         kwargs["state_root"] = state_root
+    configured_rayfins = (
+        rayfin_params
+        if rayfin_params is not None
+        else [
+            RayfinParams(
+                root_path="apps/sales",
+                semantic_models={
+                    "sales": RayfinSemanticModelParams(
+                        workspace_name="Semantic Models",
+                        item_name="Sales Model",
+                    )
+                },
+            )
+        ]
+    )
+    configured_workspaces = (
+        workspace_params
+        if workspace_params is not None
+        else [
+            SimpleNamespace(
+                name="Analytics",
+                skip_deploy=False,
+                rayfins=configured_rayfins,
+            )
+        ]
+    )
     return RayfinDeploymentManager(
         _common(root),
-        (
-            rayfin_params
-            if rayfin_params is not None
-            else [
-                RayfinParams(
-                    root_path="apps/sales",
-                    workspace_name="Analytics",
-                    semantic_models={
-                        "sales": RayfinSemanticModelParams(
-                            workspace_name="Semantic Models",
-                            item_name="Sales Model",
-                        )
-                    },
-                )
-            ]
-        ),
+        configured_workspaces,
         az_cli or FakeAzCli(),
         fabric_cli or FakeFabricCli(),
         docker_cli or FakeDockerCli(),
@@ -295,6 +310,42 @@ def test_successful_deployment_generates_configs_verifies_and_cleans_staging(tmp
     assert fabric_cli.calls[1][0][1] == "Semantic Models.Workspace"
     assert fabric_cli.calls[2][0][1] == "Semantic Models.Workspace/Sales Model.SemanticModel"
     assert fabric_cli.calls[-1][0] == ["api", f"workspaces/{WORKSPACE_ID}/items/{ITEM_ID}", "-X", "get"]
+
+
+def test_omitted_semantic_model_workspace_inherits_parent_workspace(tmp_path, monkeypatch):
+    _write_app(tmp_path)
+    fabric_cli = FakeFabricCli()
+    docker_cli = FakeDockerCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    manager = _manager(
+        tmp_path,
+        tmp_path / "staging",
+        tmp_path / "state",
+        fabric_cli=fabric_cli,
+        docker_cli=docker_cli,
+        rayfin_params=[
+            RayfinParams(
+                root_path="apps/sales",
+                semantic_models={
+                    "sales": RayfinSemanticModelParams(
+                        item_name="Sales Model",
+                    )
+                },
+            )
+        ],
+    )
+
+    asyncio.run(manager.execute())
+
+    assert docker_cli.generated_fabric_yaml["profiles"]["deployment"]["semanticModels"]["sales"] == {
+        "workspaceId": WORKSPACE_ID,
+        "itemId": MODEL_ID,
+    }
+    resolved_paths = [call[0][1] for call in fabric_cli.calls if call[0][0] == "get"]
+    assert resolved_paths == [
+        "Analytics.Workspace",
+        "Analytics.Workspace/Sales Model.SemanticModel",
+    ]
 
 
 def test_default_staging_root_is_beneath_common_local_root(tmp_path):
@@ -496,11 +547,46 @@ def test_friendly_semantic_model_resolution_error_stops_before_docker(tmp_path, 
     monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
     manager = _manager(tmp_path, staging_root, tmp_path / "state", fabric_cli=FakeFabricCli(fail_model=True), docker_cli=docker_cli)
 
-    with pytest.raises(ValueError, match="Unable to resolve semantic model 'Sales Model' for alias 'sales' in workspace 'Semantic Models'"):
+    with pytest.raises(ValueError, match=r"Unable to resolve semantic model 'Sales Model' for alias 'sales' at common\.fabric\.workspaces\[0\]\.rayfins\[0\]\.semanticModels\['sales'\] in workspace 'Semantic Models'"):
         asyncio.run(manager.execute())
 
     assert docker_cli.calls == []
     assert not staging_root.exists()
+
+
+def test_parent_skip_deploy_skips_nested_apps(tmp_path, caplog):
+    docker_cli = FakeDockerCli()
+    fabric_cli = FakeFabricCli()
+    az_cli = FakeAzCli()
+    manager = _manager(
+        tmp_path,
+        tmp_path / "staging",
+        tmp_path / "state",
+        az_cli=az_cli,
+        fabric_cli=fabric_cli,
+        docker_cli=docker_cli,
+        workspace_params=[
+            SimpleNamespace(
+                name="Analytics",
+                skip_deploy=True,
+                rayfins=[
+                    RayfinParams(
+                        root_path="does-not-need-to-exist",
+                        semantic_models={},
+                    )
+                ],
+            )
+        ],
+    )
+    caplog.set_level("INFO")
+
+    asyncio.run(manager.execute())
+
+    assert az_cli.calls == []
+    assert fabric_cli.calls == []
+    assert docker_cli.calls == []
+    assert "common.fabric.workspaces[0]" in caplog.text
+    assert "skipDeploy=true" in caplog.text
 
 
 def test_absent_rayfin_config_is_noop(tmp_path):
