@@ -26,6 +26,7 @@ from typing import Any, ClassVar, final
 from PIL import Image
 from fabric_workspace_deployment.environment_variables import FAB_TOKEN_GRAPH_ENV_VAR, GIT_ROOT_ENV_VAR, MANAGER_SKIP_ENABLED_VALUE, SKIP_ALERT_DEPLOYMENT_ENV_VAR, SKIP_ENTITLEMENT_CHECK_ENV_VAR, SKIP_FABRIC_CAPACITY_DEPLOYMENT_ENV_VAR, SKIP_FABRIC_WORKSPACE_DEPLOYMENT_ENV_VAR, SKIP_GIT_LINK_DEPLOYMENT_ENV_VAR, SKIP_MODEL_DEPLOYMENT_ENV_VAR, SKIP_MONITORING_DEPLOYMENT_ENV_VAR, SKIP_RBAC_DEPLOYMENT_ENV_VAR, SKIP_SEED_DEPLOYMENT_ENV_VAR, SKIP_SHORTCUT_DEPLOYMENT_ENV_VAR, SKIP_SPARK_DEPLOYMENT_ENV_VAR, SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR, UNIQUE_ENV_ID_ENV_VAR, USER_APP_ID_ENV_VAR, USER_DISPLAY_NAME_ENV_VAR, USER_OBJECT_ID_ENV_VAR, USER_PRINCIPAL_TYPE_ENV_VAR
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.rayfin.manifest import RAYFIN_MANIFEST_FILE_NAME, RayfinManifestLoader
 
 # ---------------------------------------------------------------------------- #
 # --------------------------- HTTP RETRY CONSTANTS --------------------------- #
@@ -199,6 +200,7 @@ class Operation(Enum):
     DEPLOY_MODEL = "deployModel"
     DEPLOY_MONITORING = "deployMonitoring"
     DEPLOY_RBAC = "deployRbac"
+    DEPLOY_RAYFIN = "deployRayfin"
     DEPLOY_SEED = "deploySeed"
     DEPLOY_SHORTCUT = "deployShortcut"
     DEPLOY_SPARK = "deploySpark"
@@ -1541,6 +1543,23 @@ class FabricParams:
     storages: list[FabricStorageParams]
 
 
+@dataclass(frozen=True)
+class RayfinSemanticModelParams:
+    """Environment-specific semantic-model binding for a Rayfin connection alias."""
+
+    workspace_name: str
+    item_name: str
+
+
+@dataclass(frozen=True)
+class RayfinParams:
+    """Top-level Rayfin application deployment binding."""
+
+    root_path: str
+    workspace_name: str
+    semantic_models: dict[str, RayfinSemanticModelParams]
+
+
 @dataclass
 class CommonParams:
     """Common parameters shared across operations."""
@@ -1693,6 +1712,10 @@ class SeedManager(Manager):
     skip_environment_variable = SKIP_SEED_DEPLOYMENT_ENV_VAR
 
 
+class RayfinManager(Manager):
+    """Interface for deploying Rayfin applications."""
+
+
 class ShortcutManager(Manager):
     """
     Interface for managing Fabric shortcut operations.
@@ -1778,12 +1801,14 @@ class ModelManager(Manager):
     skip_environment_variable = SKIP_MODEL_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
-    async def reconcile(self, workspace_id: str, model_params: "ModelParams") -> None:
+    async def reconcile(self, workspace_id: str, model_params: "ModelParams", workspace_params: "FabricWorkspaceParams | None" = None) -> None:
         """
         Reconcile a single model to desired state.
 
         Args:
             workspace_id: The Fabric workspace id
+            model_params: The semantic model settings to reconcile
+            workspace_params: Workspace deployment settings used to publish a missing model
         """
         pass
 
@@ -2759,6 +2784,7 @@ class OperationParams:
             self.config_data = self._load_and_process_config(config_file_absolute_path, replace_placeholders)
             self.operation = Operation(operation)
             self.common = self._parse_common_params(self.config_data["common"])
+            self.rayfin = self._parse_rayfin_params(self.config_data.get("rayfin", []))
 
         except FileNotFoundError:
             self.logger.error(f"Configuration file not found: {config_file_absolute_path}")
@@ -2784,7 +2810,7 @@ class OperationParams:
         Returns:
             bool: True if all parameters are valid, False otherwise
         """
-        return self._validate_operation() and self._validate_common_params()
+        return self._validate_operation() and self._validate_common_params() and self._validate_rayfin_params()
 
     def to_pretty_json(self) -> str:
         """
@@ -3487,6 +3513,86 @@ class OperationParams:
 
         return self._validate_all_fabric_storage_params()
 
+    def _validate_rayfin_params(self) -> bool:
+        """Validate optional top-level Rayfin deployment bindings and app manifests."""
+        if not self.rayfin:
+            return True
+
+        configured_root = Path(self.common.local.root_folder).resolve()
+        seen_root_paths: set[Path] = set()
+        seen_deployments: set[tuple[str, str]] = set()
+        manifest_loader = RayfinManifestLoader()
+
+        for index, params in enumerate(self.rayfin):
+            if not params.root_path:
+                self.logger.error(f"rayfin[{index}].rootPath must be a non-empty string")
+                return False
+            if not params.workspace_name:
+                self.logger.error(f"rayfin[{index}].workspaceName must be a non-empty string")
+                return False
+
+            configured_relative_path = Path(params.root_path)
+            if configured_relative_path.is_absolute() or ".." in configured_relative_path.parts:
+                self.logger.error(f"rayfin[{index}].rootPath must be a relative path contained by common.local.rootFolder: {params.root_path}")
+                return False
+
+            app_root = (configured_root / configured_relative_path).resolve()
+            try:
+                app_root.relative_to(configured_root)
+            except ValueError:
+                self.logger.error(f"rayfin[{index}].rootPath must remain under common.local.rootFolder: {params.root_path}")
+                return False
+
+            if app_root in seen_root_paths:
+                self.logger.error(f"Duplicate Rayfin rootPath at index {index}: {params.root_path}")
+                return False
+            seen_root_paths.add(app_root)
+
+            if not app_root.is_dir():
+                self.logger.error(f"Rayfin app root does not exist or is not a directory at index {index}: {app_root}")
+                return False
+
+            for required_file in (RAYFIN_MANIFEST_FILE_NAME, "package.json", "package-lock.json"):
+                required_path = app_root / required_file
+                if not required_path.is_file():
+                    self.logger.error(f"Rayfin app at index {index} is missing required file: {required_path}")
+                    return False
+
+            for alias, semantic_model in params.semantic_models.items():
+                if not alias or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", alias) is None:
+                    self.logger.error(f"rayfin[{index}].semanticModels contains invalid alias {alias!r}")
+                    return False
+                if not semantic_model.workspace_name:
+                    self.logger.error(f"rayfin[{index}].semanticModels[{alias!r}].workspaceName must be a non-empty workspace display name")
+                    return False
+                if not semantic_model.item_name:
+                    self.logger.error(f"rayfin[{index}].semanticModels[{alias!r}].itemName must be a non-empty semantic-model display name")
+                    return False
+
+            try:
+                manifest = manifest_loader.load(app_root)
+                manifest_loader.validate_node_package(app_root, manifest)
+                manifest_loader.validate_data_schema(app_root, manifest)
+            except ValueError as e:
+                self.logger.error(f"Invalid Rayfin app manifest at index {index}: {e}")
+                return False
+
+            deployment_key = (manifest.app.id, params.workspace_name.casefold())
+            if deployment_key in seen_deployments:
+                self.logger.error(f"Duplicate Rayfin app ID '{manifest.app.id}' configured for workspace '{params.workspace_name}'")
+                return False
+            seen_deployments.add(deployment_key)
+
+            configured_aliases = set(params.semantic_models)
+            declared_aliases = set(manifest.connections.semantic_models)
+            if configured_aliases != declared_aliases:
+                missing = sorted(declared_aliases - configured_aliases)
+                unexpected = sorted(configured_aliases - declared_aliases)
+                self.logger.error(f"Rayfin semantic-model bindings do not match the app manifest at index {index}: missing bindings={missing}, unexpected bindings={unexpected}")
+                return False
+
+        return True
+
     def _validate_all_fabric_storage_params(self) -> bool:
         """Validate all Fabric Storage parameters, enforcing no duplicate account names."""
         storages = self.common.fabric.storages
@@ -3999,6 +4105,66 @@ class OperationParams:
             contacts=self._parse_contacts_params(data.get("contacts", None)),
             entitlements=self._parse_entitlements_params(data.get("entitlements", [])),
         )
+
+    def _parse_rayfin_params(self, data: Any) -> list[RayfinParams]:
+        """Parse optional top-level Rayfin deployment bindings."""
+        if not isinstance(data, list):
+            raise ValueError("Top-level 'rayfin' must be a list when configured")
+
+        params: list[RayfinParams] = []
+        for index, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ValueError(f"rayfin[{index}] must be a JSON object")
+
+            expected_keys = {"rootPath", "workspaceName", "semanticModels"}
+            missing_keys = expected_keys - set(item)
+            unexpected_keys = set(item) - expected_keys
+            if missing_keys or unexpected_keys:
+                raise ValueError(f"rayfin[{index}] has invalid fields: missing={sorted(missing_keys)}, unexpected={sorted(unexpected_keys)}")
+
+            semantic_models = item["semanticModels"]
+            if not isinstance(semantic_models, dict):
+                raise ValueError(f"rayfin[{index}].semanticModels must be an alias-to-binding object")
+
+            root_path = item["rootPath"]
+            workspace_name = item["workspaceName"]
+            if not isinstance(root_path, str) or not isinstance(workspace_name, str):
+                raise ValueError(f"rayfin[{index}].rootPath and workspaceName must be strings")
+
+            parsed_semantic_models: dict[str, RayfinSemanticModelParams] = {}
+            for alias, semantic_model_data in semantic_models.items():
+                if not isinstance(alias, str):
+                    raise ValueError(f"rayfin[{index}].semanticModels aliases must be strings")
+                normalized_alias = alias.strip()
+                if normalized_alias in parsed_semantic_models:
+                    raise ValueError(f"rayfin[{index}].semanticModels contains duplicate normalized alias {normalized_alias!r}")
+                if not isinstance(semantic_model_data, dict):
+                    raise ValueError(f"rayfin[{index}].semanticModels[{alias!r}] must be an object")
+
+                expected_semantic_model_keys = {"workspaceName", "itemName"}
+                missing_semantic_model_keys = expected_semantic_model_keys - set(semantic_model_data)
+                unexpected_semantic_model_keys = set(semantic_model_data) - expected_semantic_model_keys
+                if missing_semantic_model_keys or unexpected_semantic_model_keys:
+                    raise ValueError(f"rayfin[{index}].semanticModels[{alias!r}] has invalid fields: missing={sorted(missing_semantic_model_keys)}, unexpected={sorted(unexpected_semantic_model_keys)}")
+
+                semantic_model_workspace_name = semantic_model_data["workspaceName"]
+                semantic_model_item_name = semantic_model_data["itemName"]
+                if not isinstance(semantic_model_workspace_name, str) or not isinstance(semantic_model_item_name, str):
+                    raise ValueError(f"rayfin[{index}].semanticModels[{alias!r}].workspaceName and itemName must be strings")
+
+                parsed_semantic_models[normalized_alias] = RayfinSemanticModelParams(
+                    workspace_name=semantic_model_workspace_name.strip(),
+                    item_name=semantic_model_item_name.strip(),
+                )
+
+            params.append(
+                RayfinParams(
+                    root_path=root_path.strip(),
+                    workspace_name=workspace_name.strip(),
+                    semantic_models=parsed_semantic_models,
+                )
+            )
+        return params
 
     def _parse_identities_params(self, data: list[dict[str, Any]]) -> list[Identity]:
         """Parse identities parameters."""

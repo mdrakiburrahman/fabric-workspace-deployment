@@ -17,13 +17,32 @@ from fabric_workspace_deployment.operations.operators import CentralOperator
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
 
+SENSITIVE_ENVIRONMENT_VARIABLE_MARKERS = ("TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY", "CONNECTION_STRING")
+
+
+def redact_environment_value(key: str, value: str) -> str:
+    """
+    Redact sensitive environment variable values before logging.
+
+    Args:
+        key: Environment variable name.
+        value: Environment variable value.
+
+    Returns:
+        str: The original value for non-sensitive variables, otherwise a mask.
+    """
+    normalized_key = key.upper()
+    if any(marker in normalized_key for marker in SENSITIVE_ENVIRONMENT_VARIABLE_MARKERS):
+        return "******"
+    return value
+
 
 def dump_env_vars() -> None:
     """
     Log all environment variables for debugging purposes.
     """
     for key, value in sorted(os.environ.items()):
-        logging.debug(f"{key}={value}")
+        logging.debug(f"{key}={redact_environment_value(key, value)}")
 
 
 def parse_args() -> argparse.Namespace:

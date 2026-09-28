@@ -1,4 +1,10 @@
 .npmrc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.test-tmp/
+.build-artifacts/
+.fabric-workspace-deployment/
 node_modules/
 nx
 .nx/

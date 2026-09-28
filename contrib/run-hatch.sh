@@ -7,7 +7,7 @@ readonly HATCH_VERSION="${HATCH_VERSION:-1.18.1}"
 readonly REPO_ROOT="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 readonly UV_TOOL_BIN="${UV_TOOL_BIN_DIR:-${HOME}/.local/bin}"
 
-export PATH="${REPO_ROOT}/.venv/bin:${UV_TOOL_BIN}:/usr/local/python/current/bin:/usr/local/share/nvm/current/bin:${PATH}"
+export PATH="${UV_TOOL_BIN}:/usr/local/python/current/bin:/usr/local/share/nvm/current/bin:${PATH}"
 
 hatch_path="$(command -v hatch || true)"
 if [[ -z "$hatch_path" || ! -x "$hatch_path" ]]; then
@@ -26,4 +26,13 @@ if [[ -z "$hatch_path" || ! -x "$hatch_path" ]]; then
   exit 1
 fi
 
-exec "$hatch_path" "$@"
+if [[ -e "${REPO_ROOT}/.venv" ]] && ! "${REPO_ROOT}/.venv/bin/python" -c 'import sys' >/dev/null 2>&1; then
+  echo "Removing stale project virtual environment that is not executable in this runtime."
+  rm -rf "${REPO_ROOT}/.venv"
+fi
+
+unset VIRTUAL_ENV
+unset UV_PROJECT_ENVIRONMENT
+unset HATCH_ENV_ACTIVE
+
+exec env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u HATCH_ENV_ACTIVE "$hatch_path" "$@"

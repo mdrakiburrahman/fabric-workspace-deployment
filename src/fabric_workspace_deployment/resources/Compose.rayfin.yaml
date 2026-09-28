@@ -1,0 +1,16 @@
+services:
+  rayfin:
+    image: mcr.microsoft.com/azurelinux/base/nodejs:24
+    init: true
+    user: "${RAYFIN_UID:?RAYFIN_UID is required}:${RAYFIN_GID:?RAYFIN_GID is required}"
+    working_dir: /workspace
+    environment:
+      CI: "true"
+      HOME: /workspace/.home
+      RAYFIN_TOKEN: ${RAYFIN_TOKEN:?RAYFIN_TOKEN is required}
+      RAYFIN_WORKSPACE_ID: ${RAYFIN_WORKSPACE_ID:?RAYFIN_WORKSPACE_ID is required}
+      RAYFIN_TENANT_ID: ${RAYFIN_TENANT_ID:?RAYFIN_TENANT_ID is required}
+    volumes:
+      - type: bind
+        source: ${RAYFIN_APP_ROOT:?RAYFIN_APP_ROOT is required}
+        target: /workspace
