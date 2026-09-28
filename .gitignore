@@ -2,6 +2,7 @@
 node_modules/
 nx
 .nx/
+.hatch/
 dist/
 build/
 __pycache__/

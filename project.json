@@ -46,7 +46,7 @@
             "executor": "nx:run-commands",
             "options": {
                 "commands": [
-                    "black --line-length 2000 ."
+                    "hatch run black --line-length 2000 ."
                 ],
                 "parallel": false
             }
