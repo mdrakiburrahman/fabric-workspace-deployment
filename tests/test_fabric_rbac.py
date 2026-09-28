@@ -68,8 +68,12 @@ class FakeFolderClient:
 
 
 class FakeAzCli:
-    def get_access_token(self, scope):
+    def __init__(self):
+        self.calls = []
+
+    def get_access_token(self, scope, force_run_az=False):
         assert scope == "https://analysis.windows.net/powerbi/api"
+        self.calls.append((scope, force_run_az))
         return "fabric-token"
 
 
@@ -318,6 +322,7 @@ def test_semantic_model_payload_uses_object_ids_for_all_principal_types(principa
 
     asyncio.run(manager.update_model_role_assignment(2000002, assignment, identity))
 
+    assert manager.az_cli.calls[-1] == ("https://analysis.windows.net/powerbi/api", True)
     func, url, kwargs = http_retry.calls[-1]
     assert func is rbac_module.requests.put
     assert url == "https://analysis.example.invalid/metadata/access"
@@ -380,6 +385,7 @@ def test_semantic_model_reads_by_internal_integer_id():
 
     result = asyncio.run(manager.get_fabric_model_rbac_info(2000002))
 
+    assert manager.az_cli.calls[-1] == ("https://analysis.windows.net/powerbi/api", True)
     func, url, kwargs = http_retry.calls[-1]
     assert func is rbac_module.requests.get
     assert url == "https://analysis.example.invalid/metadata/access/models/2000002"
