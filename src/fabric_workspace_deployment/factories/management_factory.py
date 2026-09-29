@@ -7,6 +7,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 
+from azure.core.credentials import TokenCredential
 from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.client.fabric_artifact import FabricArtifactClient
@@ -20,6 +21,7 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.azure.entitlement import AzEntitlementManager
 from fabric_workspace_deployment.manager.azure.rbac import ArmRbacManager
 from fabric_workspace_deployment.manager.azure.storage import AzStorageManager
+from fabric_workspace_deployment.manager.docker.cli import DockerCli
 from fabric_workspace_deployment.manager.fabric.capacity import FabricCapacityManager
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
@@ -32,6 +34,7 @@ from fabric_workspace_deployment.manager.fabric.seed import FabricSeedManager
 from fabric_workspace_deployment.manager.fabric.shortcut import FabricShortcutManager
 from fabric_workspace_deployment.manager.fabric.spark import FabricSparkOperations
 from fabric_workspace_deployment.manager.fabric.workspace import FabricWorkspaceManager
+from fabric_workspace_deployment.manager.rayfin.deployment import RayfinDeploymentManager
 from fabric_workspace_deployment.operations.operation_interfaces import GraphClient, HttpRetryHandler, MwcTokenClient, OperationParams, SparkEnvironmentClient
 
 
@@ -51,6 +54,13 @@ class ManagementFactory(ABC):
     def create_fabric_cli(self) -> FabricCli:
         """
         Create a Fabric CLI instance.
+        """
+        pass
+
+    @abstractmethod
+    def create_docker_cli(self) -> DockerCli:
+        """
+        Create a Docker CLI instance.
         """
         pass
 
@@ -153,6 +163,13 @@ class ManagementFactory(ABC):
         pass
 
     @abstractmethod
+    def create_rayfin_manager(self) -> RayfinDeploymentManager:
+        """
+        Create a Rayfin deployment manager instance.
+        """
+        pass
+
+    @abstractmethod
     def create_fabric_folder_client(self) -> "FabricFolderClient":
         """
         Create a Fabric Folder Client instance.
@@ -222,6 +239,16 @@ class ContainerizedManagementFactory(ManagementFactory):
     def create_fabric_cli(self) -> FabricCli:
         return FabricCli(exit_on_error=True, logger=self.logger)
 
+    def _create_cicd_token_credential(self) -> TokenCredential:
+        fab_token_cicd = os.getenv(FAB_TOKEN_CICD_ENV_VAR, "").strip()
+        if fab_token_cicd:
+            expiry = int(time.time()) + (365 * 24 * 60 * 60)
+            return StaticTokenCredential(fab_token_cicd, expiry)
+        return AzureCliCredential()
+
+    def create_docker_cli(self) -> DockerCli:
+        return DockerCli(logger=self.logger)
+
     def create_fabric_capacity_manager(self) -> FabricCapacityManager:
         return FabricCapacityManager(self.operation_params.common, self.create_azure_cli(), self.create_fabric_cli())
 
@@ -267,16 +294,9 @@ class ContainerizedManagementFactory(ManagementFactory):
         )
 
     def create_fabric_cicd_manager(self) -> FabricCicdManager:
-        fab_token_cicd = os.getenv(FAB_TOKEN_CICD_ENV_VAR, "").strip()
-        if fab_token_cicd:
-            expiry = int(time.time()) + (365 * 24 * 60 * 60)
-            token_credential = StaticTokenCredential(fab_token_cicd, expiry)
-        else:
-            token_credential = AzureCliCredential()
-
         return FabricCicdManager(
             self.operation_params.common,
-            token_credential,
+            self._create_cicd_token_credential(),
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
@@ -323,6 +343,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_fabric_workspace_manager(),
+            self.create_fabric_folder_client(),
             self.http_retry_handler,
         )
 
@@ -333,6 +354,7 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_workspace_manager(),
             self.create_fabric_folder_client(),
             self.http_retry_handler,
+            self._create_cicd_token_credential(),
         )
 
     def create_fabric_monitoring_manager(self) -> FabricMonitoringManager:
@@ -344,6 +366,16 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_folder_client(),
             self.create_fabric_mwc_token_client(),
             self.create_fabric_capacity_manager(),
+        )
+
+    def create_rayfin_manager(self) -> RayfinDeploymentManager:
+        return RayfinDeploymentManager(
+            self.operation_params.common,
+            self.operation_params.common.fabric.workspaces,
+            self.create_azure_cli(),
+            self.create_fabric_cli(),
+            self.create_docker_cli(),
+            logger=self.logger,
         )
 
     def create_fabric_folder_client(self) -> FabricFolderClient:

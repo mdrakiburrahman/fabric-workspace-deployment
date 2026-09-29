@@ -5,7 +5,12 @@ a = Analysis(
     ['src/fabric_workspace_deployment/main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        (
+            'src/fabric_workspace_deployment/resources/Compose.rayfin.yaml',
+            'fabric_workspace_deployment/resources',
+        ),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

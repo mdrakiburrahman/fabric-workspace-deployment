@@ -18,6 +18,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     ModelManager,
     Operation,
     OperationParams,
+    RayfinManager,
     RbacManager,
     SeedManager,
     ShortcutManager,
@@ -50,6 +51,7 @@ class CentralOperator(EntryPointOperator):
         self.rbac_manager: RbacManager = self.management_factory.create_fabric_rbac_manager()
         self.model_manager: ModelManager = self.management_factory.create_semantic_model_manager()
         self.monitoring_manager: MonitoringManager = self.management_factory.create_fabric_monitoring_manager()
+        self.rayfin_manager: RayfinManager = self.management_factory.create_rayfin_manager()
         self.entitlement_manager: EntitlementManager = self.management_factory.create_entitlement_manager()
         self.git_link_manager: GitLinkManager = self.management_factory.create_fabric_git_link_manager()
         self.managers: dict[Operation, Manager] = {
@@ -65,12 +67,18 @@ class CentralOperator(EntryPointOperator):
             Operation.DEPLOY_SPARK: self.spark_manager,
             Operation.DEPLOY_MODEL: self.model_manager,
             Operation.DEPLOY_MONITORING: self.monitoring_manager,
+            Operation.DEPLOY_RAYFIN: self.rayfin_manager,
         }
 
     async def _execute(self) -> None:
         """Execute the operation based on the operation type."""
         try:
-            self.logger.info(f"Fabric CLI version: {self.fabric_cli.run_command('version')}")
+            is_empty_rayfin_deployment = False
+            if self.operation == Operation.DEPLOY_RAYFIN:
+                has_deployable_rayfins = any(workspace.rayfins for workspace in self.operation_params.common.fabric.workspaces if not workspace.skip_deploy)
+                is_empty_rayfin_deployment = not has_deployable_rayfins
+            if not is_empty_rayfin_deployment:
+                self.logger.info(f"Fabric CLI version: {self.fabric_cli.run_command('version')}")
             self.logger.info(f"Executing operation: {self.operation.value}")
 
             manager = self.managers.get(self.operation)

@@ -37,7 +37,7 @@ jobs:
           mkdir -p "${HOME}/.azure"
           chmod 700 "${HOME}/.azure"
 
-      - name: Verify devcontainer
+      - name: Run Nx tests in devcontainer
         run: npx --no-install nx run devcontainer:test
 
       - name: Remove devcontainer

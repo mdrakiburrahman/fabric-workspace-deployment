@@ -37,8 +37,12 @@ type = "virtual"
 path = ".venv"
 installer = "uv"
 dependencies = [
+  "black==26.5.1",
   "pyinstaller==6.14.1",
+  "pytest==8.3.5",
 ]
+[tool.hatch.envs.default.scripts]
+test = "python -m pytest {args:tests}"
 
 [project.scripts]
 fabric-workspace-deployment = "fabric_workspace_deployment.main:main"
@@ -52,7 +56,30 @@ Source = "https://github.com/mdrakiburrahman/fabric-workspace-deployment"
 source = "code"
 path = "src/fabric_workspace_deployment/__about__.py"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/fabric_workspace_deployment"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/fabric_workspace_deployment/resources/Compose.rayfin.yaml" = "fabric_workspace_deployment/resources/Compose.rayfin.yaml"
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/fabric_workspace_deployment/resources/Compose.rayfin.yaml" = "src/fabric_workspace_deployment/resources/Compose.rayfin.yaml"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/.venv",
+  "/.hatch",
+  "/.pytest_cache",
+  "/.mypy_cache",
+  "/.test-tmp",
+  "/.build-artifacts",
+  "/node_modules",
+  "/build",
+  "/dist",
+]
+
 [tool.hatch.envs.types]
+path = ".hatch/types"
 extra-dependencies = [
   "mypy>=1.0.0",
 ]
@@ -60,15 +87,17 @@ extra-dependencies = [
 check = "mypy --install-types --non-interactive {args:src/fabric_workspace_deployment tests}"
 
 [tool.hatch.envs.build]
+path = ".hatch/build"
 dependencies = [
-  "pyinstaller>=6.0.0",
+  "pyinstaller==6.14.1",
 ]
 
 [tool.hatch.envs.build.scripts]
-binary = "pyinstaller --onefile --name fabric-workspace-deployment src/fabric_workspace_deployment/main.py"
+binary = "pyinstaller --noconfirm --clean fabric-workspace-deployment.spec"
 clean = "rm -rf build dist"
 
 [tool.hatch.envs.publish]
+path = ".hatch/publish"
 dependencies = [
   "twine>=6.1.0,<7",
   "keyring==25.6.0",
@@ -76,13 +105,16 @@ dependencies = [
 ]
 
 [tool.hatch.envs.publish.scripts]
-build = "hatch build"
+build = "env -u HATCH_ENV_ACTIVE hatch build"
 upload = "twine upload --repository monitoring dist/*"
 release = [
   "hatch run build:clean",
   "build",
   "upload",
 ]
+
+[tool.black]
+target-version = ["py310"]
 
 [tool.coverage.run]
 source_pkgs = ["fabric_workspace_deployment", "tests"]

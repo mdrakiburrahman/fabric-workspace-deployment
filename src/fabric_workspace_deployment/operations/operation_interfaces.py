@@ -26,6 +26,7 @@ from typing import Any, ClassVar, final
 from PIL import Image
 from fabric_workspace_deployment.environment_variables import FAB_TOKEN_GRAPH_ENV_VAR, GIT_ROOT_ENV_VAR, MANAGER_SKIP_ENABLED_VALUE, SKIP_ALERT_DEPLOYMENT_ENV_VAR, SKIP_ENTITLEMENT_CHECK_ENV_VAR, SKIP_FABRIC_CAPACITY_DEPLOYMENT_ENV_VAR, SKIP_FABRIC_WORKSPACE_DEPLOYMENT_ENV_VAR, SKIP_GIT_LINK_DEPLOYMENT_ENV_VAR, SKIP_MODEL_DEPLOYMENT_ENV_VAR, SKIP_MONITORING_DEPLOYMENT_ENV_VAR, SKIP_RBAC_DEPLOYMENT_ENV_VAR, SKIP_SEED_DEPLOYMENT_ENV_VAR, SKIP_SHORTCUT_DEPLOYMENT_ENV_VAR, SKIP_SPARK_DEPLOYMENT_ENV_VAR, SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR, UNIQUE_ENV_ID_ENV_VAR, USER_APP_ID_ENV_VAR, USER_DISPLAY_NAME_ENV_VAR, USER_OBJECT_ID_ENV_VAR, USER_PRINCIPAL_TYPE_ENV_VAR
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.rayfin.manifest import RAYFIN_MANIFEST_FILE_NAME, RayfinManifestLoader
 
 # ---------------------------------------------------------------------------- #
 # --------------------------- HTTP RETRY CONSTANTS --------------------------- #
@@ -199,6 +200,7 @@ class Operation(Enum):
     DEPLOY_MODEL = "deployModel"
     DEPLOY_MONITORING = "deployMonitoring"
     DEPLOY_RBAC = "deployRbac"
+    DEPLOY_RAYFIN = "deployRayfin"
     DEPLOY_SEED = "deploySeed"
     DEPLOY_SHORTCUT = "deployShortcut"
     DEPLOY_SPARK = "deploySpark"
@@ -266,6 +268,7 @@ class ArtifactType(Enum):
 class CicdArtifactType(Enum):
     """Enumeration of Fabric artifact types."""
 
+    APP_BACKEND = "AppBackend"
     DATA_PIPELINE = "DataPipeline"
     ENVIRONMENT = "Environment"
     EVENTHOUSE = "Eventhouse"
@@ -971,8 +974,8 @@ class FabricWorkspaceItemRbacDetail:
     permissions: int
     given_name: str
     object_id: str
-    artifact_permissions: int | None
-    aad_app_id: str | None
+    artifact_permissions: int | None = None
+    aad_app_id: str | None = None
     access_source: AccessSource | None = None
 
 
@@ -1352,6 +1355,7 @@ class FabricWorkspaceParams:
     monitoring: MonitoringParams
     shortcut: ShortcutParams | None = None
     alert: AlertParams | None = None
+    rayfins: list["RayfinParams"] = field(default_factory=list)
 
     def get_icon_payload(self, root_folder: str) -> str:
         """
@@ -1533,6 +1537,22 @@ class FabricStorageParams:
     rbac: StorageRbacParams
 
 
+@dataclass(frozen=True)
+class RayfinSemanticModelParams:
+    """Environment-specific semantic-model binding for a Rayfin connection alias."""
+
+    item_name: str
+    workspace_name: str | None = None
+
+
+@dataclass(frozen=True)
+class RayfinParams:
+    """Workspace-scoped Rayfin application deployment binding."""
+
+    root_path: str
+    semantic_models: dict[str, RayfinSemanticModelParams]
+
+
 @dataclass
 class FabricParams:
     """Fabric workspace parameters."""
@@ -1693,6 +1713,10 @@ class SeedManager(Manager):
     skip_environment_variable = SKIP_SEED_DEPLOYMENT_ENV_VAR
 
 
+class RayfinManager(Manager):
+    """Interface for deploying Rayfin applications."""
+
+
 class ShortcutManager(Manager):
     """
     Interface for managing Fabric shortcut operations.
@@ -1778,12 +1802,14 @@ class ModelManager(Manager):
     skip_environment_variable = SKIP_MODEL_DEPLOYMENT_ENV_VAR
 
     @abstractmethod
-    async def reconcile(self, workspace_id: str, model_params: "ModelParams") -> None:
+    async def reconcile(self, workspace_id: str, model_params: "ModelParams", workspace_params: "FabricWorkspaceParams | None" = None) -> None:
         """
         Reconcile a single model to desired state.
 
         Args:
             workspace_id: The Fabric workspace id
+            model_params: The semantic model settings to reconcile
+            workspace_params: Workspace deployment settings used to publish a missing model
         """
         pass
 
@@ -1859,12 +1885,13 @@ class RbacManager(Manager):
         pass
 
     @abstractmethod
-    async def get_fabric_workspace_item_rbac_info(self, item_id: int) -> FabricWorkspaceItemRbacInfo:
+    async def get_fabric_workspace_item_rbac_info(self, item_id: str, item_type: str) -> FabricWorkspaceItemRbacInfo:
         """
         Get Fabric workspace item RBAC information.
 
         Args:
             item_id: The Fabric workspace item id
+            item_type: The Fabric workspace item type
 
         Returns:
             FabricWorkspaceItemRbacInfo: Fabric workspace item RBAC information
@@ -1872,24 +1899,51 @@ class RbacManager(Manager):
         pass
 
     @abstractmethod
-    async def update_item_role_assignment(self, item_id: str, assignment: ItemRbacDetailParams) -> None:
+    async def get_fabric_model_rbac_info(self, model_id: int) -> FabricWorkspaceItemRbacInfo:
+        """
+        Get SemanticModel RBAC information by its internal model id.
+
+        Args:
+            model_id: The internal Analysis Services model id
+
+        Returns:
+            FabricWorkspaceItemRbacInfo: SemanticModel RBAC information
+        """
+        pass
+
+    @abstractmethod
+    async def update_item_role_assignment(self, item_id: str, assignment: ItemRbacDetailParams, identity: Identity) -> None:
         """
         Update a single item role assignment via API call.
 
         Args:
             item_id: The workspace item ID
             assignment: The item role assignment to update
+            identity: The identity receiving the assignment
         """
         pass
 
     @abstractmethod
-    async def update_workspace_role_assignment(self, folder_id: int, assignment: WorkspaceRbacParams) -> None:
+    async def update_model_role_assignment(self, model_id: int, assignment: ItemRbacDetailParams, identity: Identity) -> None:
+        """
+        Update a single SemanticModel role assignment via API call.
+
+        Args:
+            model_id: The internal Analysis Services model id
+            assignment: The model role assignment to update
+            identity: The identity receiving the assignment
+        """
+        pass
+
+    @abstractmethod
+    async def update_workspace_role_assignment(self, folder_id: int, assignment: WorkspaceRbacParams, identity: Identity) -> None:
         """
         Update a single workspace role assignment via API call.
 
         Args:
             folder_id: The workspace folder ID
             assignment: The role assignment to update
+            identity: The identity receiving the assignment
         """
         pass
 
@@ -2757,6 +2811,8 @@ class OperationParams:
 
         try:
             self.config_data = self._load_and_process_config(config_file_absolute_path, replace_placeholders)
+            if "rayfin" in self.config_data:
+                raise ValueError("Top-level 'rayfin' is not supported; configure Rayfin applications under 'common.fabric.workspaces[].rayfins'")
             self.operation = Operation(operation)
             self.common = self._parse_common_params(self.config_data["common"])
 
@@ -2784,7 +2840,7 @@ class OperationParams:
         Returns:
             bool: True if all parameters are valid, False otherwise
         """
-        return self._validate_operation() and self._validate_common_params()
+        return self._validate_operation() and self._validate_common_params() and self._validate_rayfin_params()
 
     def to_pretty_json(self) -> str:
         """
@@ -3487,6 +3543,84 @@ class OperationParams:
 
         return self._validate_all_fabric_storage_params()
 
+    def _validate_rayfin_params(self) -> bool:
+        """Validate optional workspace-scoped Rayfin deployment bindings and app manifests."""
+        configured_root = Path(self.common.local.root_folder).resolve()
+        seen_root_paths: dict[Path, str] = {}
+        manifest_loader = RayfinManifestLoader()
+
+        for workspace_index, workspace in enumerate(self.common.fabric.workspaces):
+            seen_app_ids: set[str] = set()
+            for rayfin_index, params in enumerate(workspace.rayfins):
+                config_path = f"common.fabric.workspaces[{workspace_index}].rayfins[{rayfin_index}]"
+                if not params.root_path:
+                    self.logger.error(f"{config_path}.rootPath must be a non-empty string")
+                    return False
+
+                configured_relative_path = Path(params.root_path)
+                if configured_relative_path.is_absolute() or ".." in configured_relative_path.parts:
+                    self.logger.error(f"{config_path}.rootPath must be a relative path contained by common.local.rootFolder: {params.root_path}")
+                    return False
+
+                app_root = (configured_root / configured_relative_path).resolve()
+                try:
+                    app_root.relative_to(configured_root)
+                except ValueError:
+                    self.logger.error(f"{config_path}.rootPath must remain under common.local.rootFolder: {params.root_path}")
+                    return False
+
+                previous_config_path = seen_root_paths.get(app_root)
+                if previous_config_path is not None:
+                    self.logger.error(f"{config_path}.rootPath duplicates {previous_config_path}.rootPath: {params.root_path}")
+                    return False
+                seen_root_paths[app_root] = config_path
+
+                if not app_root.is_dir():
+                    self.logger.error(f"{config_path}.rootPath does not exist or is not a directory: {app_root}")
+                    return False
+
+                for required_file in (RAYFIN_MANIFEST_FILE_NAME, "package.json", "package-lock.json"):
+                    required_path = app_root / required_file
+                    if not required_path.is_file():
+                        self.logger.error(f"{config_path} is missing required file: {required_path}")
+                        return False
+
+                for alias, semantic_model in params.semantic_models.items():
+                    binding_path = f"{config_path}.semanticModels[{alias!r}]"
+                    if not alias or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", alias) is None:
+                        self.logger.error(f"{config_path}.semanticModels contains invalid alias {alias!r}")
+                        return False
+                    if semantic_model.workspace_name is not None and not semantic_model.workspace_name:
+                        self.logger.error(f"{binding_path}.workspaceName must be a non-empty workspace display name when configured")
+                        return False
+                    if not semantic_model.item_name:
+                        self.logger.error(f"{binding_path}.itemName must be a non-empty semantic-model display name")
+                        return False
+
+                try:
+                    manifest = manifest_loader.load(app_root)
+                    manifest_loader.validate_node_package(app_root, manifest)
+                    manifest_loader.validate_data_schema(app_root, manifest)
+                except ValueError as e:
+                    self.logger.error(f"Invalid Rayfin app manifest for {config_path}: {e}")
+                    return False
+
+                app_id_key = manifest.app.id.casefold()
+                if app_id_key in seen_app_ids:
+                    self.logger.error(f"{config_path} duplicates Rayfin app ID '{manifest.app.id}' within parent workspace '{workspace.name}'")
+                    return False
+                seen_app_ids.add(app_id_key)
+
+                configured_aliases = set(params.semantic_models)
+                declared_aliases = set(manifest.connections.semantic_models)
+                if configured_aliases != declared_aliases:
+                    missing = sorted(declared_aliases - configured_aliases)
+                    unexpected = sorted(configured_aliases - declared_aliases)
+                    self.logger.error(f"{config_path}.semanticModels does not exactly match the app manifest: missing bindings={missing}, unexpected bindings={unexpected}")
+                    return False
+
+        return True
+
     def _validate_all_fabric_storage_params(self) -> bool:
         """Validate all Fabric Storage parameters, enforcing no duplicate account names."""
         storages = self.common.fabric.storages
@@ -3904,7 +4038,7 @@ class OperationParams:
             return False
 
         for j, detail_rbac in enumerate(item_rbac.detail):
-            if not self._validate_item_rbac_detail_params(detail_rbac, workspace_index, item_index, j, identity_object_ids):
+            if not self._validate_item_rbac_detail_params(detail_rbac, workspace_index, item_index, j, identity_object_ids, item_rbac.type):
                 return False
 
         return True
@@ -3916,10 +4050,24 @@ class OperationParams:
         item_index: int,
         detail_index: int,
         identity_object_ids: set[str],
+        item_type: str | None = None,
     ) -> bool:
         """Validate item RBAC detail parameters."""
         if detail_rbac.permissions is None:
             self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].permissions at index {workspace_index} cannot be None")
+            return False
+
+        valid_permissions_by_type = {
+            CicdArtifactType.SEMANTIC_MODEL.value: {1, 3, 5, 7, 9, 11, 13, 15},
+            CicdArtifactType.APP_BACKEND.value: {65, 67, 69, 71},
+        }
+        if item_type in valid_permissions_by_type and detail_rbac.permissions not in valid_permissions_by_type[item_type]:
+            valid_permissions = sorted(valid_permissions_by_type[item_type])
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].permissions at index {workspace_index} " f"must be one of {valid_permissions} for {item_type}, got {detail_rbac.permissions}")
+            return False
+
+        if item_type in valid_permissions_by_type and detail_rbac.artifact_permissions not in (None, 0):
+            self.logger.error(f"Workspace rbac items[{item_index}].detail[{detail_index}].artifactPermissions at index {workspace_index} " f"must be omitted or 0 for {item_type}, got {detail_rbac.artifact_permissions}")
             return False
 
         if not detail_rbac.object_id:
@@ -4000,6 +4148,71 @@ class OperationParams:
             entitlements=self._parse_entitlements_params(data.get("entitlements", [])),
         )
 
+    def _parse_rayfin_params(self, data: Any, workspace_index: int) -> list[RayfinParams]:
+        """Parse optional workspace-scoped Rayfin deployment bindings."""
+        config_path = f"common.fabric.workspaces[{workspace_index}].rayfins"
+        if not isinstance(data, list):
+            raise ValueError(f"{config_path} must be a list when configured")
+
+        params: list[RayfinParams] = []
+        for index, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ValueError(f"{config_path}[{index}] must be a JSON object")
+
+            expected_keys = {"rootPath", "semanticModels"}
+            missing_keys = expected_keys - set(item)
+            unexpected_keys = set(item) - expected_keys
+            if missing_keys or unexpected_keys:
+                raise ValueError(f"{config_path}[{index}] has invalid fields: missing={sorted(missing_keys)}, unexpected={sorted(unexpected_keys)}")
+
+            semantic_models = item["semanticModels"]
+            if not isinstance(semantic_models, dict):
+                raise ValueError(f"{config_path}[{index}].semanticModels must be an alias-to-binding object")
+            root_path = item["rootPath"]
+            if not isinstance(root_path, str):
+                raise ValueError(f"{config_path}[{index}].rootPath must be a string")
+
+            parsed_semantic_models: dict[str, RayfinSemanticModelParams] = {}
+            for alias, semantic_model_data in semantic_models.items():
+                if not isinstance(alias, str):
+                    raise ValueError(f"{config_path}[{index}].semanticModels aliases must be strings")
+                normalized_alias = alias.strip()
+                if normalized_alias in parsed_semantic_models:
+                    raise ValueError(f"{config_path}[{index}].semanticModels contains duplicate normalized alias {normalized_alias!r}")
+                if not isinstance(semantic_model_data, dict):
+                    raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}] must be an object")
+
+                required_semantic_model_keys = {"itemName"}
+                allowed_semantic_model_keys = required_semantic_model_keys | {"workspaceName"}
+                missing_semantic_model_keys = required_semantic_model_keys - set(semantic_model_data)
+                unexpected_semantic_model_keys = set(semantic_model_data) - allowed_semantic_model_keys
+                if missing_semantic_model_keys or unexpected_semantic_model_keys:
+                    raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}] has invalid fields: missing={sorted(missing_semantic_model_keys)}, unexpected={sorted(unexpected_semantic_model_keys)}")
+
+                workspace_name_configured = "workspaceName" in semantic_model_data
+                semantic_model_workspace_name = semantic_model_data.get("workspaceName")
+                semantic_model_item_name = semantic_model_data["itemName"]
+                parsed_workspace_name = None
+                if workspace_name_configured:
+                    if not isinstance(semantic_model_workspace_name, str):
+                        raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}].workspaceName must be a string when configured")
+                    parsed_workspace_name = semantic_model_workspace_name.strip()
+                if not isinstance(semantic_model_item_name, str):
+                    raise ValueError(f"{config_path}[{index}].semanticModels[{alias!r}].itemName must be a string")
+
+                parsed_semantic_models[normalized_alias] = RayfinSemanticModelParams(
+                    workspace_name=parsed_workspace_name,
+                    item_name=semantic_model_item_name.strip(),
+                )
+
+            params.append(
+                RayfinParams(
+                    root_path=root_path.strip(),
+                    semantic_models=parsed_semantic_models,
+                )
+            )
+        return params
+
     def _parse_identities_params(self, data: list[dict[str, Any]]) -> list[Identity]:
         """Parse identities parameters."""
         identities = []
@@ -4067,6 +4280,8 @@ class OperationParams:
 
     def _parse_fabric_params(self, data: dict[str, Any], root_folder: str) -> FabricParams:
         """Parse Fabric parameters."""
+        if "rayfins" in data:
+            raise ValueError("'common.fabric.rayfins' is no longer supported; move each app under its parent workspace at 'common.fabric.workspaces[].rayfins'")
         return FabricParams(
             workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
             storages=[self._parse_fabric_storage_params(s) for s in data["storages"]],
@@ -4075,11 +4290,11 @@ class OperationParams:
     def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
         """Parse Fabric workspaces."""
         workspaces = []
-        for workspace_data in data:
-            workspaces.append(self._parse_fabric_workspace_params(workspace_data, root_folder))
+        for workspace_index, workspace_data in enumerate(data):
+            workspaces.append(self._parse_fabric_workspace_params(workspace_data, root_folder, workspace_index))
         return workspaces
 
-    def _parse_fabric_workspace_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceParams:
+    def _parse_fabric_workspace_params(self, data: dict[str, Any], root_folder: str, workspace_index: int) -> FabricWorkspaceParams:
         """Parse a single Fabric workspace."""
         shortcut = None
         if "shortcut" in data:
@@ -4104,6 +4319,7 @@ class OperationParams:
             skip_deploy=data["skipDeploy"],
             spark=self._parse_spark_params(data["spark"]),
             monitoring=self._parse_monitoring_params(data["monitoring"]),
+            rayfins=self._parse_rayfin_params(data.get("rayfins", []), workspace_index),
         )
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceTemplateParams:

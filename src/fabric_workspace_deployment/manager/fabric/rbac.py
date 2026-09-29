@@ -11,6 +11,7 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
     AccessSource,
+    ArtifactType,
     CicdArtifactType,
     CommonParams,
     DatamartBatchResponse,
@@ -21,6 +22,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricWorkspaceItem,
     FabricWorkspaceItemRbacDetail,
     FabricWorkspaceItemRbacInfo,
+    FolderClient,
     FolderRole,
     HttpRetryHandler,
     Identity,
@@ -48,6 +50,7 @@ class FabricRbacManager(RbacManager):
         az_cli: AzCli,
         fabric_cli: FabricCli,
         workspace: WorkspaceManager,
+        folder_client: FolderClient,
         http_retry_handler: HttpRetryHandler,
     ):
         """
@@ -57,6 +60,7 @@ class FabricRbacManager(RbacManager):
         self.az_cli = az_cli
         self.fabric_cli = fabric_cli
         self.workspace = workspace
+        self.folder_client = folder_client
         self.http_retry = http_retry_handler
 
     async def _execute(self) -> None:
@@ -92,6 +96,14 @@ class FabricRbacManager(RbacManager):
 
         self.logger.info("Finished executing FabricRbacManager")
 
+    async def _resolve_semantic_model_ids(self, workspace_id: str, workspace_items: list[FabricWorkspaceItem]) -> dict[str, int]:
+        semantic_model_object_ids = {item.id for item in workspace_items if item.type == CicdArtifactType.SEMANTIC_MODEL.value}
+        if not semantic_model_object_ids:
+            return {}
+
+        folder_collection = await self.folder_client.get_fabric_folder_collection(workspace_id)
+        return {artifact.object_id: artifact.id for artifact in folder_collection.artifacts if artifact.type_name == ArtifactType.MODEL.value and artifact.object_id in semantic_model_object_ids}
+
     async def reconcile(self, workspace_id: str, rbac_params: RbacParams) -> None:
         """
         Reconcile all RBAC for a single workspace.
@@ -109,6 +121,7 @@ class FabricRbacManager(RbacManager):
                 workspace_folder_info = await self.get_fabric_workspace_folder_info(workspace_id)
                 workspace_items = await self.get_fabric_workspace_item_info(workspace_id)
                 workspace_rbac_info = await self.get_fabric_workspace_folder_rbac_info(workspace_folder_info.id)
+                semantic_model_ids = await self._resolve_semantic_model_ids(workspace_id, workspace_items)
 
                 item_rbac_infos = []
                 for workspace_item in workspace_items:
@@ -121,7 +134,13 @@ class FabricRbacManager(RbacManager):
                         self.logger.info(f"Skipping RBAC reconciliation for monitoring item '{workspace_item.display_name}' with ID {workspace_item.id}")
                         continue
 
-                    if workspace_item.type in [
+                    if workspace_item.type == CicdArtifactType.SEMANTIC_MODEL.value:
+                        model_id = semantic_model_ids.get(workspace_item.id)
+                        if model_id is None:
+                            raise RuntimeError(f"Failed to resolve internal model id for SemanticModel '{workspace_item.display_name}' " f"with object id '{workspace_item.id}' in workspace '{workspace_id}'")
+                        item_rbac_infos.append(await self.get_fabric_model_rbac_info(model_id))
+                    elif workspace_item.type in [
+                        CicdArtifactType.APP_BACKEND.value,
                         CicdArtifactType.KQL_DATABASE.value,
                         CicdArtifactType.EVENTHOUSE.value,
                         CicdArtifactType.SQL_ENDPOINT.value,
@@ -254,6 +273,55 @@ class FabricRbacManager(RbacManager):
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
+    def _parse_item_rbac_info(self, rbac_data: dict, item_type: str) -> FabricWorkspaceItemRbacInfo:
+        rbac_data_snake_case = StringTransformer.convert_keys_to_snake_case(rbac_data)
+        detail_items = []
+        for detail_data in rbac_data_snake_case.get("detail", []):
+            if "access_source" in detail_data and detail_data["access_source"] is not None:
+                access_source_data = detail_data["access_source"]
+                if "folder_role" in access_source_data and access_source_data["folder_role"] is not None:
+                    folder_role_data = access_source_data["folder_role"]
+                    folder_role = dacite.from_dict(
+                        data_class=FolderRole,
+                        data=folder_role_data,
+                        config=dacite.Config(
+                            check_types=False,
+                            cast=[str, int, bool, float],
+                        ),
+                    )
+                    access_source_data["folder_role"] = folder_role
+                access_source = dacite.from_dict(
+                    data_class=AccessSource,
+                    data=access_source_data,
+                    config=dacite.Config(
+                        check_types=False,
+                        cast=[str, int, bool, float],
+                    ),
+                )
+                detail_data["access_source"] = access_source
+
+            detail_items.append(
+                dacite.from_dict(
+                    data_class=FabricWorkspaceItemRbacDetail,
+                    data=detail_data,
+                    config=dacite.Config(
+                        check_types=False,
+                        cast=[str, int, bool, float],
+                    ),
+                )
+            )
+
+        rbac_data_snake_case["detail"] = detail_items
+        rbac_data_snake_case["type"] = item_type
+        return dacite.from_dict(
+            data_class=FabricWorkspaceItemRbacInfo,
+            data=rbac_data_snake_case,
+            config=dacite.Config(
+                check_types=False,
+                cast=[str, int, bool, float],
+            ),
+        )
+
     async def get_fabric_workspace_item_rbac_info(self, item_id: str, item_type: str) -> FabricWorkspaceItemRbacInfo:
         self.logger.info(f"Getting Fabric workspace item RBAC info for {item_type}: {item_id}")
         try:
@@ -269,57 +337,37 @@ class FabricRbacManager(RbacManager):
             )
             rbac_data = response.json()
             self.logger.debug(rbac_data)
-            rbac_data_snake_case = StringTransformer.convert_keys_to_snake_case(rbac_data)
-            detail_items = []
-            for detail_data in rbac_data_snake_case.get("detail", []):
-                if "access_source" in detail_data and detail_data["access_source"] is not None:
-                    access_source_data = detail_data["access_source"]
-                    if "folder_role" in access_source_data and access_source_data["folder_role"] is not None:
-                        folder_role_data = access_source_data["folder_role"]
-                        folder_role = dacite.from_dict(
-                            data_class=FolderRole,
-                            data=folder_role_data,
-                            config=dacite.Config(
-                                check_types=False,
-                                cast=[str, int, bool, float],
-                            ),
-                        )
-                        access_source_data["folder_role"] = folder_role
-                    access_source = dacite.from_dict(
-                        data_class=AccessSource,
-                        data=access_source_data,
-                        config=dacite.Config(
-                            check_types=False,
-                            cast=[str, int, bool, float],
-                        ),
-                    )
-                    detail_data["access_source"] = access_source
-
-                detail_item = dacite.from_dict(
-                    data_class=FabricWorkspaceItemRbacDetail,
-                    data=detail_data,
-                    config=dacite.Config(
-                        check_types=False,
-                        cast=[str, int, bool, float],
-                    ),
-                )
-                detail_items.append(detail_item)
-            rbac_data_snake_case["detail"] = detail_items
-            rbac_data_snake_case["type"] = item_type
-
-            fabric_rbac_info = dacite.from_dict(
-                data_class=FabricWorkspaceItemRbacInfo,
-                data=rbac_data_snake_case,
-                config=dacite.Config(
-                    check_types=False,
-                    cast=[str, int, bool, float],
-                ),
-            )
+            fabric_rbac_info = self._parse_item_rbac_info(rbac_data, item_type)
             self.logger.info(f"Successfully retrieved Fabric workspace item RBAC info for item {item_id}")
             return fabric_rbac_info
 
         except Exception as e:
             error_msg = f"Failed to get Fabric workspace item RBAC info for item '{item_id}': {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+    async def get_fabric_model_rbac_info(self, model_id: int) -> FabricWorkspaceItemRbacInfo:
+        self.logger.info(f"Getting SemanticModel RBAC info for internal model id {model_id}")
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service, force_run_az=True)
+        try:
+            response = self.http_retry.execute(
+                requests.get,
+                f"{self.common_params.endpoint.analysis_service}/metadata/access/models/{model_id}",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                params={"includeRestrictedUsers": "true"},
+                timeout=60,
+            )
+            rbac_data = response.json()
+            self.logger.debug(rbac_data)
+            fabric_rbac_info = self._parse_item_rbac_info(rbac_data, CicdArtifactType.SEMANTIC_MODEL.value)
+            self.logger.info(f"Successfully retrieved SemanticModel RBAC info for internal model id {model_id}")
+            return fabric_rbac_info
+
+        except Exception as e:
+            error_msg = f"Failed to get SemanticModel RBAC info for internal model id '{model_id}': {e}"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
@@ -374,6 +422,50 @@ class FabricRbacManager(RbacManager):
 
         except Exception as e:
             error_msg = f"Failed to update item role assignment for {identity.given_name} ({assignment.object_id}) on item {item_id}: {e}"  # noqa: E501
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+    async def update_model_role_assignment(self, model_id: int, assignment: ItemRbacDetailParams, identity: Identity) -> None:
+        is_service_principal = identity.principal_type == PrincipalType.SERVICE_PRINCIPAL
+        is_group = identity.principal_type == PrincipalType.GROUP
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service, force_run_az=True)
+
+        model_data = {
+            "id": model_id,
+            "permissions": assignment.permissions,
+            "isServicePrincipal": is_service_principal,
+            "userId": None,
+            "groupId": None,
+            "userObjectId": None if is_group else assignment.object_id,
+            "groupObjectId": assignment.object_id if is_group else None,
+        }
+        payload = {
+            "dashboards": [],
+            "reports": [],
+            "workbooks": [],
+            "models": [model_data],
+            "datamarts": [],
+            "artifacts": [],
+        }
+
+        self.logger.info(f"Updating SemanticModel role assignment for {identity.given_name} ({assignment.object_id}) " f"on internal model id {model_id} with permissions {assignment.permissions}")
+        self.logger.debug(payload)
+
+        try:
+            self.http_retry.execute(
+                requests.put,
+                f"{self.common_params.endpoint.analysis_service}/metadata/access",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60,
+            )
+            self.logger.info(f"Successfully updated SemanticModel role assignment for {identity.given_name} " f"({assignment.object_id}) on internal model id {model_id}")
+
+        except Exception as e:
+            error_msg = f"Failed to update SemanticModel role assignment for {identity.given_name} " f"({assignment.object_id}) on internal model id {model_id}: {e}"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
@@ -436,7 +528,8 @@ class FabricRbacManager(RbacManager):
         self.logger.info(f"Reconciling role assignments for workspace folder {current_state.id}")
         await self._reconcile_workspace_level_permissions(desired_state, current_state)
         if desired_state.items:
-            await self._reconcile_item_level_permissions(desired_state.items, workspace_items, desired_state)
+            workspace_role_object_ids = {detail.object_id for detail in current_state.detail}
+            await self._reconcile_item_level_permissions(desired_state.items, workspace_items, desired_state, workspace_role_object_ids)
         else:
             self.logger.info("No item-level RBAC configuration found, skipping item reconciliation")
 
@@ -531,12 +624,19 @@ class FabricRbacManager(RbacManager):
             for assignment, identity in all_workspace_changes:
                 await self.update_workspace_role_assignment(current_state.id, assignment, identity)
 
-    async def _reconcile_item_level_permissions(self, desired_items: list[ItemRbacParams], workspace_items: list[FabricWorkspaceItemRbacInfo], rbac_params: RbacParams) -> None:
+    async def _reconcile_item_level_permissions(
+        self,
+        desired_items: list[ItemRbacParams],
+        workspace_items: list[FabricWorkspaceItemRbacInfo],
+        rbac_params: RbacParams,
+        workspace_role_object_ids: set[str] | None = None,
+    ) -> None:
         """
         Reconcile item-level role assignments.
         """
         self.logger.info("Reconciling item-level permissions")
         workspace_items_lookup = {(item.type, item.display_name): item for item in workspace_items}
+        workspace_role_object_ids = workspace_role_object_ids or set()
 
         for desired_item in desired_items:
             item_key = (desired_item.type, desired_item.display_name)
@@ -545,27 +645,34 @@ class FabricRbacManager(RbacManager):
                 current_item = workspace_items_lookup[item_key]
                 self.logger.info(f"Reconciling item: {desired_item.type} - {desired_item.display_name} (ID: {current_item.id})")
 
-                await self._reconcile_single_item_permissions(desired_item, current_item, rbac_params)
+                await self._reconcile_single_item_permissions(desired_item, current_item, rbac_params, workspace_role_object_ids)
             else:
                 self.logger.warning(f"Desired item not found in workspace: {desired_item.type} - {desired_item.display_name}. " f"Available items: {list(workspace_items_lookup.keys())}")
 
-    async def _reconcile_single_item_permissions(self, desired_item: ItemRbacParams, current_item: FabricWorkspaceItemRbacInfo, rbac_params: RbacParams) -> None:
+    async def _reconcile_single_item_permissions(
+        self,
+        desired_item: ItemRbacParams,
+        current_item: FabricWorkspaceItemRbacInfo,
+        rbac_params: RbacParams,
+        workspace_role_object_ids: set[str] | None = None,
+    ) -> None:
         """
         Reconcile permissions for a single workspace item.
         """
         self.logger.info(f"Reconciling permissions for item {desired_item.display_name} (ID: {current_item.id})")
+        workspace_role_object_ids = workspace_role_object_ids or set()
 
         current_permissions_by_object_id: dict[str, list[FabricWorkspaceItemRbacDetail]] = {}
-        for detail in current_item.detail:
-            if detail.object_id not in current_permissions_by_object_id:
-                current_permissions_by_object_id[detail.object_id] = []
-            current_permissions_by_object_id[detail.object_id].append(detail)
+        for current_detail in current_item.detail:
+            if current_detail.object_id not in current_permissions_by_object_id:
+                current_permissions_by_object_id[current_detail.object_id] = []
+            current_permissions_by_object_id[current_detail.object_id].append(current_detail)
 
         desired_permissions_by_object_id: dict[str, list[ItemRbacDetailParams]] = {}
-        for detail in desired_item.detail:
-            if detail.object_id not in desired_permissions_by_object_id:
-                desired_permissions_by_object_id[detail.object_id] = []
-            desired_permissions_by_object_id[detail.object_id].append(detail)
+        for desired_detail in desired_item.detail:
+            if desired_detail.object_id not in desired_permissions_by_object_id:
+                desired_permissions_by_object_id[desired_detail.object_id] = []
+            desired_permissions_by_object_id[desired_detail.object_id].append(desired_detail)
 
         item_assignments_to_add: list[tuple[ItemRbacDetailParams, Identity]] = []
         item_assignments_to_update: list[tuple[ItemRbacDetailParams, Identity]] = []
@@ -583,20 +690,25 @@ class FabricRbacManager(RbacManager):
                         break
 
                 if matching_current is None:
-                    item_assignments_to_add.append((desired_detail, identity))
-                    self.logger.info(f"ADDING new item assignment for {identity.given_name} ({desired_detail.object_id}) " f"on {desired_item.display_name} with permissions {desired_detail.permissions}, " f"artifactPermissions {desired_detail.artifact_permissions}")
+                    if current_details:
+                        item_assignments_to_update.append((desired_detail, identity))
+                        self.logger.info(f"UPDATING item assignment for {identity.given_name} ({desired_detail.object_id}) " f"on {desired_item.display_name} to permissions {desired_detail.permissions}, " f"artifactPermissions {desired_detail.artifact_permissions}")
+                    else:
+                        item_assignments_to_add.append((desired_detail, identity))
+                        self.logger.info(f"ADDING new item assignment for {identity.given_name} ({desired_detail.object_id}) " f"on {desired_item.display_name} with permissions {desired_detail.permissions}, " f"artifactPermissions {desired_detail.artifact_permissions}")
 
-        for object_id, current_details in current_permissions_by_object_id.items():
-            desired_details = desired_permissions_by_object_id.get(object_id, [])
+        if rbac_params.purge_unmatched_role_assignments:
+            scheduled_removals: set[str] = set()
+            for object_id, current_details in current_permissions_by_object_id.items():
+                if object_id in desired_permissions_by_object_id:
+                    continue
 
-            for current_detail in current_details:
-                matching_desired = None
-                for desired_detail in desired_details:
-                    if current_detail.permissions == desired_detail.permissions and self._artifact_permissions_match(current_detail.artifact_permissions, desired_detail.artifact_permissions):
-                        matching_desired = desired_detail
-                        break
+                for current_detail in current_details:
+                    if self._skip_unmatched_item_removal(desired_item.type, current_detail, workspace_role_object_ids):
+                        continue
+                    if object_id in scheduled_removals:
+                        continue
 
-                if matching_desired is None:
                     if current_detail.group_id:
                         principal_type = PrincipalType.GROUP
                     elif current_detail.aad_app_id:
@@ -610,13 +722,14 @@ class FabricRbacManager(RbacManager):
                         purpose="REMOVING unmatched item permission entry",
                     )
                     removal_identity = Identity(
-                        given_name=current_detail.given_name,
+                        given_name=current_detail.given_name or f"Unknown-{current_detail.object_id}",
                         object_id=current_detail.object_id,
                         principal_type=principal_type,
                         aad_app_id=current_detail.aad_app_id,
                     )
                     item_assignments_to_remove.append((removal_assignment, removal_identity))
-                    self.logger.warning(f"REMOVING item assignment for {current_detail.given_name} ({current_detail.object_id}) " f"on {desired_item.display_name}: permissions {current_detail.permissions} -> 0, " f"artifactPermissions {current_detail.artifact_permissions} -> 0")
+                    scheduled_removals.add(object_id)
+                    self.logger.warning(f"REMOVING item assignment for {removal_identity.given_name} ({current_detail.object_id}) " f"on {desired_item.display_name}: permissions {current_detail.permissions} -> 0, " f"artifactPermissions {current_detail.artifact_permissions} -> 0")
 
         all_item_changes = item_assignments_to_add + item_assignments_to_update + item_assignments_to_remove
 
@@ -625,7 +738,26 @@ class FabricRbacManager(RbacManager):
         else:
             self.logger.info(f"Executing {len(all_item_changes)} item-level role assignment changes for {desired_item.display_name}")
             for assignment, identity in all_item_changes:
-                await self.update_item_role_assignment(current_item.object_id, assignment, identity)
+                if desired_item.type == CicdArtifactType.SEMANTIC_MODEL.value:
+                    await self.update_model_role_assignment(current_item.id, assignment, identity)
+                else:
+                    await self.update_item_role_assignment(current_item.object_id, assignment, identity)
+
+    def _skip_unmatched_item_removal(
+        self,
+        item_type: str,
+        current_detail: FabricWorkspaceItemRbacDetail,
+        workspace_role_object_ids: set[str],
+    ) -> bool:
+        if item_type == CicdArtifactType.APP_BACKEND.value and current_detail.access_source is not None:
+            self.logger.info(f"Skipping removal of inherited AppBackend assignment for {current_detail.given_name} " f"({current_detail.object_id}) because it has an accessSource")
+            return True
+
+        if item_type == CicdArtifactType.SEMANTIC_MODEL.value and current_detail.object_id in workspace_role_object_ids:
+            self.logger.info(f"Skipping removal of inherited SemanticModel assignment for {current_detail.given_name} " f"({current_detail.object_id}) because the principal has a workspace role")
+            return True
+
+        return False
 
     def _artifact_permissions_match(self, current_artifact_permissions: int | None, desired_artifact_permissions: int | None) -> bool:
         current_val = current_artifact_permissions if current_artifact_permissions is not None else 0

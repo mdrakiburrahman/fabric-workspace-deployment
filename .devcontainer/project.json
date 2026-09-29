@@ -35,7 +35,7 @@
         "typecheck"
       ],
       "options": {
-        "command": "npx --no-install devcontainer exec --workspace-folder . npx --no-install nx run fabric-workspace-deployment:verify",
+        "command": "npx --no-install devcontainer exec --workspace-folder . npx --no-install nx run fabric-workspace-deployment:test",
         "cwd": "."
       }
     },
