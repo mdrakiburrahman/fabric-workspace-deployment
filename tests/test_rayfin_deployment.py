@@ -301,11 +301,12 @@ def test_successful_deployment_generates_configs_verifies_and_cleans_staging(tmp
     assert "allowedRedirectUris" not in docker_cli.generated_rayfin_yaml["services"]["auth"]
     assert docker_cli.generated_rayfin_yaml["services"]["staticHosting"]["buildCommand"] == "npm run build"
     assert "image: mcr.microsoft.com/azurelinux/base/nodejs:24" in docker_cli.compose_text
+    assert docker_cli.seeded_registry_seen is False
     assert not (app_root / "fabric.yaml").exists()
     assert not (app_root / "rayfin" / "rayfin.yml").exists()
     assert staging_root.exists()
     assert list(staging_root.iterdir()) == []
-    assert (state_root / "sales-insights" / WORKSPACE_ID / ".deployments.json").is_file()
+    assert not state_root.exists()
     assert fabric_cli.calls[0][0][1] == "Analytics.Workspace"
     assert fabric_cli.calls[1][0][1] == "Semantic Models.Workspace"
     assert fabric_cli.calls[2][0][1] == "Semantic Models.Workspace/Sales Model.SemanticModel"
@@ -362,7 +363,7 @@ def test_staging_copy_excludes_internal_fwd_directory_when_source_is_common_root
     internal_marker.parent.mkdir(parents=True)
     internal_marker.write_text("must not be copied", encoding="utf-8")
 
-    staging_path = manager._create_staging_tree(tmp_path, manifest, WORKSPACE_ID)
+    staging_path = manager._create_staging_tree(tmp_path, manifest)
 
     assert not (staging_path / ".fabric-workspace-deployment").exists()
 
@@ -380,7 +381,7 @@ def test_uses_azure_cli_token_when_rayfin_token_is_absent(tmp_path, monkeypatch)
     assert docker_cli.calls[0]["env"]["RAYFIN_TOKEN"] == "az-token"
 
 
-def test_seeds_persisted_registry_before_deployment(tmp_path, monkeypatch):
+def test_ignores_persisted_registry_before_deployment(tmp_path, monkeypatch):
     _write_app(tmp_path)
     state_root = tmp_path / "state"
     persisted_registry = state_root / "sales-insights" / WORKSPACE_ID / ".deployments.json"
@@ -392,7 +393,7 @@ def test_seeds_persisted_registry_before_deployment(tmp_path, monkeypatch):
 
     asyncio.run(manager.execute())
 
-    assert docker_cli.seeded_registry_seen is True
+    assert docker_cli.seeded_registry_seen is False
 
 
 def test_failure_retains_staging_with_generated_files_and_without_token(tmp_path, monkeypatch):
@@ -432,7 +433,7 @@ def test_version_mismatch_fails_before_rayfin_up_and_retains_staging(tmp_path, m
     assert len(list(staging_root.iterdir())) == 1
 
 
-def test_unhealthy_status_fails_after_persisting_registry(tmp_path, monkeypatch):
+def test_unhealthy_status_fails_without_persisting_registry(tmp_path, monkeypatch):
     _write_app(tmp_path)
     staging_root = tmp_path / "staging"
     state_root = tmp_path / "state"
@@ -443,7 +444,7 @@ def test_unhealthy_status_fails_after_persisting_registry(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="unhealthy deployment state"):
         asyncio.run(manager.execute())
 
-    assert (state_root / "sales-insights" / WORKSPACE_ID / ".deployments.json").is_file()
+    assert not state_root.exists()
     assert len(list(staging_root.iterdir())) == 1
 
 
@@ -471,7 +472,7 @@ def test_status_reported_data_disabled_fails_validation(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="up status reports managed data enabled=False"):
         asyncio.run(manager.execute())
 
-    assert (state_root / "sales-insights" / WORKSPACE_ID / ".deployments.json").is_file()
+    assert not state_root.exists()
     assert len(list(staging_root.iterdir())) == 1
 
 

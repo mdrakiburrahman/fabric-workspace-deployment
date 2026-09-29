@@ -150,12 +150,11 @@ By default, transient staging is created beneath the configured source root so D
 
 ```text
 <common.local.rootFolder>/.fabric-workspace-deployment/rayfin-staging/
-~/.fabric-workspace-deployment/rayfin-state/
 ```
 
 Add `.fabric-workspace-deployment/` to the consuming repository's `.gitignore`. FWD excludes that directory when copying an app into staging, including when the app root is the same as `common.local.rootFolder`, which prevents recursive staging copies.
 
-The Rayfin deployment registry is persisted under `rayfin-state` with owner-only permissions so later runs can reuse the same Fabric AppBackend without committing `rayfin/.deployments.json` to the app source. Successful runs remove the staged app directory; failed runs retain it beneath the source root for diagnostics.
+FWD never seeds or persists `rayfin/.deployments.json`. Every run starts without cached deployment state and resolves the AppBackend directly through Fabric. Successful runs remove the staged app directory; failed runs retain it beneath the source root for diagnostics.
 
 ## AppBackend RBAC
 
@@ -209,8 +208,7 @@ For each configured app, FWD:
 7. Verifies the local Rayfin CLI exact version.
 8. Runs canonical unattended `./node_modules/.bin/rayfin up --yes`, which confirms reuse of an existing AppBackend without prompting, deploys the app, and provisions/applies the managed MSSQL data schema when enabled.
 9. Loads `rayfin/.deployments.json`, validates the reported data-service state when present, and directly retrieves the recorded `fabricItemId` within the guarded workspace through Fabric API. Display names are not used for this assertion.
-10. Persists the verified deployment registry outside the app source.
-11. Runs `./node_modules/.bin/rayfin up status --json`, validating the reported data-service state when present.
+10. Runs `./node_modules/.bin/rayfin up status --json`, validating the reported data-service state when present.
 
 Successful runs remove their staging directory. Failed runs retain staging and log its path for diagnostics. Tokens are passed only in the process environment and are redacted from FWD environment and Docker command logs.
 

@@ -56,12 +56,11 @@ class RayfinDeploymentManager(RayfinManager):
         self.docker_cli = docker_cli
         self.manifest_loader = manifest_loader or RayfinManifestLoader()
         self.manifest_renderer = manifest_renderer or RayfinManifestRenderer()
+        del state_root
         configured_root = Path(common_params.local.root_folder).expanduser()
         if not configured_root.is_absolute():
             configured_root = Path.cwd() / configured_root
-        private_root = Path.home() / ".fabric-workspace-deployment"
         self.staging_root = staging_root or configured_root / ".fabric-workspace-deployment" / "rayfin-staging"
-        self.state_root = state_root or private_root / "rayfin-state"
 
     async def _execute(self) -> None:
         configured_workspaces = [(workspace_index, workspace) for workspace_index, workspace in enumerate(self.workspace_params) if workspace.rayfins]
@@ -89,7 +88,7 @@ class RayfinDeploymentManager(RayfinManager):
 
         staging_path: Path | None = None
         try:
-            staging_path = self._create_staging_tree(source_root, manifest, workspace_id)
+            staging_path = self._create_staging_tree(source_root, manifest)
             self.manifest_renderer.write_generated_files(staging_path, manifest, semantic_models)
             compose_path = self._write_compose_resource(staging_path)
             docker_env = self._build_docker_environment(staging_path, workspace_id, token)
@@ -121,7 +120,6 @@ class RayfinDeploymentManager(RayfinManager):
             deployment_record = self.manifest_loader.load_deployment_record(registry_path, workspace_id)
             self._assert_reported_data_state("Rayfin deployment registry", deployment_record.data_enabled, manifest.data.enabled)
             self._assert_fabric_item(workspace_id, deployment_record)
-            self._persist_deployment_registry(manifest, workspace_id, registry_path)
             self._assert_rayfin_status(compose_path, project_name, docker_env, manifest)
 
             shutil.rmtree(staging_path)
@@ -170,7 +168,7 @@ class RayfinDeploymentManager(RayfinManager):
         self.logger.debug(f"Environment variable '{RAYFIN_TOKEN_ENV_VAR}' is not set; acquiring a Fabric token through Azure CLI")
         return self.az_cli.get_access_token(self.common_params.scope.analysis_service)
 
-    def _create_staging_tree(self, source_root: Path, manifest: RayfinAppManifest, workspace_id: str) -> Path:
+    def _create_staging_tree(self, source_root: Path, manifest: RayfinAppManifest) -> Path:
         self._remove_stale_staging()
         self.staging_root.mkdir(parents=True, exist_ok=True)
         self.staging_root.chmod(0o700)
@@ -185,14 +183,6 @@ class RayfinDeploymentManager(RayfinManager):
                 shutil.rmtree(output_path)
             else:
                 output_path.unlink()
-
-        persisted_registry = self._state_registry_path(manifest, workspace_id)
-        if persisted_registry.is_file():
-            target_registry = staging_path / "rayfin" / RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME
-            target_registry.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(persisted_registry, target_registry)
-            target_registry.chmod(0o600)
-            self.logger.info(f"Seeded Rayfin deployment registry from {persisted_registry}")
 
         return staging_path
 
@@ -313,21 +303,6 @@ class RayfinDeploymentManager(RayfinManager):
             raise RuntimeError(f"Rayfin Fabric item assertion failed: registry item ID {deployment_record.fabric_item_id} does not match Fabric item ID {actual_item_id!r}")
         if not isinstance(actual_workspace_id, str) or actual_workspace_id.lower() != workspace_id.lower():
             raise RuntimeError(f"Rayfin Fabric item assertion failed: item {deployment_record.fabric_item_id} belongs to workspace {actual_workspace_id!r}, expected {workspace_id}")
-
-    def _persist_deployment_registry(self, manifest: RayfinAppManifest, workspace_id: str, registry_path: Path) -> None:
-        state_registry_path = self._state_registry_path(manifest, workspace_id)
-        state_registry_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_root.chmod(0o700)
-        (self.state_root / manifest.app.id).chmod(0o700)
-        state_registry_path.parent.chmod(0o700)
-        temporary_path = state_registry_path.with_suffix(".json.new")
-        shutil.copy2(registry_path, temporary_path)
-        temporary_path.chmod(0o600)
-        temporary_path.replace(state_registry_path)
-        self.logger.info(f"Persisted Rayfin deployment registry outside the app source at {state_registry_path}")
-
-    def _state_registry_path(self, manifest: RayfinAppManifest, workspace_id: str) -> Path:
-        return self.state_root / manifest.app.id / workspace_id.lower() / RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME
 
     def _parse_guid(self, output: str, description: str) -> str:
         value = output.strip().lstrip("* ").strip()
