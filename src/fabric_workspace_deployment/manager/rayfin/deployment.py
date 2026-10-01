@@ -107,11 +107,14 @@ class RayfinDeploymentManager(RayfinManager):
             self._assert_local_rayfin_version(compose_path, project_name, docker_env, manifest)
 
             self.logger.info(f"Deploying Rayfin app '{manifest.app.name}' from {config_path} to parent workspace '{workspace.name}'")
+            deploy_command = ["./node_modules/.bin/rayfin", "up", "--yes"]
+            if params.force:
+                deploy_command.append("--force")
             self.docker_cli.compose_run(
                 compose_path,
                 project_name,
                 RAYFIN_COMPOSE_SERVICE_NAME,
-                ["./node_modules/.bin/rayfin", "up", "--yes"],
+                deploy_command,
                 timeout=RAYFIN_DEPLOY_TIMEOUT_SECONDS,
                 env=docker_env,
             )

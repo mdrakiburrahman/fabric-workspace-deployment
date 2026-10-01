@@ -1551,6 +1551,7 @@ class RayfinParams:
 
     root_path: str
     semantic_models: dict[str, RayfinSemanticModelParams]
+    force: bool = False
 
 
 @dataclass
@@ -4160,8 +4161,9 @@ class OperationParams:
                 raise ValueError(f"{config_path}[{index}] must be a JSON object")
 
             expected_keys = {"rootPath", "semanticModels"}
+            allowed_keys = expected_keys | {"force"}
             missing_keys = expected_keys - set(item)
-            unexpected_keys = set(item) - expected_keys
+            unexpected_keys = set(item) - allowed_keys
             if missing_keys or unexpected_keys:
                 raise ValueError(f"{config_path}[{index}] has invalid fields: missing={sorted(missing_keys)}, unexpected={sorted(unexpected_keys)}")
 
@@ -4171,6 +4173,9 @@ class OperationParams:
             root_path = item["rootPath"]
             if not isinstance(root_path, str):
                 raise ValueError(f"{config_path}[{index}].rootPath must be a string")
+            force = item.get("force", False)
+            if not isinstance(force, bool):
+                raise ValueError(f"{config_path}[{index}].force must be a boolean")
 
             parsed_semantic_models: dict[str, RayfinSemanticModelParams] = {}
             for alias, semantic_model_data in semantic_models.items():
@@ -4209,6 +4214,7 @@ class OperationParams:
                 RayfinParams(
                     root_path=root_path.strip(),
                     semantic_models=parsed_semantic_models,
+                    force=force,
                 )
             )
         return params

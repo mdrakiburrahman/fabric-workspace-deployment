@@ -29,6 +29,7 @@ Add an optional `rayfins` list to each parent entry in `common.fabric.workspaces
           "rayfins": [
             {
               "rootPath": "apps/sales-insights",
+              "force": false,
               "semanticModels": {
                 "sales": {
                   "itemName": "Sales Model"
@@ -49,10 +50,11 @@ Add an optional `rayfins` list to each parent entry in `common.fabric.workspaces
 
 Each Rayfin entry inherits its deployment workspace from the parent workspace's `name` and has exactly these fields:
 
-| Field            | Type   | Meaning                                                                                                                                                                                                                                                                              |
-| ---------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `rootPath`       | string | App root relative to `common.local.rootFolder`. The resolved path must remain under that root. Root paths must be unique across every workspace in the configuration.                                                                                                                 |
-| `semanticModels` | object | Mapping from app connection alias to a binding containing required `itemName` and optional `workspaceName`. When `workspaceName` is omitted, the semantic model is resolved in the parent workspace; an explicit value preserves cross-workspace resolution. Empty mappings are allowed. |
+| Field            | Type    | Meaning                                                                                                                                                                                                                                                                              |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rootPath`       | string  | App root relative to `common.local.rootFolder`. The resolved path must remain under that root. Root paths must be unique across every workspace in the configuration.                                                                                                                 |
+| `force`          | boolean | Optional, defaults to `false`. When `true`, FWD passes Rayfin's `--force` flag to allow destructive managed-data schema migrations that may result in data loss.                                                                                                                       |
+| `semanticModels` | object  | Mapping from app connection alias to a binding containing required `itemName` and optional `workspaceName`. When `workspaceName` is omitted, the semantic model is resolved in the parent workspace; an explicit value preserves cross-workspace resolution. Empty mappings are allowed. |
 
 Each semantic-model binding supports these fields:
 
@@ -206,7 +208,7 @@ For each configured app, FWD:
 5. Injects `RAYFIN_TOKEN`, the resolved `RAYFIN_WORKSPACE_ID`, and `RAYFIN_TENANT_ID` into the Compose service.
 6. Runs `npm ci`.
 7. Verifies the local Rayfin CLI exact version.
-8. Runs canonical unattended `./node_modules/.bin/rayfin up --yes`, which confirms reuse of an existing AppBackend without prompting, deploys the app, and provisions/applies the managed MSSQL data schema when enabled.
+8. Runs canonical unattended `./node_modules/.bin/rayfin up --yes`, adding `--force` only when the workspace-scoped Rayfin binding explicitly sets `force: true`. This confirms reuse of an existing AppBackend without prompting, deploys the app, and provisions/applies the managed MSSQL data schema when enabled.
 9. Loads `rayfin/.deployments.json`, validates the reported data-service state when present, and directly retrieves the recorded `fabricItemId` within the guarded workspace through Fabric API. Display names are not used for this assertion.
 10. Runs `./node_modules/.bin/rayfin up status --json`, validating the reported data-service state when present.
 
