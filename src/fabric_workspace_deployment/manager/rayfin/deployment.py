@@ -91,7 +91,7 @@ class RayfinDeploymentManager(RayfinManager):
             staging_path = self._create_staging_tree(source_root, manifest)
             self.manifest_renderer.write_generated_files(staging_path, manifest, semantic_models)
             compose_path = self._write_compose_resource(staging_path)
-            docker_env = self._build_docker_environment(staging_path, workspace_id, token)
+            docker_env = self._build_docker_environment(self.docker_cli.resolve_daemon_path(staging_path), workspace_id, token)
             project_name = self._build_compose_project_name(manifest)
 
             self.logger.info(f"Installing Rayfin app dependencies for '{manifest.app.name}' configured at {config_path} with npm ci")

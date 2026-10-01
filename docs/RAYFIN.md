@@ -212,4 +212,6 @@ For each configured app, FWD:
 
 Successful runs remove their staging directory. Failed runs retain staging and log its path for diagnostics. Tokens are passed only in the process environment and are redacted from FWD environment and Docker command logs.
 
+When FWD itself runs in a container against a Docker daemon outside that container, it resolves the staging directory through the current container's Docker mount metadata before creating the Rayfin bind mount. This supports bind mounts and Docker volumes without runner-specific path assumptions. The staging root must be under a mount exported to the active daemon; otherwise deployment fails before `npm ci` with an actionable path error.
+
 The packaged Compose service remains Node-only (`mcr.microsoft.com/azurelinux/base/nodejs:24`). FWD does not add or operate a separate SQL Docker service; managed SQL provisioning belongs to Rayfin and Microsoft Fabric.

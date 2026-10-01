@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import json
 import logging
 import subprocess
 
@@ -67,3 +68,64 @@ def test_failure_redacts_token_from_logs_and_exception(monkeypatch, caplog):
     assert "secret-token" not in str(exc_info.value)
     assert "secret-token" not in caplog.text
     assert "******" in caplog.text
+
+
+def test_resolve_daemon_path_returns_resolved_path_outside_container(monkeypatch, tmp_path):
+    docker_cli = DockerCli()
+    monkeypatch.setattr(docker_cli, "_is_containerized", lambda: False)
+
+    assert docker_cli.resolve_daemon_path(tmp_path / ".." / tmp_path.name) == tmp_path.resolve()
+
+
+def test_resolve_daemon_path_uses_longest_matching_mount(monkeypatch):
+    docker_cli = DockerCli()
+    monkeypatch.setattr(docker_cli, "_is_containerized", lambda: True)
+    monkeypatch.setattr(
+        docker_cli,
+        "_current_container_mounts",
+        lambda: [
+            {"Type": "bind", "Source": "/host/work", "Destination": "/work"},
+            {"Type": "volume", "Source": "/var/lib/docker/volumes/repo/_data", "Destination": "/work/repo"},
+        ],
+    )
+
+    assert docker_cli.resolve_daemon_path(Path("/work/repo/staging/app")) == Path("/var/lib/docker/volumes/repo/_data/staging/app")
+
+
+def test_resolve_daemon_path_keeps_path_when_current_container_is_not_visible(monkeypatch, tmp_path):
+    docker_cli = DockerCli()
+    monkeypatch.setattr(docker_cli, "_is_containerized", lambda: True)
+    monkeypatch.setattr(docker_cli, "_current_container_mounts", lambda: None)
+
+    assert docker_cli.resolve_daemon_path(tmp_path) == tmp_path.resolve()
+
+
+def test_resolve_daemon_path_rejects_path_outside_exported_mounts(monkeypatch):
+    docker_cli = DockerCli()
+    monkeypatch.setattr(docker_cli, "_is_containerized", lambda: True)
+    monkeypatch.setattr(docker_cli, "_current_container_mounts", lambda: [{"Type": "bind", "Source": "/host/work", "Destination": "/work"}])
+
+    with pytest.raises(DockerCliError, match="not under a mount exposed"):
+        docker_cli.resolve_daemon_path(Path("/tmp/staging/app"))
+
+
+def test_current_container_mounts_uses_first_visible_candidate(monkeypatch):
+    docker_cli = DockerCli()
+    calls = []
+    expected_mounts = [{"Type": "bind", "Source": "/host/work", "Destination": "/work"}]
+
+    monkeypatch.setattr(docker_cli, "_current_container_candidates", lambda: ["missing", "current"])
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "missing":
+            raise DockerCliError("not found")
+        return json.dumps(expected_mounts), ""
+
+    monkeypatch.setattr(docker_cli, "run", fake_run)
+
+    assert docker_cli._current_container_mounts() == expected_mounts
+    assert calls == [
+        ["inspect", "missing", "--format", "{{json .Mounts}}"],
+        ["inspect", "current", "--format", "{{json .Mounts}}"],
+    ]

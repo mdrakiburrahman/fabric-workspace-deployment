@@ -160,6 +160,9 @@ class FakeDockerCli:
         self.compose_text = None
         self.seeded_registry_seen = False
 
+    def resolve_daemon_path(self, path):
+        return Path(path)
+
     def compose_run(self, compose_file, project_name, service, command, *, timeout=None, env=None):
         command = list(command)
         env = dict(env or {})
