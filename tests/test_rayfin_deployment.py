@@ -160,6 +160,9 @@ class FakeDockerCli:
         self.compose_text = None
         self.seeded_registry_seen = False
 
+    def resolve_daemon_path(self, path):
+        return Path(path)
+
     def compose_run(self, compose_file, project_name, service, command, *, timeout=None, env=None):
         command = list(command)
         env = dict(env or {})
@@ -186,7 +189,7 @@ class FakeDockerCli:
 
         if command == ["./node_modules/.bin/rayfin", "--version"]:
             return f"@microsoft/rayfin-cli {self.version}\n", ""
-        if command == ["./node_modules/.bin/rayfin", "up", "--yes"]:
+        if command in (["./node_modules/.bin/rayfin", "up", "--yes"], ["./node_modules/.bin/rayfin", "up", "--yes", "--force"]):
             registry_path = staging_root / "rayfin" / ".deployments.json"
             registry_path.parent.mkdir(parents=True, exist_ok=True)
             deployment_record = {
@@ -347,6 +350,31 @@ def test_omitted_semantic_model_workspace_inherits_parent_workspace(tmp_path, mo
         "Analytics.Workspace",
         "Analytics.Workspace/Sales Model.SemanticModel",
     ]
+
+
+def test_force_binding_enables_destructive_schema_migrations(tmp_path, monkeypatch):
+    _write_app(tmp_path)
+    docker_cli = FakeDockerCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    manager = _manager(
+        tmp_path,
+        tmp_path / "staging",
+        tmp_path / "state",
+        docker_cli=docker_cli,
+        rayfin_params=[
+            RayfinParams(
+                root_path="apps/sales",
+                semantic_models={
+                    "sales": RayfinSemanticModelParams(item_name="Sales Model"),
+                },
+                force=True,
+            )
+        ],
+    )
+
+    asyncio.run(manager.execute())
+
+    assert ["./node_modules/.bin/rayfin", "up", "--yes", "--force"] in [call["command"] for call in docker_cli.calls]
 
 
 def test_default_staging_root_is_beneath_common_local_root(tmp_path):

@@ -348,7 +348,7 @@ class FabricRbacManager(RbacManager):
 
     async def get_fabric_model_rbac_info(self, model_id: int) -> FabricWorkspaceItemRbacInfo:
         self.logger.info(f"Getting SemanticModel RBAC info for internal model id {model_id}")
-        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service, force_run_az=True)
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service)
         try:
             response = self.http_retry.execute(
                 requests.get,
@@ -428,7 +428,7 @@ class FabricRbacManager(RbacManager):
     async def update_model_role_assignment(self, model_id: int, assignment: ItemRbacDetailParams, identity: Identity) -> None:
         is_service_principal = identity.principal_type == PrincipalType.SERVICE_PRINCIPAL
         is_group = identity.principal_type == PrincipalType.GROUP
-        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service, force_run_az=True)
+        access_token = self.az_cli.get_access_token(self.common_params.scope.analysis_service)
 
         model_data = {
             "id": model_id,

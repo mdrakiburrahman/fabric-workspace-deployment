@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
+import json
 import logging
 import os
+import re
 import subprocess
 
 from pathlib import Path
@@ -21,6 +23,8 @@ class DockerCliError(RuntimeError):
 
 class DockerCli:
     """Small, mockable wrapper around Docker Compose."""
+
+    _CONTAINER_ID_PATTERN = re.compile(r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])")
 
     def __init__(self, *, logger: logging.Logger | None = None):
         self.logger = logger or logging.getLogger(__name__)
@@ -79,6 +83,70 @@ class DockerCli:
             timeout=timeout,
             env=env,
         )
+
+    def resolve_daemon_path(self, path: Path) -> Path:
+        """Return the Docker daemon-visible path for a path in the current process."""
+        resolved_path = path.resolve()
+        if not self._is_containerized():
+            return resolved_path
+
+        mounts = self._current_container_mounts()
+        if mounts is None:
+            self.logger.debug("Current container is not visible to the active Docker daemon; using caller-visible path %s", resolved_path)
+            return resolved_path
+
+        matches = []
+        for mount in mounts:
+            destination = mount.get("Destination")
+            source = mount.get("Source")
+            if not isinstance(destination, str) or not isinstance(source, str) or not destination or not source:
+                continue
+            destination_path = Path(destination)
+            try:
+                relative_path = resolved_path.relative_to(destination_path)
+            except ValueError:
+                continue
+            matches.append((len(destination_path.parts), Path(source) / relative_path))
+
+        if not matches:
+            raise DockerCliError(f"Path '{resolved_path}' is inside the current container but is not under a mount exposed to the active Docker daemon. Configure the staging root on a bind mount or Docker volume.")
+
+        daemon_path = max(matches, key=lambda match: match[0])[1]
+        self.logger.debug("Translated caller-visible Docker path %s to daemon-visible path %s", resolved_path, daemon_path)
+        return daemon_path
+
+    def _is_containerized(self) -> bool:
+        return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+    def _current_container_mounts(self) -> list[dict[str, object]] | None:
+        for container_id in self._current_container_candidates():
+            try:
+                stdout, _ = self.run(["inspect", container_id, "--format", "{{json .Mounts}}"], timeout=30)
+            except DockerCliError:
+                continue
+            try:
+                mounts = json.loads(stdout)
+            except json.JSONDecodeError as e:
+                raise DockerCliError(f"Docker inspect returned invalid mount metadata for current container '{container_id}'") from e
+            if not isinstance(mounts, list):
+                raise DockerCliError(f"Docker inspect returned invalid mount metadata for current container '{container_id}'")
+            return mounts
+        return None
+
+    def _current_container_candidates(self) -> list[str]:
+        candidates = []
+        hostname = os.getenv("HOSTNAME", "").strip()
+        if hostname:
+            candidates.append(hostname)
+
+        for metadata_path in (Path("/proc/self/cgroup"), Path("/proc/self/mountinfo")):
+            try:
+                metadata = metadata_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            candidates.extend(self._CONTAINER_ID_PATTERN.findall(metadata))
+
+        return list(dict.fromkeys(candidates))
 
     def _redact(self, value: str | bytes, env: dict[str, str] | None) -> str:
         text = value.decode(errors="replace") if isinstance(value, bytes) else value

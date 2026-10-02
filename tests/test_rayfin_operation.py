@@ -139,6 +139,7 @@ def test_parse_rayfin_binding(tmp_path):
         [
             {
                 "rootPath": "apps/sales",
+                "force": True,
                 "semanticModels": {
                     "sales": {
                         "workspaceName": "Semantic Models",
@@ -154,6 +155,7 @@ def test_parse_rayfin_binding(tmp_path):
     )
 
     assert result[0].root_path == "apps/sales"
+    assert result[0].force is True
     assert result[0].semantic_models == {
         "sales": RayfinSemanticModelParams(
             workspace_name="Semantic Models",
@@ -171,6 +173,22 @@ def test_parse_rejects_non_list_rayfins_config(tmp_path, value):
 
     with pytest.raises(ValueError, match=r"common\.fabric\.workspaces\[4\]\.rayfins must be a list"):
         params._parse_rayfin_params(value, 4)
+
+
+def test_parse_rejects_non_boolean_force(tmp_path):
+    params = _operation_params_for_private_methods(tmp_path)
+
+    with pytest.raises(ValueError, match=r"common\.fabric\.workspaces\[0\]\.rayfins\[0\]\.force must be a boolean"):
+        params._parse_rayfin_params(
+            [
+                {
+                    "rootPath": "apps/sales",
+                    "force": "true",
+                    "semanticModels": {},
+                }
+            ],
+            0,
+        )
 
 
 def test_rejects_obsolete_common_fabric_rayfins(tmp_path):
