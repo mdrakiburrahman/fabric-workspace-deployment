@@ -26,6 +26,7 @@ from typing import Any, ClassVar, final
 from PIL import Image
 from fabric_workspace_deployment.environment_variables import FAB_TOKEN_GRAPH_ENV_VAR, GIT_ROOT_ENV_VAR, MANAGER_SKIP_ENABLED_VALUE, SKIP_ALERT_DEPLOYMENT_ENV_VAR, SKIP_ENTITLEMENT_CHECK_ENV_VAR, SKIP_FABRIC_CAPACITY_DEPLOYMENT_ENV_VAR, SKIP_FABRIC_WORKSPACE_DEPLOYMENT_ENV_VAR, SKIP_GIT_LINK_DEPLOYMENT_ENV_VAR, SKIP_MODEL_DEPLOYMENT_ENV_VAR, SKIP_MONITORING_DEPLOYMENT_ENV_VAR, SKIP_RBAC_DEPLOYMENT_ENV_VAR, SKIP_SEED_DEPLOYMENT_ENV_VAR, SKIP_SHORTCUT_DEPLOYMENT_ENV_VAR, SKIP_SPARK_DEPLOYMENT_ENV_VAR, SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR, UNIQUE_ENV_ID_ENV_VAR, USER_APP_ID_ENV_VAR, USER_DISPLAY_NAME_ENV_VAR, USER_OBJECT_ID_ENV_VAR, USER_PRINCIPAL_TYPE_ENV_VAR
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.environment_variables import SKIP_GATEWAY_DEPLOYMENT_ENV_VAR
 from fabric_workspace_deployment.rayfin.manifest import RAYFIN_MANIFEST_FILE_NAME, RayfinManifestLoader
 
 # ---------------------------------------------------------------------------- #
@@ -112,7 +113,7 @@ class HttpRetryHandler:
         self.retryable_status_codes = retryable_status_codes
         self.logger = logger or logging.getLogger(__name__)
 
-    def execute(self, func: Callable, *args, **kwargs) -> requests.Response:
+    def execute(self, func: Callable, *args, safe_log_context: str | None = None, **kwargs) -> requests.Response:
         """
         Execute an HTTP request with retry logic.
 
@@ -128,6 +129,7 @@ class HttpRetryHandler:
             The last exception encountered if all retries are exhausted
         """
         last_exception = None
+        target = safe_log_context or (args[0] if args else "unknown URL")
 
         for attempt in range(1, self.max_attempts + 1):
 
@@ -139,16 +141,23 @@ class HttpRetryHandler:
             except requests.exceptions.HTTPError as e:
                 last_exception = e
                 if e.response is None or e.response.status_code not in self.retryable_status_codes:
+                    if safe_log_context:
+                        status = e.response.status_code if e.response is not None else "unknown"
+                        self.logger.debug(f"{safe_log_context}: HTTP {status}")
+                        raise RuntimeError(f"{safe_log_context}: HTTP {status}") from None
                     self.logger.debug(f"Non-retryable HTTP error response: {e.response.text if e.response else 'No response'}")
                     raise
 
                 if attempt >= self.max_attempts:
+                    if safe_log_context:
+                        self.logger.error(f"{safe_log_context}: HTTP {e.response.status_code}; retry attempts exhausted")
+                        raise RuntimeError(f"{safe_log_context}: HTTP {e.response.status_code}; retry attempts exhausted") from None
                     self.logger.error(f"Max retry attempts ({self.max_attempts}) exhausted for {func.__name__} " f"to {args[0] if args else 'unknown URL'}. Last error: {e}")
                     raise
 
                 delay = self._calculate_delay(attempt)
 
-                self.logger.warning(f"HTTP {e.response.status_code} error on attempt {attempt}/{self.max_attempts} " f"for {func.__name__} to {args[0] if args else 'unknown URL'}. " f"Retrying in {delay:.2f}s...")
+                self.logger.warning(f"HTTP {e.response.status_code} error on attempt {attempt}/{self.max_attempts} " f"for {func.__name__} to {target}. " f"Retrying in {delay:.2f}s...")
 
                 time.sleep(delay)
 
@@ -156,14 +165,22 @@ class HttpRetryHandler:
                 last_exception = e
 
                 if attempt >= self.max_attempts:
+                    if safe_log_context:
+                        self.logger.error(f"{safe_log_context}: {type(e).__name__}; retry attempts exhausted")
+                        raise RuntimeError(f"{safe_log_context}: {type(e).__name__}; retry attempts exhausted") from None
                     self.logger.error(f"Max retry attempts ({self.max_attempts}) exhausted for {func.__name__} " f"to {args[0] if args else 'unknown URL'}. Last error: {e}")
                     raise
 
                 delay = self._calculate_delay(attempt)
 
-                self.logger.warning(f"Network error ({type(e).__name__}) on attempt {attempt}/{self.max_attempts} " f"for {func.__name__} to {args[0] if args else 'unknown URL'}. " f"Retrying in {delay:.2f}s...")
+                self.logger.warning(f"Network error ({type(e).__name__}) on attempt {attempt}/{self.max_attempts} " f"for {func.__name__} to {target}. " f"Retrying in {delay:.2f}s...")
 
                 time.sleep(delay)
+
+            except requests.exceptions.RequestException as e:
+                if safe_log_context:
+                    raise RuntimeError(f"{safe_log_context}: {type(e).__name__}") from None
+                raise
 
         if last_exception:
             raise last_exception
@@ -197,6 +214,7 @@ class Operation(Enum):
     DEPLOY_FABRIC_CAPACITY = "deployFabricCapacity"
     DEPLOY_FABRIC_WORKSPACE = "deployFabricWorkspace"
     DEPLOY_GIT_LINK = "deployGitLink"
+    DEPLOY_GATEWAY = "deployGateway"
     DEPLOY_MODEL = "deployModel"
     DEPLOY_MONITORING = "deployMonitoring"
     DEPLOY_RBAC = "deployRbac"
@@ -214,6 +232,13 @@ class PrincipalType(Enum):
     GROUP = "Group"
     USER = "User"
     SERVICE_PRINCIPAL = "ServicePrincipal"
+
+
+class GatewayRole(Enum):
+    """Supported gateway connection roles."""
+
+    OWNER = "Owner"
+    USER = "User"
 
 
 class EntitlementMatchMode(Enum):
@@ -1051,6 +1076,117 @@ class Identity:
     principal_type: PrincipalType
     aad_app_id: str | None = None
     fabric_principal_id: int | None = None
+    user_principal_name: str | None = None
+
+
+@dataclass
+class GatewayUserParams:
+    """Desired access for a named identity."""
+
+    identity: str
+    role: GatewayRole
+    datasource_access_right: str
+
+
+@dataclass
+class GatewayParams:
+    """An existing, independently managed gateway/cloud connection."""
+
+    name: str
+    connection_id: str
+    gateway_cluster_id: str
+    display_name: str
+    users: list[GatewayUserParams]
+    dry_run: bool = False
+
+
+@dataclass
+class GatewayConnection:
+    """Connection inventory returned by Power BI."""
+
+    id: str
+    cluster_id: str
+    datasource_name: str
+
+
+@dataclass
+class GatewayUser:
+    """A current or hydrated desired direct connection assignment."""
+
+    identifier: str
+    principal_type: str
+    role: str
+    datasource_access_right: str
+    object_id: str | None = None
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.principal_type.casefold(), self.identifier.casefold()
+
+    @property
+    def permission(self) -> tuple[str, str]:
+        return self.role, self.datasource_access_right
+
+
+@dataclass
+class ModelConnectionParams:
+    """A model datasource moniker referencing a declared connection."""
+
+    moniker: str
+    gateway: str
+
+
+@dataclass
+class ModelDatasourceBinding:
+    """Current binding and candidates for one datasource moniker."""
+
+    moniker: str
+    gateway_ids: frozenset[str]
+    connection_ids: frozenset[str]
+    candidate_ids: frozenset[str]
+
+
+@dataclass
+class ModelDatasourceCandidate:
+    """The cluster associated with an available connection."""
+
+    connection_id: str
+    gateway_cluster_id: str
+
+
+@dataclass
+class ModelBindingState:
+    """Model datasource metadata."""
+
+    monikers: list[ModelDatasourceBinding]
+    datasources: list[ModelDatasourceCandidate]
+
+
+@dataclass
+class RlsMember:
+    """A membership identifier and its original removal payload."""
+
+    object_id: str
+    data: dict[str, Any]
+
+
+@dataclass
+class RlsRoleMembership:
+    """Current membership of an existing role."""
+
+    id: int
+    name: str
+    members: list[RlsMember]
+
+
+@dataclass
+class RlsRoleDelta:
+    """Only the additions/removals for a configured role."""
+
+    id: int
+    name: str
+    added_members: list[dict[str, Any]]
+    removed_members: list[dict[str, Any]]
 
 
 @dataclass
@@ -1130,6 +1266,9 @@ class ModelParams:
 
     display_name: str
     direct_lake_auto_sync: bool
+    connections: list[ModelConnectionParams] = field(default_factory=list)
+    security: dict[str, list[str]] = field(default_factory=dict)
+    dry_run: bool = False
 
 
 @dataclass
@@ -1560,6 +1699,13 @@ class FabricParams:
 
     workspaces: list[FabricWorkspaceParams]
     storages: list[FabricStorageParams]
+    gateways: list[GatewayParams] = field(default_factory=list)
+
+    def get_gateway_by_name(self, name: str) -> GatewayParams:
+        matches = [gateway for gateway in self.gateways if gateway.name == name]
+        if len(matches) != 1:
+            raise ValueError("Gateway reference must resolve to exactly one common.fabric.gateways entry")
+        return matches[0]
 
 
 @dataclass
@@ -1574,6 +1720,12 @@ class CommonParams:
     identities: list[Identity]
     contacts: dict[str, ContactDetail] | None = None
     entitlements: list[Entitlement] = field(default_factory=list)
+
+    def get_identity_by_given_name(self, name: str) -> Identity:
+        matches = [identity for identity in self.identities if identity.given_name == name]
+        if len(matches) != 1:
+            raise ValueError("Principal reference must resolve to exactly one common.identities entry")
+        return matches[0]
 
 
 # ---------------------------------------------------------------------------- #
@@ -1826,6 +1978,64 @@ class ModelManager(Manager):
         Raises:
             RuntimeError: If the API call fails
         """
+        pass
+
+
+class GatewayManager(Manager):
+    """Manage existing gateway/cloud connections independently of workspaces."""
+
+    skip_environment_variable = SKIP_GATEWAY_DEPLOYMENT_ENV_VAR
+
+    @abstractmethod
+    async def reconcile(self, gateway: GatewayParams) -> None:
+        pass
+
+
+class GatewayClient(ABC):
+    """Transport for existing connection inventory and direct access."""
+
+    @abstractmethod
+    async def get_connection(self, gateway: GatewayParams) -> GatewayConnection:
+        pass
+
+    @abstractmethod
+    async def list_users(self, gateway: GatewayParams) -> list[GatewayUser]:
+        pass
+
+    @abstractmethod
+    async def rename(self, gateway: GatewayParams) -> None:
+        pass
+
+    @abstractmethod
+    async def add_user(self, gateway: GatewayParams, user: GatewayUser) -> None:
+        pass
+
+    @abstractmethod
+    async def delete_user(self, gateway: GatewayParams, user: GatewayUser) -> None:
+        pass
+
+    @abstractmethod
+    def get_caller_identifiers(self) -> frozenset[str]:
+        pass
+
+
+class SemanticModelClient(ABC):
+    """Transport for model datasource bindings and RLS membership."""
+
+    @abstractmethod
+    async def get_bindings(self, model_id: int) -> ModelBindingState:
+        pass
+
+    @abstractmethod
+    async def bind(self, model_id: int, gateway_cluster_id: str, bindings: dict[str, str]) -> None:
+        pass
+
+    @abstractmethod
+    async def get_rls_membership(self, model_id: int) -> list[RlsRoleMembership]:
+        pass
+
+    @abstractmethod
+    async def update_rls_membership(self, model_id: int, deltas: list[RlsRoleDelta]) -> None:
         pass
 
 
@@ -3379,7 +3589,9 @@ class OperationParams:
 
     def _validate_fabric_params(self) -> bool:
         """Validate Fabric parameters."""
-        if not self.common.fabric.workspaces or len(self.common.fabric.workspaces) == 0:
+        if not self._validate_gateway_params():
+            return False
+        if not self.common.fabric.workspaces and self.operation != Operation.DEPLOY_GATEWAY:
             self.logger.error("At least one Fabric workspace must be configured")
             return False
 
@@ -3713,15 +3925,93 @@ class OperationParams:
         if len(models) == 0:
             return True
 
+        seen_names: set[str] = set()
         for j, model in enumerate(models):
+            path = f"common.fabric.workspaces[{workspace_index}].model[{j}]"
             if not model.display_name:
                 self.logger.error(f"Workspace model[{j}].displayName at index {workspace_index} cannot be empty")
                 return False
 
-            if model.direct_lake_auto_sync is None:
+            if model.display_name in seen_names:
+                self.logger.error(f"{path}.displayName must be unique within the workspace")
+                return False
+            seen_names.add(model.display_name)
+            if not isinstance(model.direct_lake_auto_sync, bool):
                 self.logger.error(f"Workspace model[{j}].directLakeAutoSync at index {workspace_index} cannot be None")
                 return False
+            if not isinstance(model.dry_run, bool):
+                self.logger.error(f"{path}.dryRun must be a boolean")
+                return False
+            seen_monikers: set[str] = set()
+            for k, connection in enumerate(model.connections):
+                connection_path = f"{path}.connections[{k}]"
+                if not self._is_valid_guid(connection.moniker) or connection.moniker.casefold() in seen_monikers:
+                    self.logger.error(f"{connection_path}.moniker must be a unique GUID")
+                    return False
+                seen_monikers.add(connection.moniker.casefold())
+                try:
+                    self.common.fabric.get_gateway_by_name(connection.gateway)
+                except ValueError:
+                    self.logger.error(f"{connection_path}.gateway must reference exactly one declared gateway")
+                    return False
+            for role_index, members in enumerate(model.security.values()):
+                if not self._validate_membership_identities(members, f"{path}.security role[{role_index}]"):
+                    return False
 
+        return True
+
+    def _validate_membership_identities(self, names: list[str], path: str) -> bool:
+        seen_ids: set[str] = set()
+        seen_upns: set[str] = set()
+        for index, name in enumerate(names):
+            member_path = f"{path}[{index}]"
+            try:
+                identity = self.common.get_identity_by_given_name(name)
+            except ValueError:
+                self.logger.error(f"{member_path} must reference exactly one common.identities entry")
+                return False
+            if identity.principal_type not in (PrincipalType.GROUP, PrincipalType.USER):
+                self.logger.error(f"{member_path} requires a Group or User identity")
+                return False
+            if not self._is_valid_guid(identity.object_id) or identity.object_id.casefold() in seen_ids:
+                self.logger.error(f"{member_path} requires a unique identity object GUID")
+                return False
+            seen_ids.add(identity.object_id.casefold())
+            if identity.principal_type == PrincipalType.USER:
+                upn = identity.user_principal_name
+                if not isinstance(upn, str) or not upn.strip() or "@" not in upn or upn.casefold() in seen_upns:
+                    self.logger.error(f"{member_path} requires a unique, non-empty userPrincipalName on its identity")
+                    return False
+                seen_upns.add(upn.casefold())
+        return True
+
+    def _validate_gateway_params(self) -> bool:
+        seen_names: set[str] = set()
+        seen_connections: set[str] = set()
+        for index, gateway in enumerate(self.common.fabric.gateways):
+            path = f"common.fabric.gateways[{index}]"
+            if not gateway.name or gateway.name in seen_names:
+                self.logger.error(f"{path}.name must be non-empty and unique")
+                return False
+            seen_names.add(gateway.name)
+            if not self._is_valid_guid(gateway.connection_id) or gateway.connection_id.casefold() in seen_connections:
+                self.logger.error(f"{path}.connectionId must be a unique GUID")
+                return False
+            seen_connections.add(gateway.connection_id.casefold())
+            if not self._is_valid_guid(gateway.gateway_cluster_id) or not gateway.display_name:
+                self.logger.error(f"{path} requires a gatewayClusterId GUID and displayName")
+                return False
+            if not isinstance(gateway.dry_run, bool):
+                self.logger.error(f"{path}.dryRun must be a boolean")
+                return False
+            if not any(user.role == GatewayRole.OWNER for user in gateway.users):
+                self.logger.error(f"{path}.users must contain at least one Owner")
+                return False
+            if any(user.role not in (GatewayRole.OWNER, GatewayRole.USER) or user.datasource_access_right != "Read" for user in gateway.users):
+                self.logger.error(f"{path}.users supports only Owner/User roles and Read datasourceAccessRight")
+                return False
+            if not self._validate_membership_identities([user.identity for user in gateway.users], f"{path}.users"):
+                return False
         return True
 
     def _validate_spark_job_definition_params(self, spark_job_definitions: list[SparkJobDefinition], workspace_index: int) -> bool:
@@ -4095,9 +4385,11 @@ class OperationParams:
             "Group": PrincipalType.GROUP,
             "User": PrincipalType.USER,
         }
-        if isinstance(principal_type_str, str):
-            return principal_type_mapping.get(principal_type_str, PrincipalType.USER)
-        return PrincipalType.USER
+        if principal_type_str is None:
+            return PrincipalType.USER
+        if not isinstance(principal_type_str, str) or principal_type_str not in principal_type_mapping:
+            raise ValueError("principalType must be Group, User, or ServicePrincipal")
+        return principal_type_mapping[principal_type_str]
 
     def _is_folder_empty(self, folder_path: str) -> bool:
         """Check if a folder is empty or doesn't exist."""
@@ -4291,7 +4583,47 @@ class OperationParams:
         return FabricParams(
             workspaces=self._parse_fabric_workspaces(data["workspaces"], root_folder),
             storages=[self._parse_fabric_storage_params(s) for s in data["storages"]],
+            gateways=self._parse_gateway_params(data.get("gateways", [])),
         )
+
+    def _config_string(self, data: dict[str, Any], key: str, path: str) -> str:
+        value = data.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{path}.{key} must be a non-empty string")
+        return value
+
+    def _parse_dry_run(self, data: dict[str, Any], path: str) -> bool:
+        value = data.get("dryRun", False)
+        if not isinstance(value, bool):
+            raise ValueError(f"{path}.dryRun must be a boolean")
+        return value
+
+    def _parse_gateway_params(self, data: Any) -> list[GatewayParams]:
+        path = "common.fabric.gateways"
+        if not isinstance(data, list):
+            raise ValueError(f"{path} must be an array")
+        gateways = []
+        for index, entry in enumerate(data):
+            entry_path = f"{path}[{index}]"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{entry_path} must be an object")
+            users_data = entry.get("users")
+            if not isinstance(users_data, list):
+                raise ValueError(f"{entry_path}.users must be an array")
+            users = []
+            for user_index, user_data in enumerate(users_data):
+                user_path = f"{entry_path}.users[{user_index}]"
+                if not isinstance(user_data, dict):
+                    raise ValueError(f"{user_path} must be an object")
+                role = self._config_string(user_data, "role", user_path)
+                if role not in (GatewayRole.OWNER.value, GatewayRole.USER.value):
+                    raise ValueError(f"{user_path}.role must be Owner or User")
+                access = self._config_string(user_data, "datasourceAccessRight", user_path)
+                if access != "Read":
+                    raise ValueError(f"{user_path}.datasourceAccessRight must be Read")
+                users.append(GatewayUserParams(self._config_string(user_data, "identity", user_path), GatewayRole(role), access))
+            gateways.append(GatewayParams(name=self._config_string(entry, "name", entry_path), connection_id=self._config_string(entry, "connectionId", entry_path), gateway_cluster_id=self._config_string(entry, "gatewayClusterId", entry_path), display_name=self._config_string(entry, "displayName", entry_path), users=users, dry_run=self._parse_dry_run(entry, entry_path)))
+        return gateways
 
     def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
         """Parse Fabric workspaces."""
@@ -4620,12 +4952,35 @@ class OperationParams:
 
     def _parse_model_params(self, data: list[dict[str, Any]]) -> list[ModelParams]:
         """Parse model parameters."""
+        if not isinstance(data, list):
+            raise ValueError("model must be an array")
         models = []
-        for model_data in data:
+        for model_index, model_data in enumerate(data):
+            path = f"model[{model_index}]"
+            if not isinstance(model_data, dict):
+                raise ValueError(f"{path} must be an object")
+            connections_data = model_data.get("connections", [])
+            if not isinstance(connections_data, list):
+                raise ValueError(f"{path}.connections must be an array")
+            connections = []
+            for index, connection in enumerate(connections_data):
+                connection_path = f"{path}.connections[{index}]"
+                if not isinstance(connection, dict):
+                    raise ValueError(f"{connection_path} must be an object")
+                connections.append(ModelConnectionParams(self._config_string(connection, "moniker", connection_path), self._config_string(connection, "gateway", connection_path)))
+            security = model_data.get("security", {})
+            if not isinstance(security, dict):
+                raise ValueError(f"{path}.security must be a role-to-identities object")
+            for role, members in security.items():
+                if not isinstance(role, str) or not role.strip() or not isinstance(members, list) or any(not isinstance(member, str) or not member.strip() for member in members):
+                    raise ValueError(f"{path}.security requires non-empty role names and arrays of identity names")
             models.append(
                 ModelParams(
                     display_name=model_data["displayName"],
                     direct_lake_auto_sync=model_data["directLakeAutoSync"],
+                    connections=connections,
+                    security=security,
+                    dry_run=self._parse_dry_run(model_data, path),
                 )
             )
         return models
@@ -4854,6 +5209,7 @@ class OperationParams:
             object_id=data["objectId"],
             principal_type=self._parse_principal_type(data),
             aad_app_id=data.get("aadAppId"),
+            user_principal_name=data.get("userPrincipalName"),
         )
 
     def _parse_workspace_rbac_params(self, data: dict[str, Any]) -> WorkspaceRbacParams:

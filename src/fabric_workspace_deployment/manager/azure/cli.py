@@ -3,12 +3,14 @@
 # SPDX-License-Identifier: MIT
 
 import base64
+import binascii
 import functools
 import json
 import logging
 import os
 import sys
 from subprocess import PIPE, Popen, TimeoutExpired
+from typing import Any
 
 from fabric_workspace_deployment.environment_variables import SCOPE_TOKEN_ENV_VARS
 
@@ -148,6 +150,21 @@ class AzCli:
 
         return token
 
+    def get_token_claims(self, scope: str, force_run_az: bool = False) -> dict[str, Any]:
+        """Read identity metadata from the same token selected for an API request."""
+        token = self.get_access_token(scope, force_run_az)
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise RuntimeError("Invalid JWT token format")
+        try:
+            payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+            claims = json.loads(payload)
+        except (ValueError, UnicodeError, binascii.Error):
+            raise RuntimeError("Invalid JWT token payload") from None
+        if not isinstance(claims, dict):
+            raise RuntimeError("JWT token payload must be an object")
+        return claims
+
     @functools.cache  # noqa: B019
     def get_claim(self, claim_name: str) -> str:
         """
@@ -230,13 +247,7 @@ class AzCli:
 
         """
         try:
-            token = self.get_access_token("https://analysis.windows.net/powerbi/api", True)
-            parts = token.split(".")
-            if len(parts) != 3:  # noqa: PLR2004
-                raise RuntimeError("Invalid JWT token format")  # noqa: EM101
-            payload = parts[1]
-            decoded_payload = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-            claims = json.loads(decoded_payload)
+            claims = self.get_token_claims("https://analysis.windows.net/powerbi/api", force_run_az=True)
             claim_value = claims.get(claim_name)
             if not claim_value:
                 raise RuntimeError(f"{claim_name} claim not found in token")  # noqa: EM101

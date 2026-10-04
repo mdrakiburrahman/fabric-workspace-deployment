@@ -8,6 +8,9 @@ import logging
 import requests
 from azure.core.credentials import TokenCredential
 from pathlib import Path
+from typing import Any
+
+from fabric_workspace_deployment.client.fabric_rest import response_guid, verify_reconciliation
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import (
@@ -15,10 +18,20 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     CicdArtifactType,
     CommonParams,
     FabricWorkspaceParams,
+    FabricFolderArtifact,
     FolderClient,
+    GatewayClient,
+    GatewayParams,
     HttpRetryHandler,
     ModelManager,
     ModelParams,
+    ModelConnectionParams,
+    ModelBindingState,
+    ModelDatasourceBinding,
+    PrincipalType,
+    RlsRoleDelta,
+    RlsRoleMembership,
+    SemanticModelClient,
     WorkspaceManager,
 )
 
@@ -37,6 +50,8 @@ class SemanticModelManager(ModelManager):
         folder_client: FolderClient,
         http_retry_handler: HttpRetryHandler,
         token_credential: TokenCredential,
+        gateway_client: GatewayClient,
+        semantic_model_client: SemanticModelClient,
     ):
         """
         Initialize the Fabric Model manager.
@@ -47,6 +62,8 @@ class SemanticModelManager(ModelManager):
         self.folder_client = folder_client
         self.http_retry = http_retry_handler
         self.token_credential = token_credential
+        self.gateway_client = gateway_client
+        self.semantic_model_client = semantic_model_client
 
     async def _execute(self) -> None:
         """
@@ -99,17 +116,51 @@ class SemanticModelManager(ModelManager):
         self.logger.info(f"Reconciling model '{model_params.display_name}' in workspace {workspace_id}")
 
         try:
+            bindings = [(connection, self.common_params.fabric.get_gateway_by_name(connection.gateway)) for connection in model_params.connections]
+            desired_security = {role: self._desired_rls_members(names) for role, names in model_params.security.items()}
+            for gateway in {gateway.connection_id.casefold(): gateway for _, gateway in bindings}.values():
+                await self.gateway_client.get_connection(gateway)
             folder_info = await self.folder_client.get_fabric_folder_collection(workspace_id)
             matching_model = self._find_model(folder_info.artifacts, model_params.display_name)
 
             if matching_model is None:
                 if workspace_params is None:
                     raise ValueError(f"Model '{model_params.display_name}' is missing and workspace deployment parameters were not provided")
+                if model_params.dry_run:
+                    self._get_model_source(workspace_params, model_params)
+                    self.logger.info("Model preview: would publish missing model; binding/RLS preflight deferred until it exists")
+                    return
                 await self._publish_missing_model(workspace_id, workspace_params, model_params)
                 matching_model = await self._wait_for_model(workspace_id, model_params.display_name)
 
+            binding_updates: dict[str, dict[str, str]] = {}
+            untouched_bindings: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+            if bindings:
+                binding_state = await self.semantic_model_client.get_bindings(matching_model.id)
+                binding_updates = self._plan_bindings(binding_state, bindings)
+                managed_monikers = {connection.moniker.casefold() for connection, _ in bindings}
+                untouched_bindings = {entry.moniker.casefold(): (entry.gateway_ids, entry.connection_ids) for entry in binding_state.monikers if entry.moniker.casefold() not in managed_monikers}
+            rls_deltas: list[RlsRoleDelta] = []
+            expected_rls: dict[int, tuple[str, frozenset[str]]] = {}
+            if desired_security:
+                roles = await self.semantic_model_client.get_rls_membership(matching_model.id)
+                rls_deltas = self._plan_rls(roles, desired_security)
+                expected_rls = {role.id: (role.name, frozenset(member.object_id.casefold() for member in role.members)) for role in roles}
+                for name, members in desired_security.items():
+                    role = self._find_role(roles, name)
+                    expected_rls[role.id] = (name, frozenset(members))
+            self.logger.info("Model plan: settings update, binding groups=%d, RLS role deltas=%d, dryRun=%s", len(binding_updates), len(rls_deltas), model_params.dry_run)
+            if model_params.dry_run:
+                return
             settings_data = f'{{"directLakeAutoSync":{str(model_params.direct_lake_auto_sync).lower()}}}'
             await self.set_model(str(matching_model.id), settings_data)
+            for cluster_id, monikers in binding_updates.items():
+                await self.semantic_model_client.bind(matching_model.id, cluster_id, monikers)
+            if binding_updates:
+                await verify_reconciliation(lambda: self.semantic_model_client.get_bindings(matching_model.id), lambda state: self._bindings_match(state, bindings, untouched_bindings), "Model binding reconciliation")
+            if rls_deltas:
+                await self.semantic_model_client.update_rls_membership(matching_model.id, rls_deltas)
+                await verify_reconciliation(lambda: self.semantic_model_client.get_rls_membership(matching_model.id), lambda state: self._rls_matches(state, expected_rls), "Model RLS reconciliation")
 
             self.logger.info(f"Successfully reconciled model '{model_params.display_name}' " f"with: {settings_data}")
 
@@ -118,10 +169,13 @@ class SemanticModelManager(ModelManager):
             self.logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    def _find_model(self, artifacts: list, display_name: str):
-        return next((artifact for artifact in artifacts if artifact.type_name == ArtifactType.MODEL.value and artifact.display_name == display_name), None)
+    def _find_model(self, artifacts: list[FabricFolderArtifact], display_name: str) -> FabricFolderArtifact | None:
+        matches = [artifact for artifact in artifacts if artifact.type_name == ArtifactType.MODEL.value and artifact.display_name == display_name]
+        if len(matches) > 1:
+            raise ValueError("Semantic model display name is ambiguous within the workspace")
+        return matches[0] if matches else None
 
-    async def _publish_missing_model(self, workspace_id: str, workspace_params: FabricWorkspaceParams, model_params: ModelParams) -> None:
+    def _get_model_source(self, workspace_params: FabricWorkspaceParams, model_params: ModelParams) -> Path:
         artifacts_root = self._get_artifacts_root(workspace_params)
         expected_directory_name = f"{model_params.display_name}.SemanticModel"
         matching_directories = sorted(path for path in artifacts_root.rglob(expected_directory_name) if path.is_dir())
@@ -130,6 +184,11 @@ class SemanticModelManager(ModelManager):
             raise FileNotFoundError(f"Semantic model source directory '{expected_directory_name}' was not found under {artifacts_root}")
         if len(matching_directories) > 1:
             raise ValueError(f"Multiple semantic model source directories named '{expected_directory_name}' were found under {artifacts_root}: {matching_directories}")
+        return matching_directories[0]
+
+    async def _publish_missing_model(self, workspace_id: str, workspace_params: FabricWorkspaceParams, model_params: ModelParams) -> None:
+        self._get_model_source(workspace_params, model_params)
+        artifacts_root = self._get_artifacts_root(workspace_params)
 
         import fabric_cicd
 
@@ -163,7 +222,7 @@ class SemanticModelManager(ModelManager):
             items_to_include=[item_name],
         )
 
-    async def _wait_for_model(self, workspace_id: str, display_name: str):
+    async def _wait_for_model(self, workspace_id: str, display_name: str) -> FabricFolderArtifact:
         for attempt in range(1, MODEL_PUBLISH_MAX_ATTEMPTS + 1):
             folder_info = await self.folder_client.get_fabric_folder_collection(workspace_id)
             matching_model = self._find_model(folder_info.artifacts, display_name)
@@ -175,6 +234,79 @@ class SemanticModelManager(ModelManager):
                 await asyncio.sleep(MODEL_PUBLISH_RETRY_DELAY_SECONDS)
 
         raise RuntimeError(f"Semantic model '{display_name}' was published but did not become available in workspace {workspace_id}")
+
+    def _find_moniker(self, state: ModelBindingState, moniker: str) -> ModelDatasourceBinding:
+        matches = [entry for entry in state.monikers if entry.moniker.casefold() == moniker.casefold()]
+        if len(matches) != 1:
+            raise ValueError("Configured model moniker is missing or ambiguous")
+        return matches[0]
+
+    def _plan_bindings(self, state: ModelBindingState, bindings: list[tuple[ModelConnectionParams, GatewayParams]]) -> dict[str, dict[str, str]]:
+        updates: dict[str, dict[str, str]] = {}
+        for index, (connection, gateway) in enumerate(bindings):
+            current = self._find_moniker(state, connection.moniker)
+            desired_id = gateway.connection_id.casefold()
+            cluster_id = gateway.gateway_cluster_id.casefold()
+            candidate_clusters = {entry.gateway_cluster_id.casefold() for entry in state.datasources if entry.connection_id.casefold() == desired_id}
+            if desired_id not in current.candidate_ids or candidate_clusters != {cluster_id}:
+                raise ValueError(f"Model connections[{index}]: desired connection is not a valid candidate for that moniker and cluster")
+            if current.gateway_ids != frozenset({cluster_id}) or current.connection_ids != frozenset({desired_id}):
+                updates.setdefault(cluster_id, {})[connection.moniker] = gateway.connection_id
+                self.logger.info("Model connections[%d]: current gateways=%s, connections=%s -> gateway=%s, connection=%s", index, sorted(current.gateway_ids), sorted(current.connection_ids), cluster_id, desired_id)
+        return updates
+
+    def _bindings_match(self, state: ModelBindingState, bindings: list[tuple[ModelConnectionParams, GatewayParams]], untouched: dict[str, tuple[frozenset[str], frozenset[str]]]) -> bool:
+        for connection, gateway in bindings:
+            current = self._find_moniker(state, connection.moniker)
+            if current.gateway_ids != frozenset({gateway.gateway_cluster_id.casefold()}) or current.connection_ids != frozenset({gateway.connection_id.casefold()}):
+                return False
+        for moniker, expected in untouched.items():
+            current = self._find_moniker(state, moniker)
+            if (current.gateway_ids, current.connection_ids) != expected:
+                return False
+        return True
+
+    def _desired_rls_members(self, names: list[str]) -> dict[str, dict[str, Any]]:
+        members: dict[str, dict[str, Any]] = {}
+        for index, name in enumerate(names):
+            identity = self.common_params.get_identity_by_given_name(name)
+            object_id = response_guid(identity.object_id, f"RLS desired members[{index}] objectId")
+            if object_id.casefold() in members:
+                raise ValueError("Configured RLS role contains duplicate desired principal IDs")
+            if identity.principal_type not in (PrincipalType.GROUP, PrincipalType.USER):
+                raise ValueError("RLS membership supports only Group and User identities")
+            is_group = identity.principal_type == PrincipalType.GROUP
+            if not is_group and (not identity.user_principal_name or "@" not in identity.user_principal_name):
+                raise ValueError("RLS User identities require userPrincipalName")
+            members[object_id.casefold()] = {"displayName": identity.given_name, "objectId": object_id, "userPrincipalName": None if is_group else identity.user_principal_name, "isSecurityGroup": is_group, "objectType": 2 if is_group else 1, "groupType": 1 if is_group else 0, "aadAppId": None, "emailAddress": None, "relevanceScore": None, "creatorObjectId": None}
+        return members
+
+    def _find_role(self, roles: list[RlsRoleMembership], name: str) -> RlsRoleMembership:
+        matches = [role for role in roles if role.name == name]
+        if len(matches) != 1:
+            raise ValueError("Configured RLS role is missing or ambiguous")
+        return matches[0]
+
+    def _plan_rls(self, roles: list[RlsRoleMembership], desired: dict[str, dict[str, dict[str, Any]]]) -> list[RlsRoleDelta]:
+        deltas = []
+        for index, (name, members) in enumerate(desired.items()):
+            role = self._find_role(roles, name)
+            current = {member.object_id.casefold(): member.data for member in role.members}
+            if len(current) != len(role.members):
+                raise ValueError("Current RLS role contains ambiguous principal IDs")
+            added = [members[object_id] for object_id in sorted(members.keys() - current.keys())]
+            removed = [current[object_id] for object_id in sorted(current.keys() - members.keys())]
+            self.logger.info("Model security role[%d]: add=%d, remove=%d", index, len(added), len(removed))
+            if added or removed:
+                deltas.append(RlsRoleDelta(role.id, role.name, added, removed))
+        return deltas
+
+    def _rls_matches(self, roles: list[RlsRoleMembership], expected: dict[int, tuple[str, frozenset[str]]]) -> bool:
+        for role_id, (name, members) in expected.items():
+            matches = [role for role in roles if role.id == role_id]
+            if len(matches) != 1 or matches[0].name != name or frozenset(member.object_id.casefold() for member in matches[0].members) != members:
+                return False
+        return True
 
     def _get_artifacts_root(self, workspace_params: FabricWorkspaceParams) -> Path:
         artifacts_root = Path(self.common_params.local.root_folder) / workspace_params.template.artifacts_folder
