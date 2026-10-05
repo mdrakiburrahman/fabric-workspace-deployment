@@ -36,10 +36,11 @@ def datasource_sql_identity(record: dict) -> frozenset[tuple[str, str]]:
             details = json.loads(details)
         except ValueError:
             raise RuntimeError("Datasource connectionDetails is not valid JSON") from None
-    source_type = record.get("dataSourceType", "SQL")
-    if not isinstance(source_type, str):
-        raise RuntimeError("Datasource dataSourceType must be a string")
-    if isinstance(details, dict) and source_type.casefold() == "sql":
+    source_type = record.get("dataSourceType", record.get("datasourceType"))
+    if source_type is not None and (isinstance(source_type, bool) or not isinstance(source_type, (str, int))):
+        raise RuntimeError("Datasource type marker must be a string, integer, or null")
+    accepts_sql_details = source_type is None or isinstance(source_type, int) or source_type.casefold() == "sql"
+    if isinstance(details, dict) and accepts_sql_details:
         server, database = details.get("server"), details.get("database")
         if isinstance(server, str) and isinstance(database, str) and server.strip() and database.strip():
             identities.add((normalize_sql_server(server), database.strip().casefold()))

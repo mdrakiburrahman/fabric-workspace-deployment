@@ -178,6 +178,26 @@ def test_binding_read_parses_sql_identity_from_all_supported_records(location, m
     assert state.monikers[0].sql_identities == frozenset({(SQL_SERVER, SQL_NAME.casefold())})
 
 
+@pytest.mark.parametrize("marker", [None, 0, 1, 7])
+@pytest.mark.parametrize("location", ["moniker", "monikerDataSources", "datasources"])
+@pytest.mark.parametrize("identity_field", ["connectionDetails", "dataSourceReference"])
+def test_binding_read_accepts_internal_enum_and_null_type_markers(marker, location, identity_field):
+    data = _bindings()
+    data["monikers"][0]["monikerDataSources"][0].pop("dataSourceReference")
+    source = data["monikers"][0] if location == "moniker" else data["monikers"][0]["monikerDataSources"][0] if location == "monikerDataSources" else data["datasources"][0]
+    source["dataSourceType"] = marker
+    source[identity_field] = {"server": SQL_SERVER, "database": SQL_NAME} if identity_field == "connectionDetails" else json.dumps({"kind": "SQL", "path": f"{SQL_SERVER};{SQL_NAME}"})
+    client, _ = _client([data])
+    assert asyncio.run(client.get_bindings(42)).monikers[0].sql_identities == frozenset({(SQL_SERVER, SQL_NAME.casefold())})
+
+
+def test_numeric_type_without_sql_identity_does_not_invent_a_match():
+    from fabric_workspace_deployment.client.sql_source import datasource_sql_identity
+
+    assert datasource_sql_identity({"dataSourceType": 7}) == frozenset()
+    assert datasource_sql_identity({"dataSourceType": "AnalysisServices", "connectionDetails": {"server": SQL_SERVER, "database": SQL_NAME}}) == frozenset()
+
+
 def test_binding_read_does_not_attach_unbound_datasource_identity():
     data = _bindings()
     data["datasources"].append({"dataSourceObjectId": GROUP_ID, "gatewayObjectId": CLUSTER_ID, "connectionDetails": {"server": "other.example.invalid", "database": "Other"}})
