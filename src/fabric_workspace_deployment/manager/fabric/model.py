@@ -28,6 +28,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     ModelConnectionParams,
     ModelBindingState,
     ModelDatasourceBinding,
+    SqlEndpointIdentity,
     PrincipalType,
     RlsRoleDelta,
     RlsRoleMembership,
@@ -118,12 +119,17 @@ class SemanticModelManager(ModelManager):
         try:
             bindings: list[tuple[ModelConnectionParams, GatewayConnection]] = []
             resolved_connections: dict[str, GatewayConnection] = {}
+            source_identities: dict[tuple[str, str], SqlEndpointIdentity] = {}
             for connection in model_params.connections:
                 declaration = self.common_params.fabric.get_gateway_by_connection_id(connection.connection_id)
                 key = declaration.connection_id.casefold()
                 if key not in resolved_connections:
                     resolved_connections[key] = await self.gateway_client.get_connection(declaration.connection_id)
                 bindings.append((connection, resolved_connections[key]))
+                if connection.source_item is not None:
+                    source_key = (connection.source_item.type, connection.source_item.name)
+                    if source_key not in source_identities:
+                        source_identities[source_key] = await self.semantic_model_client.resolve_source_item(workspace_id, connection.source_item)
             desired_security = {role: self._desired_rls_members(names) for role, names in model_params.security.items()}
             folder_info = await self.folder_client.get_fabric_folder_collection(workspace_id)
             matching_model = self._find_model(folder_info.artifacts, model_params.display_name)
@@ -142,8 +148,23 @@ class SemanticModelManager(ModelManager):
             untouched_bindings: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
             if bindings:
                 binding_state = await self.semantic_model_client.get_bindings(matching_model.id)
+                resolved_bindings = []
+                for connection, gateway in bindings:
+                    moniker = connection.moniker
+                    if connection.source_item is not None:
+                        source = source_identities[(connection.source_item.type, connection.source_item.name)]
+                        matches = [entry.moniker for entry in binding_state.monikers if any(server == source.server and database in source.databases for server, database in entry.sql_identities)]
+                        if len(matches) != 1:
+                            raise ValueError("Source SqlEndpoint resolves to zero or multiple semantic model datasource monikers")
+                        moniker = matches[0]
+                    if moniker is None:
+                        raise ValueError("Model connection has no resolved datasource moniker")
+                    resolved_bindings.append((ModelConnectionParams(moniker, connection.connection_id), gateway))
+                bindings = resolved_bindings
+                if len({connection.moniker for connection, _ in bindings}) != len(bindings):
+                    raise ValueError("Multiple configured sources resolve to the same model datasource moniker")
                 binding_updates = self._plan_bindings(binding_state, bindings)
-                managed_monikers = {connection.moniker.casefold() for connection, _ in bindings}
+                managed_monikers = {connection.moniker.casefold() for connection, _ in bindings if connection.moniker is not None}
                 untouched_bindings = {entry.moniker.casefold(): (entry.gateway_ids, entry.connection_ids) for entry in binding_state.monikers if entry.moniker.casefold() not in managed_monikers}
             rls_deltas: list[RlsRoleDelta] = []
             expected_rls: dict[int, tuple[str, frozenset[str]]] = {}
@@ -240,7 +261,9 @@ class SemanticModelManager(ModelManager):
 
         raise RuntimeError(f"Semantic model '{display_name}' was published but did not become available in workspace {workspace_id}")
 
-    def _find_moniker(self, state: ModelBindingState, moniker: str) -> ModelDatasourceBinding:
+    def _find_moniker(self, state: ModelBindingState, moniker: str | None) -> ModelDatasourceBinding:
+        if moniker is None:
+            raise ValueError("Model connection has no resolved datasource moniker")
         matches = [entry for entry in state.monikers if entry.moniker.casefold() == moniker.casefold()]
         if len(matches) != 1:
             raise ValueError("Configured model moniker is missing or ambiguous")
@@ -256,7 +279,7 @@ class SemanticModelManager(ModelManager):
             if desired_id not in current.candidate_ids or candidate_clusters != {cluster_id}:
                 raise ValueError(f"Model connections[{index}]: desired connection is not a valid candidate for that moniker and cluster")
             if current.gateway_ids != frozenset({cluster_id}) or current.connection_ids != frozenset({desired_id}):
-                updates.setdefault(cluster_id, {})[connection.moniker] = gateway.id
+                updates.setdefault(cluster_id, {})[current.moniker] = gateway.id
                 self.logger.info("Model connections[%d]: current gateways=%s, connections=%s -> gateway=%s, connection=%s", index, sorted(current.gateway_ids), sorted(current.connection_ids), cluster_id, desired_id)
         return updates
 

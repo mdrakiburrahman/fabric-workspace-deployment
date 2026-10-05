@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, GatewayParams, GatewayRole, GatewayUserParams, Identity, ModelConnectionParams, ModelParams, Operation, OperationParams, PrincipalType
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, GatewayParams, GatewayRole, GatewayUserParams, Identity, ModelConnectionParams, ModelSourceItemParams, ModelParams, Operation, OperationParams, PrincipalType
 from fabric_workspace_deployment.operations import operators
 from fabric_workspace_deployment.factories.management_factory import ContainerizedManagementFactory
 
@@ -54,15 +54,31 @@ def test_gateway_enum_and_backward_compatible_model_defaults():
 def test_parse_gateway_and_model_preview():
     params = _params()
     gateway = params._parse_gateway_params([_raw_gateway(dryRun=True)])[0]
-    model = params._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "dryRun": True, "connections": [{"moniker": MONIKER, "connectionId": CONNECTION_ID}], "security": {"Existing role": ["readers"]}}])[0]
+    model = params._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "dryRun": True, "connections": [{"sourceItem": {"type": "SqlEndpoint", "name": "insights"}, "connectionId": CONNECTION_ID}], "security": {"Existing role": ["readers"]}}])[0]
     assert vars(gateway).keys() == {"connection_id", "display_name", "users", "dry_run"}
     assert gateway.dry_run is True
     assert gateway.users[0].role is GatewayRole.OWNER
     assert model.dry_run is True
-    assert model.connections == [ModelConnectionParams(MONIKER, CONNECTION_ID)]
+    assert model.connections == [ModelConnectionParams(None, CONNECTION_ID, ModelSourceItemParams("SqlEndpoint", "insights"))]
     assert model.security == {"Existing role": ["readers"]}
     assert params._validate_gateway_params()
     assert params._validate_model_params([model], 0)
+
+
+@pytest.mark.parametrize("source", [None, [], "", {}, {"type": "Lakehouse", "name": "insights"}, {"type": "SqlEndpoint"}, {"type": "SqlEndpoint", "name": ""}])
+def test_source_item_requires_supported_type_and_name(source):
+    with pytest.raises(ValueError, match="sourceItem"):
+        _params()._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "connections": [{"sourceItem": source, "connectionId": CONNECTION_ID}]}])
+
+
+def test_source_item_and_expert_moniker_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="both"):
+        _params()._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "connections": [{"sourceItem": {"type": "SqlEndpoint", "name": "insights"}, "moniker": MONIKER, "connectionId": CONNECTION_ID}]}])
+
+
+def test_duplicate_source_items_are_rejected():
+    source = ModelSourceItemParams("SqlEndpoint", "insights")
+    assert not _params()._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(None, CONNECTION_ID, source), ModelConnectionParams(None, CONNECTION_ID, source)])], 0)
 
 
 @pytest.mark.parametrize("value", [None, {}, "connection"])

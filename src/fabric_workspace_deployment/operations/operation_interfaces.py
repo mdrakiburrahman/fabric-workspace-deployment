@@ -1127,11 +1127,28 @@ class GatewayUser:
 
 
 @dataclass
+class ModelSourceItemParams:
+    """A named source item in the model's workspace."""
+
+    type: str
+    name: str
+
+
+@dataclass
+class SqlEndpointIdentity:
+    """SQL endpoint identity used for exact datasource matching."""
+
+    server: str
+    databases: frozenset[str]
+
+
+@dataclass
 class ModelConnectionParams:
     """A model datasource moniker referencing a declared connection."""
 
-    moniker: str
+    moniker: str | None
     connection_id: str
+    source_item: ModelSourceItemParams | None = None
 
 
 @dataclass
@@ -1142,6 +1159,7 @@ class ModelDatasourceBinding:
     gateway_ids: frozenset[str]
     connection_ids: frozenset[str]
     candidate_ids: frozenset[str]
+    sql_identities: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass
@@ -2019,6 +2037,10 @@ class GatewayClient(ABC):
 
 class SemanticModelClient(ABC):
     """Transport for model datasource bindings and RLS membership."""
+
+    @abstractmethod
+    async def resolve_source_item(self, workspace_id: str, source_item: ModelSourceItemParams) -> SqlEndpointIdentity:
+        pass
 
     @abstractmethod
     async def get_bindings(self, model_id: int) -> ModelBindingState:
@@ -3943,10 +3965,21 @@ class OperationParams:
             seen_monikers: set[str] = set()
             for k, connection in enumerate(model.connections):
                 connection_path = f"{path}.connections[{k}]"
-                if not self._is_valid_guid(connection.moniker) or connection.moniker.casefold() in seen_monikers:
-                    self.logger.error(f"{connection_path}.moniker must be a unique GUID")
+                if connection.source_item is not None:
+                    source = connection.source_item
+                    if connection.moniker is not None or source.type != "SqlEndpoint" or not source.name.strip():
+                        self.logger.error(f"{connection_path} requires a named SqlEndpoint sourceItem, without moniker")
+                        return False
+                    source_key = f"source:{source.type}:{source.name}"
+                elif connection.moniker is not None and self._is_valid_guid(connection.moniker):
+                    source_key = f"moniker:{connection.moniker.casefold()}"
+                else:
+                    self.logger.error(f"{connection_path} requires sourceItem or an expert moniker GUID")
                     return False
-                seen_monikers.add(connection.moniker.casefold())
+                if source_key in seen_monikers:
+                    self.logger.error(f"{connection_path} duplicates a configured source")
+                    return False
+                seen_monikers.add(source_key)
                 if not self._is_valid_guid(connection.connection_id):
                     self.logger.error(f"{connection_path}.connectionId must be a GUID")
                     return False
@@ -4963,7 +4996,21 @@ class OperationParams:
                 connection_path = f"{path}.connections[{index}]"
                 if not isinstance(connection, dict):
                     raise ValueError(f"{connection_path} must be an object")
-                connections.append(ModelConnectionParams(self._config_string(connection, "moniker", connection_path), self._config_string(connection, "connectionId", connection_path)))
+                source_data = connection.get("sourceItem")
+                source_item = None
+                moniker = None
+                if "sourceItem" in connection:
+                    if not isinstance(source_data, dict):
+                        raise ValueError(f"{connection_path}.sourceItem must be an object")
+                    source_type = self._config_string(source_data, "type", f"{connection_path}.sourceItem")
+                    if source_type != "SqlEndpoint":
+                        raise ValueError(f"{connection_path}.sourceItem.type must be SqlEndpoint")
+                    source_item = ModelSourceItemParams(source_type, self._config_string(source_data, "name", f"{connection_path}.sourceItem"))
+                    if "moniker" in connection:
+                        raise ValueError(f"{connection_path} must not specify both sourceItem and moniker")
+                else:
+                    moniker = self._config_string(connection, "moniker", connection_path)
+                connections.append(ModelConnectionParams(moniker, self._config_string(connection, "connectionId", connection_path), source_item))
             security = model_data.get("security", {})
             if not isinstance(security, dict):
                 raise ValueError(f"{path}.security must be a role-to-identities object")

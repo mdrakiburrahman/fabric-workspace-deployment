@@ -46,7 +46,7 @@ Every GUID and principal below is fictitious.
               "directLakeAutoSync": false,
               "dryRun": true,
               "connections": [
-                { "moniker": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "connectionId": "11111111-1111-1111-1111-111111111111" }
+                { "sourceItem": { "type": "SqlEndpoint", "name": "Example SQL endpoint" }, "connectionId": "11111111-1111-1111-1111-111111111111" }
               ],
               "security": {
                 "Dynamic Row-Level Security": ["Report Readers"]
@@ -68,7 +68,8 @@ Every GUID and principal below is fictitious.
 | Gateway `users`                    | Complete desired direct-access list. Supported desired values: Group/User, Owner/User roles, and `datasourceAccessRight: "Read"`.                                |
 | Identity names                     | Exact, unique `common.identities[].givenName` references; no fuzzy matching or Graph lookups.                                                                    |
 | `userPrincipalName`                | Optional for legacy identities; required for User identities used by these features. Gateway Users use UPN identifiers; Groups and RLS members use object GUIDs. |
-| Model `connections`                | Optional moniker-to-connection mappings. Each `connectionId` must reference exactly one declared gateway connection and be a candidate for that moniker and its resolved cluster. |
+| Model `connections`                | Optional source-item-to-connection mappings. Each `connectionId` must reference exactly one declared gateway connection and be a candidate for the matched model datasource and its resolved cluster. |
+| Connection `sourceItem`            | Exact same-workspace item reference: `type: "SqlEndpoint"` and the SQL endpoint's exact `name`. No raw moniker is required. |
 | Model `security`                   | Exact existing role names mapped to arrays of Group/User identity names.                                                                                         |
 | Gateway/model `dryRun`             | Optional strict boolean, default `false`; controls only that entry.                                                                                              |
 
@@ -80,6 +81,19 @@ Connection GUIDs remain authoritative. The gateway datasource inventory is queri
 `id` to resolve its `clusterId` at runtime for gateway API routes and model binding requests.
 No gateway alias or cluster ID is configured, and display names are never used for fuzzy lookup.
 Missing/ambiguous connections and malformed inventory cluster IDs fail before writes.
+
+For each model connection, `sourceItem` resolves exactly one SQL endpoint in the model's
+workspace by exact item type and display name, including all inventory pages. Names are
+case-sensitive; there is no cross-workspace or fuzzy lookup. Zero or multiple matching items
+fail preflight. The endpoint's connection string supplies its SQL host and, when present,
+an explicit database name; database identities also include its item ID and exact display
+name. Model datasource metadata is matched by normalized SQL host **and** database identity,
+not by host alone. A missing or ambiguous datasource match fails before model writes.
+Connection strings and credential-bearing references are never printed.
+
+Optional expert alternative: configure a raw `moniker` GUID instead of `sourceItem` when
+you already know the model datasource identifier. These fields are mutually exclusive;
+`sourceItem` is the normal configuration path.
 
 ## Authoritative access and ownership
 
@@ -104,6 +118,9 @@ Set `dryRun: true` on every gateway/model that should preview. Gateway previews 
 or change access. Model previews do not publish, update settings, bind connections, or update
 RLS. Other entries can still apply when their own flags are false. Flags do not cascade through
 gateway references.
+For existing models, previews resolve source items and validate datasource matches and
+connection candidates using read-only requests; they never bind. Missing models defer
+binding/RLS preflight until the model exists, as described below.
 
 ```bash
 fabric-workspace-deployment --config-file-absolute-path /absolute/path/config.json --operation deployGateway
@@ -121,7 +138,8 @@ the source and reports a planned publish; binding/RLS preflight is explicitly de
 the model exists. Missing/ambiguous roles and invalid candidates fail before their model
 settings/binding/RLS writes. Applied changes are verified by bounded read-back checks.
 
-Matched binding/RLS state produces no write to those endpoints. The established
+An already-matched source-item binding is a no-op: unchanged binding/RLS state produces
+no write to those endpoints. The established
 `directLakeAutoSync` settings POST remains unchanged during apply.
 
 ## Authentication and compatibility
@@ -139,6 +157,6 @@ shapes and permission failures surface explicitly. Preview with real identifiers
 tenant compatibility before applying. REST updates are not atomic across entities; failures
 are reported and deterministic reruns converge rather than returning success-shaped fallbacks.
 
-Replace example connection/moniker IDs and Owner object ID/UPN. A nonexistent example
+Replace the example connection ID, SQL endpoint name, and Owner object ID/UPN. A nonexistent example
 connection fails preflight safely; preview never creates it. Supply the complete intended
 ACL before applying because unlisted access will be removed.

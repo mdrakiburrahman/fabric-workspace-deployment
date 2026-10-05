@@ -11,7 +11,7 @@ import pytest
 
 from fabric_workspace_deployment.manager.fabric import model as model_module
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, GatewayClient, GatewayConnection, GatewayParams, GatewayRole, GatewayUserParams, Identity, ModelBindingState, ModelConnectionParams, ModelDatasourceBinding, ModelDatasourceCandidate, ModelParams, PrincipalType, RlsMember, RlsRoleMembership, SemanticModelClient
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, GatewayClient, GatewayConnection, GatewayParams, GatewayRole, GatewayUserParams, Identity, ModelBindingState, ModelConnectionParams, ModelSourceItemParams, SqlEndpointIdentity, ModelDatasourceBinding, ModelDatasourceCandidate, ModelParams, PrincipalType, RlsMember, RlsRoleMembership, SemanticModelClient
 
 CONNECTION_ID = "11111111-1111-1111-1111-111111111111"
 CLUSTER_ID = "22222222-2222-2222-2222-222222222222"
@@ -113,6 +113,14 @@ class FakeModelClient(SemanticModelClient):
         self.roles = list(roles or [])
         self.apply_changes = apply_changes
         self.calls = []
+        self.source_calls = []
+        self.sources = {("SqlEndpoint", "insights"): SqlEndpointIdentity("server.example.invalid", frozenset({"insights", OTHER_ID}))}
+
+    async def resolve_source_item(self, workspace_id, source_item):
+        self.source_calls.append((workspace_id, source_item.type, source_item.name))
+        if (source_item.type, source_item.name) not in self.sources:
+            raise RuntimeError("Source SqlEndpoint name/type resolves to zero workspace items")
+        return self.sources[(source_item.type, source_item.name)]
 
     async def get_bindings(self, model_id):
         self.calls.append(("read-bindings", model_id))
@@ -268,6 +276,48 @@ def test_binding_update_and_second_run_noop(tmp_path):
     assert [call for call in client.calls if call[0] == "bind"] == [("bind", 42, CLUSTER_ID, {MONIKER: CONNECTION_ID})]
     client.calls.clear()
     asyncio.run(manager.reconcile("workspace", params))
+    assert not any(call[0] == "bind" for call in client.calls)
+
+
+@pytest.mark.parametrize("bound_id", [CONNECTION_ID, OTHER_ID])
+def test_sql_endpoint_source_resolves_moniker_and_preserves_noop(tmp_path, bound_id):
+    state = _bound_state(bound_id=bound_id)
+    state.monikers[0].sql_identities = frozenset({("server.example.invalid", "insights")})
+    manager, client, _, _ = _feature_manager(tmp_path, bindings=state)
+    params = ModelParams("insights", False, [ModelConnectionParams(None, CONNECTION_ID, ModelSourceItemParams("SqlEndpoint", "insights"))])
+    asyncio.run(manager.reconcile("workspace", params))
+    assert client.source_calls == [("workspace", "SqlEndpoint", "insights")]
+    writes = [call for call in client.calls if call[0] == "bind"]
+    assert writes == ([] if bound_id == CONNECTION_ID else [("bind", 42, CLUSTER_ID, {MONIKER: CONNECTION_ID})])
+
+
+def test_missing_source_item_fails_before_model_writes(tmp_path):
+    manager, client, http, _ = _feature_manager(tmp_path, bindings=_bound_state())
+    with pytest.raises(RuntimeError, match="zero workspace items"):
+        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(None, CONNECTION_ID, ModelSourceItemParams("SqlEndpoint", "missing"))])))
+    assert http.calls == []
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("matching", [0, 2])
+def test_zero_or_multiple_matching_datasources_fail_before_model_writes(tmp_path, matching):
+    state = _bound_state(bound_id=OTHER_ID)
+    if matching:
+        state.monikers[0].sql_identities = frozenset({("server.example.invalid", "insights")})
+        state.monikers.append(ModelDatasourceBinding("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", frozenset(), frozenset(), frozenset({CONNECTION_ID}), state.monikers[0].sql_identities))
+    manager, client, http, _ = _feature_manager(tmp_path, bindings=state)
+    with pytest.raises(RuntimeError, match="zero or multiple semantic"):
+        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(None, CONNECTION_ID, ModelSourceItemParams("SqlEndpoint", "insights"))])))
+    assert http.calls == []
+    assert not any(call[0] == "bind" for call in client.calls)
+
+
+def test_source_item_preview_resolves_without_any_mutations(tmp_path):
+    state = _bound_state(bound_id=OTHER_ID)
+    state.monikers[0].sql_identities = frozenset({("server.example.invalid", "insights")})
+    manager, client, http, _ = _feature_manager(tmp_path, bindings=state)
+    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(None, CONNECTION_ID, ModelSourceItemParams("SqlEndpoint", "insights"))], dry_run=True)))
+    assert http.calls == []
     assert not any(call[0] == "bind" for call in client.calls)
 
 

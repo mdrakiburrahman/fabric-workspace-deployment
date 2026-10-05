@@ -68,8 +68,11 @@ class FabricRestClient:
     def _request(self, method: Callable[..., requests.Response], path: str, context: str, **kwargs: Any) -> requests.Response:
         return self.http_retry.execute(method, f"{self.base_url}{path}", safe_log_context=context, headers={"Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}", "Content-Type": "application/json"}, timeout=60, **kwargs)
 
-    def _get_json(self, path: str, context: str) -> object:
-        response = self._request(requests.get, path, context)
+    def _get_json(self, path: str, context: str, api_root: str | None = None, **kwargs: Any) -> object:
+        if api_root is None:
+            response = self._request(requests.get, path, context, **kwargs)
+        else:
+            response = self.http_retry.execute(requests.get, f"{api_root.rstrip('/')}{path}", safe_log_context=context, headers={"Authorization": f"Bearer {self.az_cli.get_access_token(self.common_params.scope.analysis_service)}", "Content-Type": "application/json"}, timeout=60, **kwargs)
         try:
             return response.json()
         except ValueError:
