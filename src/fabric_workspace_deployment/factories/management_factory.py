@@ -12,6 +12,8 @@ from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.client.fabric_artifact import FabricArtifactClient
 from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
+from fabric_workspace_deployment.client.fabric_gateway import FabricGatewayClient
+from fabric_workspace_deployment.client.fabric_semantic_model import FabricSemanticModelClient
 from fabric_workspace_deployment.client.fabric_pipeline import FabricPipelineClient
 from fabric_workspace_deployment.client.fabric_pipeline_run import FabricPipelineRunClient
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
@@ -27,6 +29,7 @@ from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.manager.fabric.contacts import FabricAlertManager
 from fabric_workspace_deployment.manager.fabric.git_link import FabricGitLinkManager
+from fabric_workspace_deployment.manager.fabric.gateway import FabricGatewayManager
 from fabric_workspace_deployment.manager.fabric.model import SemanticModelManager
 from fabric_workspace_deployment.manager.fabric.monitoring import FabricMonitoringManager
 from fabric_workspace_deployment.manager.fabric.rbac import FabricRbacManager
@@ -153,6 +156,18 @@ class ManagementFactory(ABC):
         """
         Create a Semantic Model Manager instance.
         """
+        pass
+
+    @abstractmethod
+    def create_fabric_gateway_client(self) -> FabricGatewayClient:
+        pass
+
+    @abstractmethod
+    def create_fabric_gateway_manager(self) -> FabricGatewayManager:
+        pass
+
+    @abstractmethod
+    def create_semantic_model_client(self) -> FabricSemanticModelClient:
         pass
 
     @abstractmethod
@@ -355,7 +370,18 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_fabric_folder_client(),
             self.http_retry_handler,
             self._create_cicd_token_credential(),
+            self.create_fabric_gateway_client(),
+            self.create_semantic_model_client(),
         )
+
+    def create_fabric_gateway_client(self) -> FabricGatewayClient:
+        return FabricGatewayClient(self.operation_params.common, self.create_azure_cli(), self.http_retry_handler)
+
+    def create_fabric_gateway_manager(self) -> FabricGatewayManager:
+        return FabricGatewayManager(self.operation_params.common, self.create_fabric_gateway_client())
+
+    def create_semantic_model_client(self) -> FabricSemanticModelClient:
+        return FabricSemanticModelClient(self.operation_params.common, self.create_azure_cli(), self.http_retry_handler)
 
     def create_fabric_monitoring_manager(self) -> FabricMonitoringManager:
         return FabricMonitoringManager(

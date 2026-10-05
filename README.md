@@ -5,7 +5,7 @@ A production-ready Fabric Workspace Deployment application
 [![PyPI - Version](https://img.shields.io/pypi/v/fabric-workspace-deployment.svg)](https://pypi.org/project/fabric-workspace-deployment)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fabric-workspace-deployment.svg)](https://pypi.org/project/fabric-workspace-deployment)
 
------
+---
 
 ## Table of Contents
 
@@ -24,6 +24,7 @@ pip install fabric-workspace-deployment
 - [Environment variables](docs/ENV_VARS.md)
 - [Entitlements](docs/ENTITLEMENTS.md)
 - [Fabric RBAC](docs/RBAC.md)
+- [Gateway connections, model bindings, and RLS](docs/GATEWAYS_AND_MODELS.md)
 - [Logging](docs/LOGGING.md)
 - [Rayfin deployments](docs/RAYFIN.md)
 - [Headless devcontainer operations](docs/devcontainer/headless-operations.md)

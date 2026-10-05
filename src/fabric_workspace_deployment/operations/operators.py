@@ -13,6 +13,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     EntitlementManager,
     EntryPointOperator,
     GitLinkManager,
+    GatewayManager,
     Manager,
     MonitoringManager,
     ModelManager,
@@ -54,12 +55,14 @@ class CentralOperator(EntryPointOperator):
         self.rayfin_manager: RayfinManager = self.management_factory.create_rayfin_manager()
         self.entitlement_manager: EntitlementManager = self.management_factory.create_entitlement_manager()
         self.git_link_manager: GitLinkManager = self.management_factory.create_fabric_git_link_manager()
+        self.gateway_manager: GatewayManager = self.management_factory.create_fabric_gateway_manager()
         self.managers: dict[Operation, Manager] = {
             Operation.DRY_RUN: self.entitlement_manager,
             Operation.DEPLOY_ALERT: self.alert_manager,
             Operation.DEPLOY_FABRIC_CAPACITY: self.capacity_manager,
             Operation.DEPLOY_FABRIC_WORKSPACE: self.workspace_manager,
             Operation.DEPLOY_GIT_LINK: self.git_link_manager,
+            Operation.DEPLOY_GATEWAY: self.gateway_manager,
             Operation.DEPLOY_TEMPLATE: self.cicd_manager,
             Operation.DEPLOY_RBAC: self.rbac_manager,
             Operation.DEPLOY_SEED: self.seed_manager,
