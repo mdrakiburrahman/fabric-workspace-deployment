@@ -489,9 +489,11 @@ def test_factory_passes_workspace_scoped_rayfins_to_manager(tmp_path, monkeypatc
     az_cli = object()
     fabric_cli = object()
     docker_cli = object()
+    database_client = object()
     monkeypatch.setattr(factory, "create_azure_cli", lambda: az_cli)
     monkeypatch.setattr(factory, "create_fabric_cli", lambda: fabric_cli)
     monkeypatch.setattr(factory, "create_docker_cli", lambda: docker_cli)
+    monkeypatch.setattr(factory, "create_rayfin_database_client", lambda: database_client)
 
     manager = factory.create_rayfin_manager()
 
@@ -499,6 +501,7 @@ def test_factory_passes_workspace_scoped_rayfins_to_manager(tmp_path, monkeypatc
     assert manager.az_cli is az_cli
     assert manager.fabric_cli is fabric_cli
     assert manager.docker_cli is docker_cli
+    assert manager.database_client is database_client
 
 
 def test_central_operator_dispatches_deploy_rayfin(monkeypatch):

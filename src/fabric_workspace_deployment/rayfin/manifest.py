@@ -56,11 +56,19 @@ class RayfinBuild:
 
 
 @dataclass(frozen=True)
+class RayfinDataMigrations:
+    """Application-owned, repeatable post-schema data migration command."""
+
+    command: str
+
+
+@dataclass(frozen=True)
 class RayfinData:
     """Managed Rayfin data-service settings."""
 
     enabled: bool
     dialect: str
+    migrations: RayfinDataMigrations | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +111,17 @@ class RayfinDeploymentRecord:
     data_enabled: bool | None = None
 
 
+@dataclass(frozen=True)
+class RayfinManagedSqlDatabase:
+    """Verified target identity; credentials are never stored in this record."""
+
+    workspace_id: str
+    app_backend_id: str
+    database_id: str
+    server: str
+    database_name: str
+
+
 class RayfinManifestLoader:
     """Load and validate Rayfin app manifests and deployment registries."""
 
@@ -139,7 +158,7 @@ class RayfinManifestLoader:
         self._require_exact_keys(connections_data, {"semanticModels"}, "connections")
         self._require_exact_keys(build_data, {"command", "outputPath", "indexDocument"}, "build")
         if data_service_data is not None:
-            self._require_exact_keys(data_service_data, {"enabled", "dialect"}, "data")
+            self._require_keys(data_service_data, {"enabled", "dialect"}, {"migrations"}, "data")
 
         schema_version = self._require_string(data["schemaVersion"], "schemaVersion")
         if schema_version != RAYFIN_MANIFEST_SCHEMA_VERSION:
@@ -186,7 +205,21 @@ class RayfinManifestLoader:
             dialect = self._require_string(data_service_data["dialect"], "data.dialect")
             if dialect != "mssql":
                 raise ValueError("data.dialect must be exactly 'mssql' for Fabric deployment")
-            data_service = RayfinData(enabled=enabled, dialect=dialect)
+            migrations = None
+            if "migrations" in data_service_data:
+                if not enabled:
+                    raise ValueError("data.migrations requires data.enabled=true")
+                migrations_data = self._require_dict(data_service_data["migrations"], "data.migrations")
+                self._require_exact_keys(migrations_data, {"command"}, "data.migrations")
+                migration_command = self._require_string(migrations_data["command"], "data.migrations.command")
+                if "\x00" in migration_command:
+                    raise ValueError("data.migrations.command cannot contain NUL characters")
+                try:
+                    shlex.split(migration_command)
+                except ValueError:
+                    raise ValueError("data.migrations.command must be a valid shell command") from None
+                migrations = RayfinDataMigrations(command=migration_command)
+            data_service = RayfinData(enabled=enabled, dialect=dialect, migrations=migrations)
 
         functions = RayfinFunctions()
         if "functions" in data:
@@ -248,6 +281,13 @@ class RayfinManifestLoader:
 
         if locked_version != manifest.rayfin.version:
             raise ValueError(f"package-lock.json must resolve @microsoft/rayfin-cli exactly to {manifest.rayfin.version!r}; found {locked_version!r}")
+
+        if manifest.data.migrations is not None:
+            command = shlex.split(manifest.data.migrations.command)
+            scripts = package_json.get("scripts", {})
+            if command[:2] == ["npm", "run"]:
+                if len(command) < 3 or not isinstance(scripts, dict) or not isinstance(scripts.get(command[2]), str) or not scripts[command[2]].strip():
+                    raise ValueError("data.migrations.command must reference a non-empty root package script")
 
         if manifest.functions.enabled:
             self._validate_functions_package(app_root, manifest, package_json, package_lock)
@@ -361,7 +401,7 @@ class RayfinManifestLoader:
         if not schema_path.is_file() or schema_path.stat().st_size == 0:
             raise ValueError(f"Managed Rayfin data is enabled, but the required schema file is missing or empty: {schema_path}")
 
-    def load_deployment_record(self, registry_path: Path, workspace_id: str) -> RayfinDeploymentRecord:
+    def load_deployment_record(self, registry_path: Path, workspace_id: str, *, require_workspace: bool = False) -> RayfinDeploymentRecord:
         """
         Select a deployment registry record for a workspace.
 
@@ -383,12 +423,17 @@ class RayfinManifestLoader:
             if not isinstance(item_id, str) or _GUID_PATTERN.fullmatch(item_id.strip()) is None:
                 continue
 
-            candidate_workspace_id = candidate.get("workspaceId", inferred_workspace_id)
+            candidate_workspace_id = candidate.get("workspaceId", candidate.get("fabricWorkspaceId", inferred_workspace_id))
+            if "workspaceId" in candidate and "fabricWorkspaceId" in candidate:
+                explicit_workspace_id = self._require_string(candidate["workspaceId"], "registry.workspaceId")
+                fabric_workspace_id = self._require_string(candidate["fabricWorkspaceId"], "registry.fabricWorkspaceId")
+                if explicit_workspace_id.casefold() != fabric_workspace_id.casefold():
+                    raise ValueError("Rayfin deployment registry contains conflicting workspace identifiers")
             if isinstance(candidate_workspace_id, str) and _GUID_PATTERN.fullmatch(candidate_workspace_id.strip()):
                 record = RayfinDeploymentRecord(workspace_id=candidate_workspace_id.strip(), fabric_item_id=item_id.strip())
                 if candidate_workspace_id.strip().lower() == workspace_id.lower():
                     matching_records.append((record, candidate))
-            elif candidate_workspace_id is None:
+            elif candidate_workspace_id is None and not require_workspace:
                 fallback_records.append((RayfinDeploymentRecord(workspace_id=workspace_id, fabric_item_id=item_id.strip()), candidate))
 
         selected_records = matching_records

@@ -27,7 +27,7 @@ from PIL import Image
 from fabric_workspace_deployment.environment_variables import FAB_TOKEN_GRAPH_ENV_VAR, GIT_ROOT_ENV_VAR, MANAGER_SKIP_ENABLED_VALUE, SKIP_ALERT_DEPLOYMENT_ENV_VAR, SKIP_ENTITLEMENT_CHECK_ENV_VAR, SKIP_FABRIC_CAPACITY_DEPLOYMENT_ENV_VAR, SKIP_FABRIC_WORKSPACE_DEPLOYMENT_ENV_VAR, SKIP_GIT_LINK_DEPLOYMENT_ENV_VAR, SKIP_MODEL_DEPLOYMENT_ENV_VAR, SKIP_MONITORING_DEPLOYMENT_ENV_VAR, SKIP_RBAC_DEPLOYMENT_ENV_VAR, SKIP_SEED_DEPLOYMENT_ENV_VAR, SKIP_SHORTCUT_DEPLOYMENT_ENV_VAR, SKIP_SPARK_DEPLOYMENT_ENV_VAR, SKIP_TEMPLATE_DEPLOYMENT_ENV_VAR, UNIQUE_ENV_ID_ENV_VAR, USER_APP_ID_ENV_VAR, USER_DISPLAY_NAME_ENV_VAR, USER_OBJECT_ID_ENV_VAR, USER_PRINCIPAL_TYPE_ENV_VAR
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.environment_variables import SKIP_GATEWAY_DEPLOYMENT_ENV_VAR
-from fabric_workspace_deployment.rayfin.manifest import RAYFIN_MANIFEST_FILE_NAME, RayfinManifestLoader
+from fabric_workspace_deployment.rayfin.manifest import RAYFIN_MANIFEST_FILE_NAME, RayfinManagedSqlDatabase, RayfinManifestLoader
 
 # ---------------------------------------------------------------------------- #
 # --------------------------- HTTP RETRY CONSTANTS --------------------------- #
@@ -1888,6 +1888,14 @@ class RayfinManager(Manager):
     @abstractmethod
     def report_plan(self) -> None:
         """Report local deployment intent without acquiring credentials or deploying."""
+        pass
+
+
+class RayfinDatabaseClient(ABC):
+    """Resolve a verified AppBackend-owned managed SQL target."""
+
+    @abstractmethod
+    def resolve_managed_database(self, workspace_id: str, app_backend_id: str) -> RayfinManagedSqlDatabase:
         pass
 
 

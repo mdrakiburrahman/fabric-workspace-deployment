@@ -50,6 +50,7 @@ class AzCli:
         if not commands or commands[0] != "az":
             commands.insert(0, "az")
 
+        sensitive_output = commands[1:3] == ["account", "get-access-token"]
         self.logger.debug(f"Executing command: {' '.join(commands)}")
         proc = Popen(commands, stdout=PIPE, stderr=PIPE, env=env)  # noqa: S603
 
@@ -59,6 +60,8 @@ class AzCli:
             self.logger.warning(f"Command execution timeout: {timeout}")
             proc.kill()
             stdout, stderr = proc.communicate(timeout=timeout)
+            if sensitive_output:
+                raise RuntimeError("Azure CLI access-token acquisition timed out") from None
             sys.stdout.buffer.write(stdout)
             sys.stderr.buffer.write(stderr)
             raise
@@ -68,11 +71,14 @@ class AzCli:
         stdout_str = stdout.decode(sys.stdout.encoding)
         stderr_str = stderr.decode(sys.stderr.encoding)
 
-        self.logger.debug(f"Stdout: {stdout_str}")
-        self.logger.debug(f"Stderr: {stderr_str}")
+        self.logger.debug(f"Stdout: {'******' if sensitive_output else stdout_str}")
+        self.logger.debug(f"Stderr: {'******' if sensitive_output else stderr_str}")
 
-        if proc.returncode != 0 and self.exit_on_error:
-            raise Exception(stderr_str)
+        if proc.returncode != 0:
+            if sensitive_output:
+                raise RuntimeError("Azure CLI access-token acquisition failed")
+            if self.exit_on_error:
+                raise Exception(stderr_str)
 
         return (stdout_str, stderr_str)
 
@@ -148,6 +154,17 @@ class AzCli:
             error = "Access token is empty"
             raise RuntimeError(error)
 
+        return token
+
+    def get_sql_access_token(self, tenant_id: str | None = None) -> str:
+        """Acquire an uncached SQL credential immediately before each migration."""
+        command = ["account", "get-access-token", "--resource", "https://database.windows.net", "--query", "accessToken", "--output", "tsv"]
+        if tenant_id is not None:
+            command.extend(["--tenant", tenant_id])
+        stdout, _ = self.run(command, timeout=60)
+        token = stdout.strip()
+        if not token:
+            raise RuntimeError("Azure CLI returned an empty SQL access token")
         return token
 
     def get_token_claims(self, scope: str, force_run_az: bool = False) -> dict[str, Any]:

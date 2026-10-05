@@ -314,6 +314,90 @@ def test_absent_data_block_defaults_to_disabled_mssql(tmp_path):
     }
 
 
+def test_accepts_post_schema_migrations_without_rendering_fwd_command_into_rayfin_yaml(tmp_path):
+    data = _manifest_data()
+    data["data"]["migrations"] = {"command": "npm run data:migrate"}
+    _write_manifest(tmp_path, data)
+
+    manifest = RayfinManifestLoader().load(tmp_path)
+
+    assert manifest.data.migrations is not None
+    assert manifest.data.migrations.command == "npm run data:migrate"
+    assert yaml.safe_load(RayfinManifestRenderer().render_rayfin_yaml(manifest))["services"]["data"] == {"enabled": True, "dialect": "mssql"}
+
+
+@pytest.mark.parametrize(
+    ("migrations", "message"),
+    [
+        (None, "JSON object"),
+        ("npm run migrate", "JSON object"),
+        ({}, "missing"),
+        ({"command": ""}, "non-empty"),
+        ({"command": True}, "non-empty"),
+        ({"command": "npm run migrate", "extra": True}, "unexpected"),
+        ({"command": "npm run 'migrate"}, "valid shell command"),
+        ({"command": "npm\x00run migrate"}, "NUL"),
+    ],
+)
+def test_rejects_invalid_migration_contract(tmp_path, migrations, message):
+    data = _manifest_data()
+    data["data"]["migrations"] = migrations
+    _write_manifest(tmp_path, data)
+
+    with pytest.raises(ValueError, match=message):
+        RayfinManifestLoader().load(tmp_path)
+
+
+def test_migrations_require_enabled_managed_data(tmp_path):
+    data = _manifest_data()
+    data["data"] = {"enabled": False, "dialect": "mssql", "migrations": {"command": "npm run data:migrate"}}
+    _write_manifest(tmp_path, data)
+
+    with pytest.raises(ValueError, match="requires data.enabled=true"):
+        RayfinManifestLoader().load(tmp_path)
+
+
+def test_migration_npm_script_is_validated_at_app_root(tmp_path):
+    _write_functions_app(tmp_path)
+    manifest_path = tmp_path / "fabric-workspace-deployment.json"
+    data = json.loads(manifest_path.read_text())
+    data["data"]["migrations"] = {"command": "npm run data:migrate"}
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+    loader = RayfinManifestLoader()
+    manifest = loader.load(tmp_path)
+
+    with pytest.raises(ValueError, match="root package script"):
+        loader.validate_node_package(tmp_path, manifest)
+
+    package_path = tmp_path / "package.json"
+    package = json.loads(package_path.read_text())
+    package["scripts"] = {"data:migrate": "node migrations/run.mjs"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader.validate_node_package(tmp_path, manifest)
+
+
+def test_migration_registry_requires_explicit_workspace_and_accepts_canonical_rayfin_key(tmp_path):
+    workspace_id = "11111111-1111-1111-1111-111111111111"
+    item_id = "22222222-2222-2222-2222-222222222222"
+    registry_path = tmp_path / ".deployments.json"
+    registry_path.write_text(json.dumps({"deployments": [{"fabricItemId": item_id}]}), encoding="utf-8")
+    loader = RayfinManifestLoader()
+
+    with pytest.raises(ValueError, match="does not contain a deployment"):
+        loader.load_deployment_record(registry_path, workspace_id, require_workspace=True)
+
+    registry_path.write_text(json.dumps({"deployments": {"Friendly workspace": {"fabricItemId": item_id, "fabricWorkspaceId": workspace_id}}}), encoding="utf-8")
+    assert loader.load_deployment_record(registry_path, workspace_id, require_workspace=True).fabric_item_id == item_id
+
+
+def test_registry_rejects_conflicting_explicit_workspace_keys(tmp_path):
+    registry_path = tmp_path / ".deployments.json"
+    registry_path.write_text(json.dumps({"deployments": [{"fabricItemId": "22222222-2222-2222-2222-222222222222", "workspaceId": "11111111-1111-1111-1111-111111111111", "fabricWorkspaceId": "33333333-3333-3333-3333-333333333333"}]}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="conflicting workspace"):
+        RayfinManifestLoader().load_deployment_record(registry_path, "11111111-1111-1111-1111-111111111111")
+
+
 @pytest.mark.parametrize(
     ("data_config", "message"),
     [

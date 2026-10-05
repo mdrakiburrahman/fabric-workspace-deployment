@@ -5,6 +5,7 @@
 import json
 import logging
 import subprocess
+import traceback
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,6 +69,56 @@ def test_failure_redacts_token_from_logs_and_exception(monkeypatch, caplog):
     assert "secret-token" not in str(exc_info.value)
     assert "secret-token" not in caplog.text
     assert "******" in caplog.text
+
+
+def test_docker_logs_redact_connection_values_and_inherited_secrets_longest_first(monkeypatch, caplog):
+    monkeypatch.setenv("API_PASSWORD", "db-long-secret-token")
+    environment = {"FWD_RAYFIN_SQL_DATABASE_NAME": "db", "FWD_RAYFIN_SQL_SERVER": "private.database.fabric.microsoft.com", "FWD_RAYFIN_SQL_ACCESS_TOKEN": "db-long-secret-token"}
+    output = "db-long-secret-token private.database.fabric.microsoft.com db"
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=output, stderr=output))
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(DockerCliError) as failure:
+        DockerCli().run(["compose", "run", "rayfin", "sh", "-c", output], env=environment)
+
+    diagnostic = caplog.text + str(failure.value) + failure.value.stdout + failure.value.stderr
+    assert "db-long-secret-token" not in diagnostic
+    assert "long-secret-token" not in diagnostic
+    assert "private.database.fabric.microsoft.com" not in diagnostic
+
+
+def test_docker_timeout_sanitizes_streams_and_suppresses_raw_exception_chain(monkeypatch, caplog):
+    def run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 30, output=b"private-token", stderr=b"private-token")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    caplog.set_level(logging.DEBUG)
+    environment = {"FWD_RAYFIN_SQL_ACCESS_TOKEN": "private-token"}
+
+    with pytest.raises(DockerCliError) as failure:
+        DockerCli().run(["compose", "run", "rayfin"], timeout=30, env=environment)
+
+    diagnostic = caplog.text + "".join(traceback.format_exception(failure.type, failure.value, failure.tb)) + failure.value.stdout + failure.value.stderr
+    assert "private-token" not in diagnostic
+    assert failure.value.__suppress_context__ is True
+
+
+def test_named_migration_container_is_stopped_after_cli_timeout(monkeypatch, tmp_path):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "compose":
+            raise subprocess.TimeoutExpired(command, 900)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DockerCliError, match="timed out"):
+        DockerCli().compose_run(tmp_path / "Compose.yaml", "project", "rayfin", ["sh", "-c", "npm run data:migrate"], timeout=900, container_name="project-data-migrate")
+
+    assert "--name" in calls[0]
+    assert calls[-1] == ["docker", "stop", "-t", "10", "project-data-migrate"]
 
 
 def test_resolve_daemon_path_returns_resolved_path_outside_container(monkeypatch, tmp_path):
