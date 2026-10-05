@@ -101,7 +101,7 @@ Every configured app root must contain `fabric-workspace-deployment.json`:
 }
 ```
 
-The manifest is intentionally strict: all shown sections and fields except the backward-compatible optional `data` block are required, and unknown fields are rejected.
+The manifest is intentionally strict: all shown sections and fields except the backward-compatible optional `data` block are required, and unknown fields are rejected. An optional `functions` block is described below.
 
 | Field                        | Requirements                                                                                                                              |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -122,6 +122,71 @@ The manifest is intentionally strict: all shown sections and fields except the b
 FWD runs `npm ci`, then invokes `./node_modules/.bin/rayfin`. It checks the installed CLI's `--version` output against `rayfin.version` before deployment, so `package.json` and `package-lock.json` must resolve that exact version.
 
 When `data.enabled` is `true`, `<app-root>/rayfin/data/schema.ts` must exist and be non-empty. FWD uses the canonical `rayfin up` workflow, which provisions the managed SQL Database and applies pending schema changes together with the application deployment.
+
+### Functions
+
+Add this optional app-root manifest block to enable server-side Functions:
+
+```json
+{
+  "functions": {
+    "enabled": true,
+    "path": "rayfin/functions",
+    "buildCommand": "npm run build"
+  }
+}
+```
+
+When the block is absent, or `enabled` is `false`, Functions are disabled and FWD omits `services.functions` from generated YAML. A disabled block may contain just `{ "enabled": false }`. An enabled block requires all three fields and renders:
+
+```yaml
+services:
+  functions:
+    enabled: true
+    auth:
+      type: application
+    path: rayfin/functions
+    buildCommand: npm run build
+```
+
+The Functions directory must be an existing subdirectory inside the app root, including after resolving symlinks. It must contain non-empty `package.json`, `host.json`, `tsconfig.json`, and `src/function_app.ts` files. Required files and local `file:` dependencies must remain within the Functions project so they can be packaged by Rayfin; absolute paths, parent traversal, missing local dependencies, and escaping symlinks are rejected. The host configuration must declare `"version": "2.0"`. The build command must be non-empty; an `npm run` command must reference an existing non-empty script in the Functions package.
+
+FWD uses a conservative same-release pin policy: the Functions runtime dependency `@microsoft/fabric-user-data-functions` must be pinned exactly to `rayfin.version`, and its lockfile metadata must depend on that same exact `@microsoft/rayfin-client` release. Mutable tags such as `experimental`, ranges, conflicting pins, and different release versions are rejected. This is a reproducibility policy, not a claim that arbitrary cross-version combinations are compatible.
+
+The root package must include the Functions directory in npm workspaces:
+
+```json
+{
+  "private": true,
+  "workspaces": ["rayfin/functions"],
+  "devDependencies": {
+    "@microsoft/rayfin-cli": "1.35.1"
+  }
+}
+```
+
+The Functions package declares its own runtime dependency and build script:
+
+```json
+{
+  "name": "sales-functions",
+  "private": true,
+  "type": "module",
+  "main": "dist/src/function_app.js",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@microsoft/fabric-user-data-functions": "1.35.1"
+  }
+}
+```
+
+Generate and commit the root `package-lock.json` using npm; do not hand-author lock entries. Workspace patterns must be app-relative and must not use exclusions. FWD validates the workspace entry, workspace link, and the SDK resolution nearest to the Functions project, including nested and hoisted dependencies. Root `npm ci` installs both projects from a clean checkout, with no manual Functions install. After installation, FWD uses `npm exec --workspace <functions-path> --no -- tsc --showConfig --project tsconfig.json` to validate the Functions configuration with that workspace's installed compiler before invoking Rayfin; it does not download an extra compiler. Rayfin's canonical full `up` owns the Functions build and deployment; FWD does not run a separate UDF deploy command.
+
+Build scripts are trusted application code executed inside the existing staging container, not a sandbox for hostile code.
+
+The existing `dryRun` operation reports locally validated Rayfin app, Functions, managed-data, and deployment-order intent without acquiring Rayfin/SQL credentials, creating staging, installing dependencies, or invoking Docker for this report. Skipped workspaces are reported without reading their app roots. Existing global CLI checks and entitlement verification still run; this does not turn the entire `dryRun` operation into an offline command. TypeScript configuration is checked by the installed compiler during an actual deployment, not by executing a build in dry-run.
 
 ## Generated configuration
 

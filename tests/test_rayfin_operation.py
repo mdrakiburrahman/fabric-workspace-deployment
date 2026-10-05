@@ -550,6 +550,41 @@ def test_central_operator_dispatches_deploy_rayfin(monkeypatch):
     assert other_manager.execute_count == 0
 
 
+def test_central_operator_dry_run_reports_rayfin_plan_and_checks_entitlements(monkeypatch):
+    calls = []
+
+    class DummyManager:
+        async def execute(self):
+            calls.append("entitlements")
+
+        def report_plan(self):
+            calls.append("rayfin-plan")
+
+    class DummyFabricCli:
+        def run_command(self, command):
+            assert command == "version"
+            return "1.0.0"
+
+    class FakeFactory:
+        def __init__(self, operation_params):
+            pass
+
+        def create_fabric_cli(self):
+            return DummyFabricCli()
+
+        def __getattr__(self, name):
+            if name.startswith("create_"):
+                return DummyManager
+            raise AttributeError(name)
+
+    monkeypatch.setattr(operators, "ContainerizedManagementFactory", FakeFactory)
+    operation_params = SimpleNamespace(common=SimpleNamespace(fabric=SimpleNamespace(workspaces=[])), operation=Operation.DRY_RUN)
+
+    asyncio.run(operators.CentralOperator(operation_params).execute())
+
+    assert calls == ["rayfin-plan", "entitlements"]
+
+
 @pytest.mark.parametrize(
     "workspaces",
     [

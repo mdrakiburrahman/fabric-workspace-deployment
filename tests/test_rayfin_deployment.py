@@ -83,6 +83,34 @@ def _write_app(root: Path) -> Path:
     return app_root
 
 
+def _enable_functions(app_root: Path) -> None:
+    functions_root = app_root / "rayfin" / "functions"
+    (functions_root / "src").mkdir(parents=True)
+    sdk = "@microsoft/fabric-user-data-functions"
+    (functions_root / "package.json").write_text(json.dumps({"name": "sales-functions", "scripts": {"build": "tsc --build"}, "dependencies": {sdk: "1.35.1"}}), encoding="utf-8")
+    (functions_root / "host.json").write_text('{"version":"2.0"}', encoding="utf-8")
+    (functions_root / "tsconfig.json").write_text('{"include":["src"]}', encoding="utf-8")
+    (functions_root / "src" / "function_app.ts").write_text("export {};\n", encoding="utf-8")
+    manifest_path = app_root / "fabric-workspace-deployment.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["functions"] = {"enabled": True, "path": "rayfin/functions", "buildCommand": "npm run build"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    package_path = app_root / "package.json"
+    package = json.loads(package_path.read_text())
+    package["workspaces"] = ["rayfin/functions"]
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    lock_path = app_root / "package-lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["packages"].update(
+        {
+            "rayfin/functions": {"dependencies": {sdk: "1.35.1"}},
+            "node_modules/sales-functions": {"link": True, "resolved": "rayfin/functions"},
+            f"node_modules/{sdk}": {"version": "1.35.1", "dependencies": {"@microsoft/rayfin-client": "1.35.1"}},
+        }
+    )
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+
 def _common(root: Path):
     return SimpleNamespace(
         local=SimpleNamespace(root_folder=str(root)),
@@ -350,6 +378,79 @@ def test_omitted_semantic_model_workspace_inherits_parent_workspace(tmp_path, mo
         "Analytics.Workspace",
         "Analytics.Workspace/Sales Model.SemanticModel",
     ]
+
+
+def test_functions_clean_checkout_uses_root_install_and_canonical_deployment(tmp_path, monkeypatch):
+    app_root = _write_app(tmp_path)
+    _enable_functions(app_root)
+    docker_cli = FakeDockerCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli).execute())
+
+    assert not (app_root / "node_modules").exists()
+    assert [call["command"] for call in docker_cli.calls] == [
+        ["npm", "ci"],
+        ["npm", "exec", "--workspace", "rayfin/functions", "--no", "--", "tsc", "--showConfig", "--project", "tsconfig.json"],
+        ["./node_modules/.bin/rayfin", "--version"],
+        ["./node_modules/.bin/rayfin", "up", "--yes"],
+        ["./node_modules/.bin/rayfin", "up", "status", "--json"],
+    ]
+    assert docker_cli.generated_rayfin_yaml["services"]["functions"] == {
+        "enabled": True,
+        "auth": {"type": "application"},
+        "path": "rayfin/functions",
+        "buildCommand": "npm run build",
+    }
+    assert list((tmp_path / "staging").iterdir()) == []
+
+
+def test_functions_typescript_configuration_failure_prevents_deployment(tmp_path, monkeypatch):
+    app_root = _write_app(tmp_path)
+    _enable_functions(app_root)
+    config_command = ["npm", "exec", "--workspace", "rayfin/functions", "--no", "--", "tsc", "--showConfig", "--project", "tsconfig.json"]
+    docker_cli = FakeDockerCli(fail_command=config_command)
+    fabric_cli = FakeFabricCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    with pytest.raises(RuntimeError, match="simulated Docker failure"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli, fabric_cli=fabric_cli).execute())
+
+    assert [call["command"] for call in docker_cli.calls] == [["npm", "ci"], config_command]
+    assert not any(call[0][0] == "api" for call in fabric_cli.calls)
+    assert len(list((tmp_path / "staging").iterdir())) == 1
+
+
+@pytest.mark.parametrize("functions_enabled", [False, True])
+def test_rayfin_plan_reports_functions_without_external_side_effects(tmp_path, caplog, functions_enabled):
+    app_root = _write_app(tmp_path)
+    if functions_enabled:
+        _enable_functions(app_root)
+    az_cli = FakeAzCli()
+    fabric_cli = FakeFabricCli()
+    docker_cli = FakeDockerCli()
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, fabric_cli=fabric_cli, docker_cli=docker_cli)
+    caplog.set_level("INFO")
+
+    manager.report_plan()
+
+    assert f"Functions enabled={functions_enabled}" in caplog.text
+    assert "rayfin up --yes" in caplog.text
+    if functions_enabled:
+        assert "auth.type=application" in caplog.text
+    assert az_cli.calls == fabric_cli.calls == docker_cli.calls == []
+    assert not (tmp_path / "staging").exists()
+    assert not (app_root / "rayfin" / "rayfin.yml").exists()
+
+
+def test_rayfin_plan_skips_workspace_before_reading_app(tmp_path, caplog):
+    manager = _manager(tmp_path, tmp_path / "staging", None, workspace_params=[SimpleNamespace(name="Skipped", skip_deploy=True, rayfins=[RayfinParams(root_path="missing", semantic_models={})])])
+    caplog.set_level("INFO")
+
+    manager.report_plan()
+
+    assert "skipDeploy=true" in caplog.text
+    assert not (tmp_path / "staging").exists()
 
 
 def test_force_binding_enables_destructive_schema_migrations(tmp_path, monkeypatch):

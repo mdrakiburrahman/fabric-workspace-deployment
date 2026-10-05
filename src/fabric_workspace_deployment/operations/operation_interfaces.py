@@ -1885,6 +1885,11 @@ class SeedManager(Manager):
 class RayfinManager(Manager):
     """Interface for deploying Rayfin applications."""
 
+    @abstractmethod
+    def report_plan(self) -> None:
+        """Report local deployment intent without acquiring credentials or deploying."""
+        pass
+
 
 class ShortcutManager(Manager):
     """

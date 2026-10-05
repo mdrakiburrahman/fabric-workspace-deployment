@@ -62,6 +62,23 @@ class RayfinDeploymentManager(RayfinManager):
             configured_root = Path.cwd() / configured_root
         self.staging_root = staging_root or configured_root / ".fabric-workspace-deployment" / "rayfin-staging"
 
+    def report_plan(self) -> None:
+        """Describe configured app deployment using local inputs only."""
+        for workspace in self.workspace_params:
+            if workspace.skip_deploy:
+                if workspace.rayfins:
+                    self.logger.info(f"Rayfin dry run: skipping workspace '{workspace.name}' because skipDeploy=true")
+                continue
+            for params in workspace.rayfins:
+                source_root = (Path(self.common_params.local.root_folder).resolve() / params.root_path).resolve()
+                manifest = self.manifest_loader.load(source_root)
+                self.manifest_loader.validate_node_package(source_root, manifest)
+                self.manifest_loader.validate_data_schema(source_root, manifest)
+                self.logger.info(f"Rayfin dry run: app '{manifest.app.id}' in workspace '{workspace.name}'; Functions enabled={manifest.functions.enabled}, managed data enabled={manifest.data.enabled}")
+                if manifest.functions.enabled:
+                    self.logger.info(f"Rayfin dry run: root npm ci installs Functions workspace '{manifest.functions.path}'; validate TypeScript configuration; canonical rayfin up builds and deploys Functions with auth.type=application")
+                self.logger.info(f"Rayfin dry run: isolated staging -> npm ci -> verify CLI -> rayfin up --yes{' --force' if params.force else ''} -> verify deployment registry and AppBackend -> status")
+
     async def _execute(self) -> None:
         configured_workspaces = [(workspace_index, workspace) for workspace_index, workspace in enumerate(self.workspace_params) if workspace.rayfins]
         if not configured_workspaces:
@@ -103,6 +120,16 @@ class RayfinDeploymentManager(RayfinManager):
                 timeout=NPM_INSTALL_TIMEOUT_SECONDS,
                 env=docker_env,
             )
+
+            if manifest.functions.enabled:
+                self.docker_cli.compose_run(
+                    compose_path,
+                    project_name,
+                    RAYFIN_COMPOSE_SERVICE_NAME,
+                    ["npm", "exec", "--workspace", manifest.functions.path, "--no", "--", "tsc", "--showConfig", "--project", "tsconfig.json"],
+                    timeout=60,
+                    env=docker_env,
+                )
 
             self._assert_local_rayfin_version(compose_path, project_name, docker_env, manifest)
 
