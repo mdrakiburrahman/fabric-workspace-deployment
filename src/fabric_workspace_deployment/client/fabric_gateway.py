@@ -8,7 +8,7 @@ import requests
 
 from fabric_workspace_deployment.client.fabric_rest import FabricRestClient, response_array, response_guid, response_object, response_string
 from fabric_workspace_deployment.manager.azure.cli import AzCli
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, GatewayClient, GatewayConnection, GatewayParams, GatewayUser, HttpRetryHandler
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, GatewayClient, GatewayConnection, GatewayUser, HttpRetryHandler
 
 
 class FabricGatewayClient(FabricRestClient, GatewayClient):
@@ -17,30 +17,27 @@ class FabricGatewayClient(FabricRestClient, GatewayClient):
     def __init__(self, common_params: CommonParams, az_cli: AzCli, http_retry_handler: HttpRetryHandler):
         super().__init__(common_params, az_cli, http_retry_handler, common_params.endpoint.power_bi)
 
-    def _path(self, gateway: GatewayParams) -> str:
-        cluster = response_guid(gateway.gateway_cluster_id, "Configured gateway cluster")
-        connection = response_guid(gateway.connection_id, "Configured connection")
-        return f"/v2.0/myorg/me/gatewayClusters/{cluster}/datasources/{connection}"
+    def _path(self, connection: GatewayConnection) -> str:
+        cluster_id = response_guid(connection.cluster_id, "Resolved gateway cluster")
+        connection_id = response_guid(connection.id, "Resolved connection")
+        return f"/v2.0/myorg/me/gatewayClusters/{cluster_id}/datasources/{connection_id}"
 
-    async def get_connection(self, gateway: GatewayParams) -> GatewayConnection:
-        response_guid(gateway.connection_id, "Configured connection")
-        response_guid(gateway.gateway_cluster_id, "Configured gateway cluster")
+    async def get_connection(self, connection_id: str) -> GatewayConnection:
+        response_guid(connection_id, "Configured connection")
         data = self._get_json("/v2.0/myorg/me/gatewayClusterDatasources?$expand=users", "Gateway connection inventory")
         records = response_array(data if isinstance(data, list) else response_object(data, "Gateway inventory").get("value"), "Gateway inventory value")
         matches = []
         for index, record in enumerate(records):
             entry = response_object(record, f"Gateway inventory[{index}]")
-            connection_id = response_guid(entry.get("id"), f"Gateway inventory[{index}].id")
-            if connection_id.casefold() == gateway.connection_id.casefold():
-                matches.append(GatewayConnection(connection_id, response_guid(entry.get("clusterId"), "Gateway inventory clusterId"), response_string(entry.get("datasourceName"), "Gateway inventory datasourceName")))
+            current_id = response_guid(entry.get("id"), f"Gateway inventory[{index}].id")
+            if current_id.casefold() == connection_id.casefold():
+                matches.append(GatewayConnection(current_id, response_guid(entry.get("clusterId"), "Gateway inventory clusterId"), response_string(entry.get("datasourceName"), "Gateway inventory datasourceName")))
         if len(matches) != 1:
             raise RuntimeError("Configured gateway connection is missing or ambiguous in accessible connection inventory")
-        if matches[0].cluster_id.casefold() != gateway.gateway_cluster_id.casefold():
-            raise RuntimeError("Configured gateway connection belongs to a different cluster")
         return matches[0]
 
-    async def list_users(self, gateway: GatewayParams) -> list[GatewayUser]:
-        data = response_object(self._get_json(f"{self._path(gateway)}/users", "Gateway direct access read"), "Gateway users response")
+    async def list_users(self, connection: GatewayConnection) -> list[GatewayUser]:
+        data = response_object(self._get_json(f"{self._path(connection)}/users", "Gateway direct access read"), "Gateway users response")
         records = response_array(data.get("value"), "Gateway users value")
         users = []
         for index, record in enumerate(records):
@@ -57,14 +54,14 @@ class FabricGatewayClient(FabricRestClient, GatewayClient):
             raise RuntimeError("Gateway direct access contains duplicate principal identifiers")
         return users
 
-    async def rename(self, gateway: GatewayParams) -> None:
-        self._request(requests.patch, self._path(gateway), "Gateway connection rename", json={"datasourceName": gateway.display_name})
+    async def rename(self, connection: GatewayConnection, display_name: str) -> None:
+        self._request(requests.patch, self._path(connection), "Gateway connection rename", json={"datasourceName": display_name})
 
-    async def add_user(self, gateway: GatewayParams, user: GatewayUser) -> None:
-        self._request(requests.post, f"{self._path(gateway)}/users", "Gateway direct access addition", json={"identifier": user.identifier, "datasourceAccessRight": user.datasource_access_right, "emailAddress": None, "role": user.role})
+    async def add_user(self, connection: GatewayConnection, user: GatewayUser) -> None:
+        self._request(requests.post, f"{self._path(connection)}/users", "Gateway direct access addition", json={"identifier": user.identifier, "datasourceAccessRight": user.datasource_access_right, "emailAddress": None, "role": user.role})
 
-    async def delete_user(self, gateway: GatewayParams, user: GatewayUser) -> None:
-        self._request(requests.delete, f"{self._path(gateway)}/users/{quote(user.identifier, safe='')}", "Gateway direct access removal")
+    async def delete_user(self, connection: GatewayConnection, user: GatewayUser) -> None:
+        self._request(requests.delete, f"{self._path(connection)}/users/{quote(user.identifier, safe='')}", "Gateway direct access removal")
 
     def get_caller_identifiers(self) -> frozenset[str]:
         claims = self.az_cli.get_token_claims(self.common_params.scope.analysis_service)

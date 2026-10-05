@@ -28,9 +28,7 @@ Every GUID and principal below is fictitious.
     "fabric": {
       "gateways": [
         {
-          "name": "engineering-adls",
           "connectionId": "11111111-1111-1111-1111-111111111111",
-          "gatewayClusterId": "22222222-2222-2222-2222-222222222222",
           "displayName": "Example ADLS Connection",
           "dryRun": true,
           "users": [
@@ -48,7 +46,7 @@ Every GUID and principal below is fictitious.
               "directLakeAutoSync": false,
               "dryRun": true,
               "connections": [
-                { "moniker": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "gateway": "engineering-adls" }
+                { "moniker": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "connectionId": "11111111-1111-1111-1111-111111111111" }
               ],
               "security": {
                 "Dynamic Row-Level Security": ["Report Readers"]
@@ -65,18 +63,23 @@ Every GUID and principal below is fictitious.
 | Field                              | Contract                                                                                                                                                         |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fabric.gateways`                  | Optional; defaults to `[]`. Refers to existing connections, not clusters to create.                                                                              |
-| Gateway `name`                     | Unique logical reference key, independent of mutable remote `displayName`.                                                                                       |
-| `connectionId`, `gatewayClusterId` | Stable GUIDs; the actual accessible connection must belong to this cluster.                                                                                      |
+| Gateway `connectionId`             | Unique stable connection GUID. Used directly by model references; parent cluster IDs are discovered at runtime. |
+| Gateway `displayName`              | Desired mutable remote name, used only for rename reconciliation, never for lookup. |
 | Gateway `users`                    | Complete desired direct-access list. Supported desired values: Group/User, Owner/User roles, and `datasourceAccessRight: "Read"`.                                |
 | Identity names                     | Exact, unique `common.identities[].givenName` references; no fuzzy matching or Graph lookups.                                                                    |
 | `userPrincipalName`                | Optional for legacy identities; required for User identities used by these features. Gateway Users use UPN identifiers; Groups and RLS members use object GUIDs. |
-| Model `connections`                | Optional moniker-to-declared-gateway mappings. Targets must be candidates for that specific moniker and cluster.                                                 |
+| Model `connections`                | Optional moniker-to-connection mappings. Each `connectionId` must reference exactly one declared gateway connection and be a candidate for that moniker and its resolved cluster. |
 | Model `security`                   | Exact existing role names mapped to arrays of Group/User identity names.                                                                                         |
 | Gateway/model `dryRun`             | Optional strict boolean, default `false`; controls only that entry.                                                                                              |
 
 Startup validates references, GUIDs, metadata, duplicate declarations, and supported values.
 `deployGateway` permits `workspaces: []`; other existing common requirements still apply.
 Existing operations retain their workspace requirements.
+
+Connection GUIDs remain authoritative. The gateway datasource inventory is queried by exact
+`id` to resolve its `clusterId` at runtime for gateway API routes and model binding requests.
+No gateway alias or cluster ID is configured, and display names are never used for fuzzy lookup.
+Missing/ambiguous connections and malformed inventory cluster IDs fail before writes.
 
 ## Authoritative access and ownership
 
@@ -136,6 +139,6 @@ shapes and permission failures surface explicitly. Preview with real identifiers
 tenant compatibility before applying. REST updates are not atomic across entities; failures
 are reported and deterministic reruns converge rather than returning success-shaped fallbacks.
 
-Replace example connection/cluster/moniker IDs and Owner object ID/UPN. A nonexistent example
+Replace example connection/moniker IDs and Owner object ID/UPN. A nonexistent example
 connection fails preflight safely; preview never creates it. Supply the complete intended
 ACL before applying because unlisted access will be removed.

@@ -1092,9 +1092,7 @@ class GatewayUserParams:
 class GatewayParams:
     """An existing, independently managed gateway/cloud connection."""
 
-    name: str
     connection_id: str
-    gateway_cluster_id: str
     display_name: str
     users: list[GatewayUserParams]
     dry_run: bool = False
@@ -1133,7 +1131,7 @@ class ModelConnectionParams:
     """A model datasource moniker referencing a declared connection."""
 
     moniker: str
-    gateway: str
+    connection_id: str
 
 
 @dataclass
@@ -1701,10 +1699,10 @@ class FabricParams:
     storages: list[FabricStorageParams]
     gateways: list[GatewayParams] = field(default_factory=list)
 
-    def get_gateway_by_name(self, name: str) -> GatewayParams:
-        matches = [gateway for gateway in self.gateways if gateway.name == name]
+    def get_gateway_by_connection_id(self, connection_id: str) -> GatewayParams:
+        matches = [gateway for gateway in self.gateways if gateway.connection_id.casefold() == connection_id.casefold()]
         if len(matches) != 1:
-            raise ValueError("Gateway reference must resolve to exactly one common.fabric.gateways entry")
+            raise ValueError("Connection ID must resolve to exactly one common.fabric.gateways entry")
         return matches[0]
 
 
@@ -1995,23 +1993,23 @@ class GatewayClient(ABC):
     """Transport for existing connection inventory and direct access."""
 
     @abstractmethod
-    async def get_connection(self, gateway: GatewayParams) -> GatewayConnection:
+    async def get_connection(self, connection_id: str) -> GatewayConnection:
         pass
 
     @abstractmethod
-    async def list_users(self, gateway: GatewayParams) -> list[GatewayUser]:
+    async def list_users(self, connection: GatewayConnection) -> list[GatewayUser]:
         pass
 
     @abstractmethod
-    async def rename(self, gateway: GatewayParams) -> None:
+    async def rename(self, connection: GatewayConnection, display_name: str) -> None:
         pass
 
     @abstractmethod
-    async def add_user(self, gateway: GatewayParams, user: GatewayUser) -> None:
+    async def add_user(self, connection: GatewayConnection, user: GatewayUser) -> None:
         pass
 
     @abstractmethod
-    async def delete_user(self, gateway: GatewayParams, user: GatewayUser) -> None:
+    async def delete_user(self, connection: GatewayConnection, user: GatewayUser) -> None:
         pass
 
     @abstractmethod
@@ -3949,10 +3947,13 @@ class OperationParams:
                     self.logger.error(f"{connection_path}.moniker must be a unique GUID")
                     return False
                 seen_monikers.add(connection.moniker.casefold())
+                if not self._is_valid_guid(connection.connection_id):
+                    self.logger.error(f"{connection_path}.connectionId must be a GUID")
+                    return False
                 try:
-                    self.common.fabric.get_gateway_by_name(connection.gateway)
+                    self.common.fabric.get_gateway_by_connection_id(connection.connection_id)
                 except ValueError:
-                    self.logger.error(f"{connection_path}.gateway must reference exactly one declared gateway")
+                    self.logger.error(f"{connection_path}.connectionId must reference exactly one declared gateway")
                     return False
             for role_index, members in enumerate(model.security.values()):
                 if not self._validate_membership_identities(members, f"{path}.security role[{role_index}]"):
@@ -3986,20 +3987,15 @@ class OperationParams:
         return True
 
     def _validate_gateway_params(self) -> bool:
-        seen_names: set[str] = set()
         seen_connections: set[str] = set()
         for index, gateway in enumerate(self.common.fabric.gateways):
             path = f"common.fabric.gateways[{index}]"
-            if not gateway.name or gateway.name in seen_names:
-                self.logger.error(f"{path}.name must be non-empty and unique")
-                return False
-            seen_names.add(gateway.name)
             if not self._is_valid_guid(gateway.connection_id) or gateway.connection_id.casefold() in seen_connections:
                 self.logger.error(f"{path}.connectionId must be a unique GUID")
                 return False
             seen_connections.add(gateway.connection_id.casefold())
-            if not self._is_valid_guid(gateway.gateway_cluster_id) or not gateway.display_name:
-                self.logger.error(f"{path} requires a gatewayClusterId GUID and displayName")
+            if not gateway.display_name:
+                self.logger.error(f"{path}.displayName must be non-empty")
                 return False
             if not isinstance(gateway.dry_run, bool):
                 self.logger.error(f"{path}.dryRun must be a boolean")
@@ -4622,7 +4618,7 @@ class OperationParams:
                 if access != "Read":
                     raise ValueError(f"{user_path}.datasourceAccessRight must be Read")
                 users.append(GatewayUserParams(self._config_string(user_data, "identity", user_path), GatewayRole(role), access))
-            gateways.append(GatewayParams(name=self._config_string(entry, "name", entry_path), connection_id=self._config_string(entry, "connectionId", entry_path), gateway_cluster_id=self._config_string(entry, "gatewayClusterId", entry_path), display_name=self._config_string(entry, "displayName", entry_path), users=users, dry_run=self._parse_dry_run(entry, entry_path)))
+            gateways.append(GatewayParams(connection_id=self._config_string(entry, "connectionId", entry_path), display_name=self._config_string(entry, "displayName", entry_path), users=users, dry_run=self._parse_dry_run(entry, entry_path)))
         return gateways
 
     def _parse_fabric_workspaces(self, data: list[dict[str, Any]], root_folder: str) -> list[FabricWorkspaceParams]:
@@ -4967,7 +4963,7 @@ class OperationParams:
                 connection_path = f"{path}.connections[{index}]"
                 if not isinstance(connection, dict):
                     raise ValueError(f"{connection_path} must be an object")
-                connections.append(ModelConnectionParams(self._config_string(connection, "moniker", connection_path), self._config_string(connection, "gateway", connection_path)))
+                connections.append(ModelConnectionParams(self._config_string(connection, "moniker", connection_path), self._config_string(connection, "connectionId", connection_path)))
             security = model_data.get("security", {})
             if not isinstance(security, dict):
                 raise ValueError(f"{path}.security must be a role-to-identities object")

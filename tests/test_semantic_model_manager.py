@@ -83,21 +83,24 @@ class FakeAzCli:
 class FakeGatewayClient(GatewayClient):
     def __init__(self):
         self.calls = []
+        self.connections = {CONNECTION_ID: GatewayConnection(CONNECTION_ID, CLUSTER_ID, "Remote name")}
 
-    async def get_connection(self, gateway):
-        self.calls.append(gateway.connection_id)
-        return GatewayConnection(gateway.connection_id, gateway.gateway_cluster_id, gateway.display_name)
+    async def get_connection(self, connection_id):
+        self.calls.append(connection_id)
+        if connection_id.casefold() not in self.connections:
+            raise RuntimeError("Configured connection is missing")
+        return self.connections[connection_id.casefold()]
 
-    async def list_users(self, gateway):
+    async def list_users(self, connection):
         pytest.fail("Model deployment must not reconcile gateway ACLs")
 
-    async def rename(self, gateway):
+    async def rename(self, connection, display_name):
         pytest.fail("Model deployment must not rename gateways")
 
-    async def add_user(self, gateway, user):
+    async def add_user(self, connection, user):
         pytest.fail("Model deployment must not modify gateways")
 
-    async def delete_user(self, gateway, user):
+    async def delete_user(self, connection, user):
         pytest.fail("Model deployment must not modify gateways")
 
     def get_caller_identifiers(self):
@@ -243,7 +246,7 @@ def _feature_manager(tmp_path, *, bindings=None, roles=None, missing=False, appl
     gateway_client = FakeGatewayClient()
     manager = _manager(tmp_path, FakeFolderClient([[] if missing else [_model_artifact()]]), http, gateway_client=gateway_client, model_client=client)
     common = manager.common_params
-    common.fabric = FabricParams([], [], [GatewayParams("connection", CONNECTION_ID, CLUSTER_ID, "Example", [GatewayUserParams("readers", GatewayRole.OWNER, "Read")])])
+    common.fabric = FabricParams([], [], [GatewayParams(CONNECTION_ID, "Example", [GatewayUserParams("readers", GatewayRole.OWNER, "Read")])])
     common.identities = [Identity("readers", GROUP_ID, PrincipalType.GROUP), Identity("user", "44444444-4444-4444-4444-444444444444", PrincipalType.USER, user_principal_name="reader@example.invalid")]
     common.get_identity_by_given_name = MethodType(CommonParams.get_identity_by_given_name, common)
     return manager, client, http, gateway_client
@@ -251,7 +254,7 @@ def _feature_manager(tmp_path, *, bindings=None, roles=None, missing=False, appl
 
 def test_binding_and_rls_noop_only_preserves_legacy_settings_write(tmp_path):
     manager, client, http, gateway = _feature_manager(tmp_path, bindings=_bound_state(), roles=[RlsRoleMembership(7, "Role", [_member(GROUP_ID)])])
-    params = ModelParams("insights", False, [ModelConnectionParams(MONIKER, "connection")], {"Role": ["readers"]})
+    params = ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)], {"Role": ["readers"]})
     asyncio.run(manager.reconcile("workspace", params))
     assert [call[0] for call in client.calls] == ["read-bindings", "read-rls"]
     assert len(http.calls) == 1
@@ -260,12 +263,43 @@ def test_binding_and_rls_noop_only_preserves_legacy_settings_write(tmp_path):
 
 def test_binding_update_and_second_run_noop(tmp_path):
     manager, client, _, _ = _feature_manager(tmp_path, bindings=_bound_state(bound_id=OTHER_ID))
-    params = ModelParams("insights", False, [ModelConnectionParams(MONIKER, "connection")])
+    params = ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)])
     asyncio.run(manager.reconcile("workspace", params))
     assert [call for call in client.calls if call[0] == "bind"] == [("bind", 42, CLUSTER_ID, {MONIKER: CONNECTION_ID})]
     client.calls.clear()
     asyncio.run(manager.reconcile("workspace", params))
     assert not any(call[0] == "bind" for call in client.calls)
+
+
+def test_binding_uses_runtime_resolved_cluster_not_configuration(tmp_path):
+    resolved_cluster = "66666666-6666-6666-6666-666666666666"
+    state = _bound_state(bound_id=OTHER_ID)
+    state.datasources = [ModelDatasourceCandidate(CONNECTION_ID, resolved_cluster)]
+    manager, client, _, gateway = _feature_manager(tmp_path, bindings=state)
+    gateway.connections[CONNECTION_ID] = GatewayConnection(CONNECTION_ID, resolved_cluster, "Different remote display name")
+    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)])))
+    assert ("bind", 42, resolved_cluster, {MONIKER: CONNECTION_ID}) in client.calls
+    assert gateway.calls == [CONNECTION_ID]
+
+
+def test_same_connection_for_multiple_monikers_is_resolved_once(tmp_path):
+    second_moniker = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    state = _bound_state(bound_id=OTHER_ID)
+    state.monikers.append(ModelDatasourceBinding(second_moniker, frozenset({CLUSTER_ID}), frozenset({OTHER_ID}), frozenset({CONNECTION_ID})))
+    manager, client, _, gateway = _feature_manager(tmp_path, bindings=state)
+    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID), ModelConnectionParams(second_moniker, CONNECTION_ID)])))
+    assert gateway.calls == [CONNECTION_ID]
+    assert [call for call in client.calls if call[0] == "bind"] == [("bind", 42, CLUSTER_ID, {MONIKER: CONNECTION_ID, second_moniker: CONNECTION_ID})]
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_missing_runtime_connection_fails_before_model_writes(tmp_path, preview):
+    manager, client, http, gateway = _feature_manager(tmp_path, bindings=_bound_state(bound_id=OTHER_ID))
+    gateway.connections.clear()
+    with pytest.raises(RuntimeError, match="connection is missing"):
+        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)], dry_run=preview)))
+    assert client.calls == []
+    assert http.calls == []
 
 
 @pytest.mark.parametrize("current,desired,added,removed", [([], ["readers"], 1, 0), ([GROUP_ID], [], 0, 1), ([OTHER_ID], ["readers"], 1, 1), ([GROUP_ID], ["readers"], 0, 0)])
@@ -295,7 +329,7 @@ def test_rls_user_payload_uses_existing_identity_metadata(tmp_path):
 def test_missing_or_duplicate_role_fails_before_all_model_writes(tmp_path, roles):
     manager, client, http, _ = _feature_manager(tmp_path, bindings=_bound_state(bound_id=OTHER_ID), roles=roles)
     with pytest.raises(RuntimeError, match="RLS role is missing or ambiguous"):
-        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, "connection")], {"Role": ["readers"]})))
+        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)], {"Role": ["readers"]})))
     assert http.calls == []
     assert not any(call[0] in ("bind", "rls") for call in client.calls)
 
@@ -303,7 +337,7 @@ def test_missing_or_duplicate_role_fails_before_all_model_writes(tmp_path, roles
 def test_moniker_specific_candidate_missing_fails_without_writes(tmp_path):
     manager, client, http, _ = _feature_manager(tmp_path, bindings=_bound_state(bound_id=OTHER_ID, candidates=[OTHER_ID]))
     with pytest.raises(RuntimeError, match="not a valid candidate"):
-        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, "connection")])))
+        asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)])))
     assert http.calls == []
     assert not any(call[0] == "bind" for call in client.calls)
 
@@ -311,7 +345,7 @@ def test_moniker_specific_candidate_missing_fails_without_writes(tmp_path):
 def test_model_preview_suppresses_settings_bindings_and_rls(tmp_path, caplog):
     manager, client, http, _ = _feature_manager(tmp_path, bindings=_bound_state(bound_id=OTHER_ID), roles=[RlsRoleMembership(7, "Role", [_member(OTHER_ID)])])
     caplog.set_level("INFO")
-    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, "connection")], {"Role": ["readers"]}, True)))
+    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID)], {"Role": ["readers"]}, True)))
     assert http.calls == []
     assert not any(call[0] in ("bind", "rls") for call in client.calls)
     assert GROUP_ID not in caplog.text
@@ -353,9 +387,10 @@ def test_multiple_monikers_cluster_groups_and_unconfigured_binding(tmp_path):
     state = _bound_state(bound_id=OTHER_ID)
     state.monikers.extend([ModelDatasourceBinding(second_moniker, frozenset({CLUSTER_ID}), frozenset({CONNECTION_ID}), frozenset({OTHER_ID})), ModelDatasourceBinding(untouched_moniker, frozenset({CLUSTER_ID}), frozenset({CONNECTION_ID}), frozenset({CONNECTION_ID}))])
     state.datasources.append(ModelDatasourceCandidate(OTHER_ID, other_cluster))
-    manager, client, _, _ = _feature_manager(tmp_path, bindings=state)
-    manager.common_params.fabric.gateways.append(GatewayParams("second", OTHER_ID, other_cluster, "Second", [GatewayUserParams("readers", GatewayRole.OWNER, "Read")]))
-    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, "connection"), ModelConnectionParams(second_moniker, "second")])))
+    manager, client, _, gateway_client = _feature_manager(tmp_path, bindings=state)
+    manager.common_params.fabric.gateways.append(GatewayParams(OTHER_ID, "Second", [GatewayUserParams("readers", GatewayRole.OWNER, "Read")]))
+    gateway_client.connections[OTHER_ID] = GatewayConnection(OTHER_ID, other_cluster, "Remote second")
+    asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, [ModelConnectionParams(MONIKER, CONNECTION_ID), ModelConnectionParams(second_moniker, OTHER_ID)])))
     assert len([call for call in client.calls if call[0] == "bind"]) == 2
     assert client.bindings.monikers[2].connection_ids == frozenset({CONNECTION_ID})
 

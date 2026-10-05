@@ -14,14 +14,13 @@ from fabric_workspace_deployment.operations import operators
 from fabric_workspace_deployment.factories.management_factory import ContainerizedManagementFactory
 
 CONNECTION_ID = "11111111-1111-1111-1111-111111111111"
-CLUSTER_ID = "22222222-2222-2222-2222-222222222222"
 GROUP_ID = "33333333-3333-3333-3333-333333333333"
 USER_ID = "44444444-4444-4444-4444-444444444444"
 MONIKER = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 
 def _gateway():
-    return GatewayParams("connection", CONNECTION_ID, CLUSTER_ID, "Example connection", [GatewayUserParams("owner", GatewayRole.OWNER, "Read"), GatewayUserParams("readers", GatewayRole.USER, "Read")])
+    return GatewayParams(CONNECTION_ID, "Example connection", [GatewayUserParams("owner", GatewayRole.OWNER, "Read"), GatewayUserParams("readers", GatewayRole.USER, "Read")])
 
 
 def _params():
@@ -40,7 +39,7 @@ def _params():
 
 
 def _raw_gateway(**overrides):
-    return {"name": "connection", "connectionId": CONNECTION_ID, "gatewayClusterId": CLUSTER_ID, "displayName": "Example connection", "users": [{"identity": "owner", "role": "Owner", "datasourceAccessRight": "Read"}], **overrides}
+    return {"connectionId": CONNECTION_ID, "displayName": "Example connection", "users": [{"identity": "owner", "role": "Owner", "datasourceAccessRight": "Read"}], **overrides}
 
 
 def test_gateway_enum_and_backward_compatible_model_defaults():
@@ -55,11 +54,12 @@ def test_gateway_enum_and_backward_compatible_model_defaults():
 def test_parse_gateway_and_model_preview():
     params = _params()
     gateway = params._parse_gateway_params([_raw_gateway(dryRun=True)])[0]
-    model = params._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "dryRun": True, "connections": [{"moniker": MONIKER, "gateway": "connection"}], "security": {"Existing role": ["readers"]}}])[0]
+    model = params._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "dryRun": True, "connections": [{"moniker": MONIKER, "connectionId": CONNECTION_ID}], "security": {"Existing role": ["readers"]}}])[0]
+    assert vars(gateway).keys() == {"connection_id", "display_name", "users", "dry_run"}
     assert gateway.dry_run is True
     assert gateway.users[0].role is GatewayRole.OWNER
     assert model.dry_run is True
-    assert model.connections == [ModelConnectionParams(MONIKER, "connection")]
+    assert model.connections == [ModelConnectionParams(MONIKER, CONNECTION_ID)]
     assert model.security == {"Existing role": ["readers"]}
     assert params._validate_gateway_params()
     assert params._validate_model_params([model], 0)
@@ -86,7 +86,7 @@ def test_security_requires_a_role_to_identity_array_object(security):
         _params()._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "security": security}])
 
 
-@pytest.mark.parametrize("connections", [None, {}, "connection", [None], [{"moniker": MONIKER}], [{"moniker": "", "gateway": "connection"}]])
+@pytest.mark.parametrize("connections", [None, {}, "connection", [None], [{"moniker": MONIKER}], [{"moniker": "", "connectionId": CONNECTION_ID}]])
 def test_binding_configuration_is_strict(connections):
     with pytest.raises(ValueError, match="connections"):
         _params()._parse_model_params([{"displayName": "Example", "directLakeAutoSync": False, "connections": connections}])
@@ -100,19 +100,29 @@ def test_empty_named_role_means_clear_and_empty_object_is_unmanaged():
     assert params._validate_model_params(models, 0)
 
 
-@pytest.mark.parametrize("field,value", [("connection_id", "bad"), ("gateway_cluster_id", "bad"), ("display_name", ""), ("dry_run", "true"), ("users", [])])
+@pytest.mark.parametrize("field,value", [("connection_id", "bad"), ("display_name", ""), ("dry_run", "true"), ("users", [])])
 def test_invalid_gateway_values_fail_validation(field, value):
     params = _params()
     params.common.fabric.gateways = [replace(_gateway(), **{field: value})]
     assert not params._validate_gateway_params()
 
 
-def test_duplicate_gateway_keys_and_ids_are_rejected():
+def test_connection_ids_are_unique_but_display_names_can_repeat():
     params = _params()
     params.common.fabric.gateways.append(replace(_gateway(), connection_id="55555555-5555-5555-5555-555555555555"))
+    assert params._validate_gateway_params()
+    params.common.fabric.gateways[1] = _gateway()
     assert not params._validate_gateway_params()
-    params.common.fabric.gateways[1] = replace(_gateway(), name="another")
+
+
+def test_connection_guid_references_and_uniqueness_are_case_insensitive():
+    params = _params()
+    guid = "abcdef01-2345-6789-abcd-ef0123456789"
+    params.common.fabric.gateways = [replace(_gateway(), connection_id=guid)]
+    assert params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, guid.upper())])], 0)
+    params.common.fabric.gateways.append(replace(_gateway(), connection_id=guid.upper()))
     assert not params._validate_gateway_params()
+    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, guid)])], 0)
 
 
 @pytest.mark.parametrize("role,access", [("UserWithReshare", "Read"), ("Owner", "Write")])
@@ -141,10 +151,11 @@ def test_duplicate_principals_in_a_role_are_rejected_by_object_id():
 
 def test_model_binding_refs_and_monikers_are_validated_even_in_preview():
     params = _params()
-    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, "missing")], dry_run=True)], 0)
-    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams("bad", "connection")])], 0)
-    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, "connection"), ModelConnectionParams(MONIKER.upper(), "connection")])], 0)
+    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, "55555555-5555-5555-5555-555555555555")], dry_run=True)], 0)
+    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams("bad", CONNECTION_ID)])], 0)
+    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, CONNECTION_ID), ModelConnectionParams(MONIKER.upper(), CONNECTION_ID)])], 0)
     assert not params._validate_model_params([ModelParams("Example", False), ModelParams("Example", False)], 0)
+    assert not params._validate_model_params([ModelParams("Example", False, [ModelConnectionParams(MONIKER, "Example connection")])], 0)
 
 
 def test_gateway_only_operation_does_not_require_a_workspace(monkeypatch):

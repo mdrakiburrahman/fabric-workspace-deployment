@@ -21,7 +21,7 @@ from fabric_workspace_deployment.operations.operation_interfaces import (
     FabricFolderArtifact,
     FolderClient,
     GatewayClient,
-    GatewayParams,
+    GatewayConnection,
     HttpRetryHandler,
     ModelManager,
     ModelParams,
@@ -116,10 +116,15 @@ class SemanticModelManager(ModelManager):
         self.logger.info(f"Reconciling model '{model_params.display_name}' in workspace {workspace_id}")
 
         try:
-            bindings = [(connection, self.common_params.fabric.get_gateway_by_name(connection.gateway)) for connection in model_params.connections]
+            bindings: list[tuple[ModelConnectionParams, GatewayConnection]] = []
+            resolved_connections: dict[str, GatewayConnection] = {}
+            for connection in model_params.connections:
+                declaration = self.common_params.fabric.get_gateway_by_connection_id(connection.connection_id)
+                key = declaration.connection_id.casefold()
+                if key not in resolved_connections:
+                    resolved_connections[key] = await self.gateway_client.get_connection(declaration.connection_id)
+                bindings.append((connection, resolved_connections[key]))
             desired_security = {role: self._desired_rls_members(names) for role, names in model_params.security.items()}
-            for gateway in {gateway.connection_id.casefold(): gateway for _, gateway in bindings}.values():
-                await self.gateway_client.get_connection(gateway)
             folder_info = await self.folder_client.get_fabric_folder_collection(workspace_id)
             matching_model = self._find_model(folder_info.artifacts, model_params.display_name)
 
@@ -241,24 +246,24 @@ class SemanticModelManager(ModelManager):
             raise ValueError("Configured model moniker is missing or ambiguous")
         return matches[0]
 
-    def _plan_bindings(self, state: ModelBindingState, bindings: list[tuple[ModelConnectionParams, GatewayParams]]) -> dict[str, dict[str, str]]:
+    def _plan_bindings(self, state: ModelBindingState, bindings: list[tuple[ModelConnectionParams, GatewayConnection]]) -> dict[str, dict[str, str]]:
         updates: dict[str, dict[str, str]] = {}
         for index, (connection, gateway) in enumerate(bindings):
             current = self._find_moniker(state, connection.moniker)
-            desired_id = gateway.connection_id.casefold()
-            cluster_id = gateway.gateway_cluster_id.casefold()
+            desired_id = gateway.id.casefold()
+            cluster_id = gateway.cluster_id.casefold()
             candidate_clusters = {entry.gateway_cluster_id.casefold() for entry in state.datasources if entry.connection_id.casefold() == desired_id}
             if desired_id not in current.candidate_ids or candidate_clusters != {cluster_id}:
                 raise ValueError(f"Model connections[{index}]: desired connection is not a valid candidate for that moniker and cluster")
             if current.gateway_ids != frozenset({cluster_id}) or current.connection_ids != frozenset({desired_id}):
-                updates.setdefault(cluster_id, {})[connection.moniker] = gateway.connection_id
+                updates.setdefault(cluster_id, {})[connection.moniker] = gateway.id
                 self.logger.info("Model connections[%d]: current gateways=%s, connections=%s -> gateway=%s, connection=%s", index, sorted(current.gateway_ids), sorted(current.connection_ids), cluster_id, desired_id)
         return updates
 
-    def _bindings_match(self, state: ModelBindingState, bindings: list[tuple[ModelConnectionParams, GatewayParams]], untouched: dict[str, tuple[frozenset[str], frozenset[str]]]) -> bool:
+    def _bindings_match(self, state: ModelBindingState, bindings: list[tuple[ModelConnectionParams, GatewayConnection]], untouched: dict[str, tuple[frozenset[str], frozenset[str]]]) -> bool:
         for connection, gateway in bindings:
             current = self._find_moniker(state, connection.moniker)
-            if current.gateway_ids != frozenset({gateway.gateway_cluster_id.casefold()}) or current.connection_ids != frozenset({gateway.connection_id.casefold()}):
+            if current.gateway_ids != frozenset({gateway.cluster_id.casefold()}) or current.connection_ids != frozenset({gateway.id.casefold()}):
                 return False
         for moniker, expected in untouched.items():
             current = self._find_moniker(state, moniker)

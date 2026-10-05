@@ -56,8 +56,8 @@ class FabricGatewayManager(GatewayManager):
 
     async def reconcile(self, gateway: GatewayParams) -> None:
         desired = self._desired_users(gateway)
-        connection = await self.gateway_client.get_connection(gateway)
-        users = await self.gateway_client.list_users(gateway)
+        connection = await self.gateway_client.get_connection(gateway.connection_id)
+        users = await self.gateway_client.list_users(connection)
         current = {user.key: user for user in users}
         if len(current) != len(users):
             raise RuntimeError("Gateway current access contains ambiguous principal identifiers")
@@ -84,17 +84,18 @@ class FabricGatewayManager(GatewayManager):
         if gateway.dry_run or not (rename or additions or replacements or removals):
             return
         for user in sorted(additions, key=lambda entry: entry.role != GatewayRole.OWNER.value):
-            await self.gateway_client.add_user(gateway, user)
+            await self.gateway_client.add_user(connection, user)
         for old, new in replacements:
-            await self.gateway_client.delete_user(gateway, old)
-            await self.gateway_client.add_user(gateway, new)
+            await self.gateway_client.delete_user(connection, old)
+            await self.gateway_client.add_user(connection, new)
         for user in removals:
-            await self.gateway_client.delete_user(gateway, user)
+            await self.gateway_client.delete_user(connection, user)
         if rename:
-            await self.gateway_client.rename(gateway)
+            await self.gateway_client.rename(connection, gateway.display_name)
 
         async def read() -> tuple[GatewayConnection, list[GatewayUser]]:
-            return await self.gateway_client.get_connection(gateway), await self.gateway_client.list_users(gateway)
+            actual = await self.gateway_client.get_connection(gateway.connection_id)
+            return actual, await self.gateway_client.list_users(actual)
 
         def matches(state: tuple[GatewayConnection, list[GatewayUser]]) -> bool:
             actual = {user.key: user.permission for user in state[1]}

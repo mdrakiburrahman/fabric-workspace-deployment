@@ -23,7 +23,11 @@ OWNER_ID = "44444444-4444-4444-4444-444444444444"
 
 
 def _gateway():
-    return GatewayParams("example", CONNECTION_ID, CLUSTER_ID, "Example", [GatewayUserParams("owner", GatewayRole.OWNER, "Read")])
+    return GatewayParams(CONNECTION_ID, "Example", [GatewayUserParams("owner", GatewayRole.OWNER, "Read")])
+
+
+def _connection():
+    return GatewayConnection(CONNECTION_ID, CLUSTER_ID, "Old name")
 
 
 class FakeHttp:
@@ -53,34 +57,48 @@ def _record(**overrides):
 
 
 @pytest.mark.parametrize("envelope", [True, False])
-def test_discovery_uses_stable_guid_and_checks_cluster(envelope):
+def test_discovery_uses_stable_guid_and_resolves_cluster(envelope):
     data = [_record()]
     client, http = _client([{"value": data} if envelope else data])
-    connection = asyncio.run(client.get_connection(_gateway()))
+    connection = asyncio.run(client.get_connection(CONNECTION_ID))
     assert connection.id == CONNECTION_ID
+    assert connection.cluster_id == CLUSTER_ID
     assert connection.datasource_name == "Old name"
     assert http.calls[0][1].endswith("/v2.0/myorg/me/gatewayClusterDatasources?$expand=users")
 
 
-@pytest.mark.parametrize("data", [{"value": []}, {"value": [_record(), _record()]}, {"value": [_record(clusterId=GROUP_ID)]}, {}, {"value": "secret"}])
-def test_missing_ambiguous_wrong_cluster_and_unknown_envelopes_fail(data):
+@pytest.mark.parametrize("data", [{"value": []}, {"value": [_record(), _record()]}, {"value": [_record(clusterId=None)]}, {"value": [_record(clusterId="invalid")]}, {}, {"value": "secret"}])
+def test_missing_ambiguous_invalid_cluster_and_unknown_envelopes_fail(data):
     client, _ = _client([data])
     with pytest.raises(RuntimeError):
-        asyncio.run(client.get_connection(_gateway()))
+        asyncio.run(client.get_connection(CONNECTION_ID))
+
+
+def test_request_paths_use_the_cluster_resolved_from_inventory():
+    client, http = _client([{"value": [_record(clusterId=GROUP_ID)]}, None])
+    connection = asyncio.run(client.get_connection(CONNECTION_ID))
+    asyncio.run(client.rename(connection, "Example"))
+    assert http.calls[1][1].endswith(f"/gatewayClusters/{GROUP_ID}/datasources/{CONNECTION_ID}")
+
+
+def test_display_name_is_not_used_to_find_another_connection():
+    client, _ = _client([{"value": [_record(id=GROUP_ID, datasourceName="Example")]}])
+    with pytest.raises(RuntimeError, match="missing or ambiguous"):
+        asyncio.run(client.get_connection(CONNECTION_ID))
 
 
 def test_rename_does_not_clear_connection_properties():
     client, http = _client([None])
-    asyncio.run(client.rename(_gateway()))
+    asyncio.run(client.rename(_connection(), "Example"))
     assert http.calls[0][0] is requests.patch
     assert http.calls[0][2]["json"] == {"datasourceName": "Example"}
 
 
 def test_read_add_and_remove_use_captured_users_contract():
     client, http = _client([{"value": [{"identifier": GROUP_ID, "principalType": "Group", "role": "User", "datasourceAccessRight": "Read"}]}, None, None])
-    user = asyncio.run(client.list_users(_gateway()))[0]
-    asyncio.run(client.add_user(_gateway(), user))
-    asyncio.run(client.delete_user(_gateway(), GatewayUser("reader@example.invalid", "User", "User", "Read")))
+    user = asyncio.run(client.list_users(_connection()))[0]
+    asyncio.run(client.add_user(_connection(), user))
+    asyncio.run(client.delete_user(_connection(), GatewayUser("reader@example.invalid", "User", "User", "Read")))
     assert http.calls[1][2]["json"] == {"identifier": GROUP_ID, "datasourceAccessRight": "Read", "emailAddress": None, "role": "User"}
     assert http.calls[2][0] is requests.delete
     assert http.calls[2][1].endswith("/users/reader%40example.invalid")
@@ -91,7 +109,7 @@ def test_read_add_and_remove_use_captured_users_contract():
 def test_malformed_users_never_become_empty_current_access(data):
     client, _ = _client([data])
     with pytest.raises(RuntimeError):
-        asyncio.run(client.list_users(_gateway()))
+        asyncio.run(client.list_users(_connection()))
 
 
 def _token(claims):
@@ -134,23 +152,23 @@ class StatefulGatewayClient(GatewayClient):
         self.writes = []
         self.caller = frozenset({OWNER_ID, "owner@example.invalid"})
 
-    async def get_connection(self, gateway):
-        return GatewayConnection(gateway.connection_id, gateway.gateway_cluster_id, self.name)
+    async def get_connection(self, connection_id):
+        return GatewayConnection(connection_id, CLUSTER_ID, self.name)
 
-    async def list_users(self, gateway):
+    async def list_users(self, connection):
         return list(self.users)
 
-    async def rename(self, gateway):
-        self.writes.append(("rename", gateway.display_name))
+    async def rename(self, connection, display_name):
+        self.writes.append(("rename", display_name))
         if self.apply_changes:
-            self.name = gateway.display_name
+            self.name = display_name
 
-    async def add_user(self, gateway, user):
+    async def add_user(self, connection, user):
         self.writes.append(("add", user))
         if self.apply_changes:
             self.users.append(user)
 
-    async def delete_user(self, gateway, user):
+    async def delete_user(self, connection, user):
         self.writes.append(("delete", user))
         if self.apply_changes:
             self.users = [entry for entry in self.users if entry.key != user.key]
@@ -259,7 +277,7 @@ def test_replacing_only_owner_permission_fails_before_any_write():
 
 def test_mixed_gateway_preview_and_apply_flags_are_independent():
     manager, client, gateway = _manager([_owner()], name="Old", preview=True)
-    second = replace(gateway, name="second", connection_id=GROUP_ID, dry_run=False)
+    second = replace(gateway, connection_id=GROUP_ID, dry_run=False)
     manager.common_params.fabric.gateways.append(second)
     asyncio.run(manager.execute())
     assert client.writes == [("rename", "Example")]
