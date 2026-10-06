@@ -14,16 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from fabric_workspace_deployment import resources as package_resources
-from fabric_workspace_deployment.environment_variables import RAYFIN_APP_ROOT_ENV_VAR, RAYFIN_GID_ENV_VAR, RAYFIN_TENANT_ID_ENV_VAR, RAYFIN_TOKEN_ENV_VAR, RAYFIN_UID_ENV_VAR, RAYFIN_WORKSPACE_ID_ENV_VAR
+from fabric_workspace_deployment.environment_variables import FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR, FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR, FWD_RAYFIN_SQL_SERVER_ENV_VAR, FWD_RAYFIN_WORKSPACE_ID_ENV_VAR, RAYFIN_APP_ROOT_ENV_VAR, RAYFIN_GID_ENV_VAR, RAYFIN_MIGRATION_ENVIRONMENT_VARIABLES, RAYFIN_TENANT_ID_ENV_VAR, RAYFIN_TOKEN_ENV_VAR, RAYFIN_UID_ENV_VAR, RAYFIN_WORKSPACE_ID_ENV_VAR, redact_sensitive_values
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.docker.cli import DockerCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricWorkspaceParams, RayfinManager, RayfinParams
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricWorkspaceParams, RayfinDatabaseClient, RayfinManager, RayfinParams
 from fabric_workspace_deployment.rayfin.manifest import RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME, RayfinAppManifest, RayfinDeploymentRecord, RayfinManifestLoader, RayfinManifestRenderer, ResolvedSemanticModel
 
 NPM_INSTALL_TIMEOUT_SECONDS = 15 * 60
 RAYFIN_DEPLOY_TIMEOUT_SECONDS = 45 * 60
 RAYFIN_STATUS_TIMEOUT_SECONDS = 5 * 60
+RAYFIN_MIGRATION_TIMEOUT_SECONDS = 15 * 60
 RAYFIN_COMPOSE_RESOURCE_NAME = "Compose.rayfin.yaml"
 RAYFIN_COMPOSE_SERVICE_NAME = "rayfin"
 
@@ -45,6 +46,7 @@ class RayfinDeploymentManager(RayfinManager):
         *,
         manifest_loader: RayfinManifestLoader | None = None,
         manifest_renderer: RayfinManifestRenderer | None = None,
+        database_client: RayfinDatabaseClient | None = None,
         staging_root: Path | None = None,
         state_root: Path | None = None,
         logger: logging.Logger | None = None,
@@ -56,11 +58,32 @@ class RayfinDeploymentManager(RayfinManager):
         self.docker_cli = docker_cli
         self.manifest_loader = manifest_loader or RayfinManifestLoader()
         self.manifest_renderer = manifest_renderer or RayfinManifestRenderer()
+        self.database_client = database_client
         del state_root
         configured_root = Path(common_params.local.root_folder).expanduser()
         if not configured_root.is_absolute():
             configured_root = Path.cwd() / configured_root
         self.staging_root = staging_root or configured_root / ".fabric-workspace-deployment" / "rayfin-staging"
+
+    def report_plan(self) -> None:
+        """Describe configured app deployment using local inputs only."""
+        for workspace in self.workspace_params:
+            if workspace.skip_deploy:
+                if workspace.rayfins:
+                    self.logger.info(f"Rayfin dry run: skipping workspace '{workspace.name}' because skipDeploy=true")
+                continue
+            for params in workspace.rayfins:
+                source_root = (Path(self.common_params.local.root_folder).resolve() / params.root_path).resolve()
+                manifest = self.manifest_loader.load(source_root)
+                self.manifest_loader.validate_node_package(source_root, manifest)
+                self.manifest_loader.validate_data_schema(source_root, manifest)
+                self.logger.info(f"Rayfin dry run: app '{manifest.app.id}' in workspace '{workspace.name}'; Functions enabled={manifest.functions.enabled}, managed data enabled={manifest.data.enabled}")
+                if manifest.functions.enabled:
+                    self.logger.info(f"Rayfin dry run: root npm ci installs Functions workspace '{manifest.functions.path}'; validate TypeScript configuration; canonical rayfin up builds and deploys Functions with auth.type=application")
+                if manifest.data.migrations is not None:
+                    self.logger.info("Rayfin dry run: after schema deployment, verify the AppBackend's exact managed SQL Database; acquire a short-lived SQL token; execute the configured data.migrations.command in staging; reruns use the application's migration ledger")
+                migration_step = " -> verify managed SQL Database -> run data migrations" if manifest.data.migrations is not None else ""
+                self.logger.info(f"Rayfin dry run: isolated staging -> npm ci -> verify CLI -> rayfin up --yes{' --force' if params.force else ''} -> verify deployment registry and AppBackend{migration_step} -> status")
 
     async def _execute(self) -> None:
         configured_workspaces = [(workspace_index, workspace) for workspace_index, workspace in enumerate(self.workspace_params) if workspace.rayfins]
@@ -104,6 +127,16 @@ class RayfinDeploymentManager(RayfinManager):
                 env=docker_env,
             )
 
+            if manifest.functions.enabled:
+                self.docker_cli.compose_run(
+                    compose_path,
+                    project_name,
+                    RAYFIN_COMPOSE_SERVICE_NAME,
+                    ["npm", "exec", "--workspace", manifest.functions.path, "--no", "--", "tsc", "--showConfig", "--project", "tsconfig.json"],
+                    timeout=60,
+                    env=docker_env,
+                )
+
             self._assert_local_rayfin_version(compose_path, project_name, docker_env, manifest)
 
             self.logger.info(f"Deploying Rayfin app '{manifest.app.name}' from {config_path} to parent workspace '{workspace.name}'")
@@ -120,9 +153,10 @@ class RayfinDeploymentManager(RayfinManager):
             )
 
             registry_path = staging_path / "rayfin" / RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME
-            deployment_record = self.manifest_loader.load_deployment_record(registry_path, workspace_id)
+            deployment_record = self.manifest_loader.load_deployment_record(registry_path, workspace_id, require_workspace=manifest.data.migrations is not None)
             self._assert_reported_data_state("Rayfin deployment registry", deployment_record.data_enabled, manifest.data.enabled)
             self._assert_fabric_item(workspace_id, deployment_record)
+            self._run_data_migrations(compose_path, project_name, docker_env, manifest, deployment_record)
             self._assert_rayfin_status(compose_path, project_name, docker_env, manifest)
 
             shutil.rmtree(staging_path)
@@ -213,6 +247,7 @@ class RayfinDeploymentManager(RayfinManager):
 
     def _build_docker_environment(self, staging_path: Path, workspace_id: str, token: str) -> dict[str, str]:
         return {
+            **{name: "" for name in RAYFIN_MIGRATION_ENVIRONMENT_VARIABLES},
             RAYFIN_APP_ROOT_ENV_VAR: str(staging_path),
             RAYFIN_TOKEN_ENV_VAR: token,
             RAYFIN_WORKSPACE_ID_ENV_VAR: workspace_id,
@@ -220,6 +255,68 @@ class RayfinDeploymentManager(RayfinManager):
             RAYFIN_UID_ENV_VAR: str(getattr(os, "getuid", lambda: 1000)()),
             RAYFIN_GID_ENV_VAR: str(getattr(os, "getgid", lambda: 1000)()),
         }
+
+    def _run_data_migrations(self, compose_path: Path, project_name: str, docker_env: dict[str, str], manifest: RayfinAppManifest, deployment_record: RayfinDeploymentRecord) -> None:
+        migrations = manifest.data.migrations
+        if migrations is None:
+            return
+        if self.database_client is None:
+            raise RuntimeError("Rayfin data migrations require a managed-database client")
+        workspace_id = docker_env[RAYFIN_WORKSPACE_ID_ENV_VAR]
+        database = self.database_client.resolve_managed_database(workspace_id, deployment_record.fabric_item_id)
+        if database.workspace_id.casefold() != workspace_id.casefold() or database.app_backend_id.casefold() != deployment_record.fabric_item_id.casefold():
+            raise RuntimeError("Rayfin managed SQL target does not belong to the guarded workspace/AppBackend")
+        migration_env = {
+            **docker_env,
+            FWD_RAYFIN_WORKSPACE_ID_ENV_VAR: workspace_id,
+            FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR: deployment_record.fabric_item_id,
+            FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR: database.database_id,
+            FWD_RAYFIN_SQL_SERVER_ENV_VAR: database.server,
+            FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR: database.database_name,
+            FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR: self.az_cli.get_sql_access_token(self.common_params.arm.tenant_id),
+        }
+        self.logger.info(f"Running application-owned Rayfin data migrations for AppBackend {deployment_record.fabric_item_id}")
+        try:
+            stdout, stderr = self.docker_cli.compose_run(
+                compose_path,
+                project_name,
+                RAYFIN_COMPOSE_SERVICE_NAME,
+                ["sh", "-c", migrations.command],
+                timeout=RAYFIN_MIGRATION_TIMEOUT_SECONDS,
+                env=migration_env,
+                container_name=f"{project_name}-data-migrate",
+            )
+            stdout = redact_sensitive_values(stdout, {**os.environ, **migration_env})
+            stderr = redact_sensitive_values(stderr, {**os.environ, **migration_env})
+        except Exception as error:
+            safe_error = redact_sensitive_values(str(error), {**os.environ, **migration_env})
+            raise RuntimeError(f"Rayfin data migration command failed: {safe_error}") from None
+        finally:
+            migration_env[FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR] = ""
+
+        self._report_migration_output(stdout)
+        self._report_migration_output(stderr, stderr=True)
+
+    def _report_migration_output(self, output: str, *, stderr: bool = False) -> None:
+        if not output.strip():
+            return
+        level = logging.WARNING if stderr else logging.INFO
+        try:
+            diagnostics_values = [json.loads(output)]
+        except json.JSONDecodeError:
+            diagnostics_values = []
+            for line in output.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    diagnostics_values.append(json.loads(line))
+                except json.JSONDecodeError:
+                    self.logger.log(level, f"Rayfin migration {'stderr' if stderr else 'output'}: {line}")
+        for diagnostics in diagnostics_values:
+            self.logger.log(level, f"Rayfin migration diagnostics: {json.dumps(diagnostics)}")
+            failed_status = self._find_failed_status(diagnostics)
+            if failed_status is not None:
+                raise RuntimeError(f"Rayfin data migration reported unsuccessful diagnostics: {failed_status}")
 
     def _build_compose_project_name(self, manifest: RayfinAppManifest) -> str:
         return f"fwd-rayfin-{manifest.app.id}-{uuid.uuid4().hex[:8]}"
@@ -306,6 +403,8 @@ class RayfinDeploymentManager(RayfinManager):
             raise RuntimeError(f"Rayfin Fabric item assertion failed: registry item ID {deployment_record.fabric_item_id} does not match Fabric item ID {actual_item_id!r}")
         if not isinstance(actual_workspace_id, str) or actual_workspace_id.lower() != workspace_id.lower():
             raise RuntimeError(f"Rayfin Fabric item assertion failed: item {deployment_record.fabric_item_id} belongs to workspace {actual_workspace_id!r}, expected {workspace_id}")
+        if item_data.get("type") != "AppBackend":
+            raise RuntimeError("Rayfin deployment registry item must be an AppBackend")
 
     def _parse_guid(self, output: str, description: str) -> str:
         value = output.strip().lstrip("* ").strip()

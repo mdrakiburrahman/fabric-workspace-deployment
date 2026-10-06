@@ -14,6 +14,7 @@ from fabric_workspace_deployment.client.fabric_artifact import FabricArtifactCli
 from fabric_workspace_deployment.client.fabric_folder import FabricFolderClient
 from fabric_workspace_deployment.client.fabric_gateway import FabricGatewayClient
 from fabric_workspace_deployment.client.fabric_semantic_model import FabricSemanticModelClient
+from fabric_workspace_deployment.client.rayfin_database import FabricRayfinDatabaseClient
 from fabric_workspace_deployment.client.fabric_pipeline import FabricPipelineClient
 from fabric_workspace_deployment.client.fabric_pipeline_run import FabricPipelineRunClient
 from fabric_workspace_deployment.client.fabric_spark_job_definition import FabricSparkJobDefinitionClient
@@ -182,6 +183,10 @@ class ManagementFactory(ABC):
         """
         Create a Rayfin deployment manager instance.
         """
+        pass
+
+    @abstractmethod
+    def create_rayfin_database_client(self) -> FabricRayfinDatabaseClient:
         pass
 
     @abstractmethod
@@ -401,8 +406,12 @@ class ContainerizedManagementFactory(ManagementFactory):
             self.create_azure_cli(),
             self.create_fabric_cli(),
             self.create_docker_cli(),
+            database_client=self.create_rayfin_database_client(),
             logger=self.logger,
         )
+
+    def create_rayfin_database_client(self) -> FabricRayfinDatabaseClient:
+        return FabricRayfinDatabaseClient(self.operation_params.common, self.create_azure_cli(), self.http_retry_handler)
 
     def create_fabric_folder_client(self) -> FabricFolderClient:
         return FabricFolderClient(

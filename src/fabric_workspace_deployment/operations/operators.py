@@ -88,6 +88,8 @@ class CentralOperator(EntryPointOperator):
             if manager is None:
                 raise ValueError(f"Unknown operation: {self.operation}")
 
+            if self.operation == Operation.DRY_RUN:
+                self.rayfin_manager.report_plan()
             await manager.execute()
             if self.operation == Operation.DRY_RUN:
                 self.logger.info("Dry run completed.")

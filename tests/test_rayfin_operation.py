@@ -489,9 +489,11 @@ def test_factory_passes_workspace_scoped_rayfins_to_manager(tmp_path, monkeypatc
     az_cli = object()
     fabric_cli = object()
     docker_cli = object()
+    database_client = object()
     monkeypatch.setattr(factory, "create_azure_cli", lambda: az_cli)
     monkeypatch.setattr(factory, "create_fabric_cli", lambda: fabric_cli)
     monkeypatch.setattr(factory, "create_docker_cli", lambda: docker_cli)
+    monkeypatch.setattr(factory, "create_rayfin_database_client", lambda: database_client)
 
     manager = factory.create_rayfin_manager()
 
@@ -499,6 +501,7 @@ def test_factory_passes_workspace_scoped_rayfins_to_manager(tmp_path, monkeypatc
     assert manager.az_cli is az_cli
     assert manager.fabric_cli is fabric_cli
     assert manager.docker_cli is docker_cli
+    assert manager.database_client is database_client
 
 
 def test_central_operator_dispatches_deploy_rayfin(monkeypatch):
@@ -548,6 +551,41 @@ def test_central_operator_dispatches_deploy_rayfin(monkeypatch):
 
     assert rayfin_manager.execute_count == 1
     assert other_manager.execute_count == 0
+
+
+def test_central_operator_dry_run_reports_rayfin_plan_and_checks_entitlements(monkeypatch):
+    calls = []
+
+    class DummyManager:
+        async def execute(self):
+            calls.append("entitlements")
+
+        def report_plan(self):
+            calls.append("rayfin-plan")
+
+    class DummyFabricCli:
+        def run_command(self, command):
+            assert command == "version"
+            return "1.0.0"
+
+    class FakeFactory:
+        def __init__(self, operation_params):
+            pass
+
+        def create_fabric_cli(self):
+            return DummyFabricCli()
+
+        def __getattr__(self, name):
+            if name.startswith("create_"):
+                return DummyManager
+            raise AttributeError(name)
+
+    monkeypatch.setattr(operators, "ContainerizedManagementFactory", FakeFactory)
+    operation_params = SimpleNamespace(common=SimpleNamespace(fabric=SimpleNamespace(workspaces=[])), operation=Operation.DRY_RUN)
+
+    asyncio.run(operators.CentralOperator(operation_params).execute())
+
+    assert calls == ["rayfin-plan", "entitlements"]
 
 
 @pytest.mark.parametrize(

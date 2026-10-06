@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
+from typing import Mapping
+
 PACKAGE_VERSION_ENV_VAR = "PACKAGE_VERSION"
 
 FAB_TOKEN_ENV_VAR = "FAB_TOKEN"
@@ -16,6 +18,25 @@ RAYFIN_TENANT_ID_ENV_VAR = "RAYFIN_TENANT_ID"
 RAYFIN_APP_ROOT_ENV_VAR = "RAYFIN_APP_ROOT"
 RAYFIN_UID_ENV_VAR = "RAYFIN_UID"
 RAYFIN_GID_ENV_VAR = "RAYFIN_GID"
+
+FWD_RAYFIN_WORKSPACE_ID_ENV_VAR = "FWD_RAYFIN_WORKSPACE_ID"
+FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR = "FWD_RAYFIN_APP_BACKEND_ID"
+FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR = "FWD_RAYFIN_SQL_DATABASE_ID"
+FWD_RAYFIN_SQL_SERVER_ENV_VAR = "FWD_RAYFIN_SQL_SERVER"
+FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR = "FWD_RAYFIN_SQL_DATABASE_NAME"
+FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR = "FWD_RAYFIN_SQL_ACCESS_TOKEN"
+RAYFIN_MIGRATION_ENVIRONMENT_VARIABLES = (FWD_RAYFIN_WORKSPACE_ID_ENV_VAR, FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR, FWD_RAYFIN_SQL_SERVER_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR, FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR)
+SENSITIVE_ENVIRONMENT_VARIABLE_MARKERS = ("TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY", "CONNECTION_STRING", "SQL_SERVER", "SQL_DATABASE_NAME")
+
+
+def redact_sensitive_values(value: str | bytes, environment: Mapping[str, str]) -> str:
+    """Mask known sensitive environment values, longest first to avoid partial leaks."""
+    text = value.decode(errors="replace") if isinstance(value, bytes) else value
+    secrets = {secret for key, secret in environment.items() if secret and any(marker in key.upper() for marker in SENSITIVE_ENVIRONMENT_VARIABLE_MARKERS)}
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(secret, "******")
+    return text
+
 
 GIT_ROOT_ENV_VAR = "GIT_ROOT"
 UNIQUE_ENV_ID_ENV_VAR = "UNIQUE_ENV_ID"

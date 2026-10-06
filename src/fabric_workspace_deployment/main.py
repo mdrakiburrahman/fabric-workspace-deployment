@@ -9,6 +9,7 @@ import logging
 import os
 from datetime import datetime
 
+from fabric_workspace_deployment.environment_variables import SENSITIVE_ENVIRONMENT_VARIABLE_MARKERS
 from fabric_workspace_deployment.logging_config import setup_logging_from_config
 from fabric_workspace_deployment.operations.operation_interfaces import OperationParams
 from fabric_workspace_deployment.operations.operators import CentralOperator
@@ -16,8 +17,6 @@ from fabric_workspace_deployment.operations.operators import CentralOperator
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
-
-SENSITIVE_ENVIRONMENT_VARIABLE_MARKERS = ("TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY", "CONNECTION_STRING")
 
 
 def redact_environment_value(key: str, value: str) -> str:

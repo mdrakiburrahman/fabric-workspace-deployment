@@ -10,15 +10,18 @@ import subprocess
 
 from pathlib import Path
 
+from fabric_workspace_deployment.environment_variables import redact_sensitive_values
+
 
 class DockerCliError(RuntimeError):
     """Raised when a Docker CLI command exits unsuccessfully."""
 
-    def __init__(self, message: str, *, returncode: int | None = None, stdout: str = "", stderr: str = ""):
+    def __init__(self, message: str, *, returncode: int | None = None, stdout: str = "", stderr: str = "", timed_out: bool = False):
         super().__init__(message)
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+        self.timed_out = timed_out
 
 
 class DockerCli:
@@ -44,18 +47,19 @@ class DockerCli:
         if env:
             process_env.update(env)
 
-        self.logger.debug(f"Executing Docker command: {' '.join(command)}")
+        safe_command = self._redact(" ".join(command), process_env)
+        self.logger.debug(f"Executing Docker command: {safe_command}")
         try:
             completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=process_env, check=False)  # noqa: S603
         except subprocess.TimeoutExpired as e:
-            raise DockerCliError(f"Docker command timed out after {timeout} seconds: {' '.join(command)}", stdout=self._redact(e.stdout or "", env), stderr=self._redact(e.stderr or "", env)) from e
+            raise DockerCliError(f"Docker command timed out after {timeout} seconds: {safe_command}", stdout=self._redact(e.stdout or "", process_env), stderr=self._redact(e.stderr or "", process_env), timed_out=True) from None
         except FileNotFoundError as e:
             raise DockerCliError("Docker CLI was not found. Install Docker with the Compose plugin and ensure 'docker' is on PATH.") from e
 
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
-        redacted_stdout = self._redact(stdout, env)
-        redacted_stderr = self._redact(stderr, env)
+        redacted_stdout = self._redact(stdout, process_env)
+        redacted_stderr = self._redact(stderr, process_env)
         self.logger.debug(f"Docker stdout: {redacted_stdout}")
         self.logger.debug(f"Docker stderr: {redacted_stderr}")
 
@@ -65,24 +69,33 @@ class DockerCli:
 
         return stdout, stderr
 
-    def compose_run(self, compose_file: Path, project_name: str, service: str, command: list[str], *, timeout: int | None = None, env: dict[str, str] | None = None) -> tuple[str, str]:
+    def compose_run(self, compose_file: Path, project_name: str, service: str, command: list[str], *, timeout: int | None = None, env: dict[str, str] | None = None, container_name: str | None = None) -> tuple[str, str]:
         """Run a one-off command in a packaged Compose service."""
-        return self.run(
-            [
-                "compose",
-                "--file",
-                str(compose_file),
-                "--project-name",
-                project_name,
-                "run",
-                "--rm",
-                "--no-deps",
-                service,
-                *command,
-            ],
-            timeout=timeout,
-            env=env,
-        )
+        try:
+            return self.run(
+                [
+                    "compose",
+                    "--file",
+                    str(compose_file),
+                    "--project-name",
+                    project_name,
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    *(["--name", container_name] if container_name is not None else []),
+                    service,
+                    *command,
+                ],
+                timeout=timeout,
+                env=env,
+            )
+        except DockerCliError as error:
+            if container_name is not None and error.timed_out:
+                try:
+                    self.run(["stop", "-t", "10", container_name], timeout=30, env=env)
+                except DockerCliError as cleanup_error:
+                    raise DockerCliError(f"{error}; failed to stop timed-out container: {cleanup_error}", stdout=error.stdout, stderr=error.stderr, timed_out=True) from None
+            raise
 
     def resolve_daemon_path(self, path: Path) -> Path:
         """Return the Docker daemon-visible path for a path in the current process."""
@@ -149,10 +162,4 @@ class DockerCli:
         return list(dict.fromkeys(candidates))
 
     def _redact(self, value: str | bytes, env: dict[str, str] | None) -> str:
-        text = value.decode(errors="replace") if isinstance(value, bytes) else value
-        if not env:
-            return text
-        for key, secret in env.items():
-            if "TOKEN" in key.upper() and secret:
-                text = text.replace(secret, "******")
-        return text
+        return redact_sensitive_values(value, env or {})

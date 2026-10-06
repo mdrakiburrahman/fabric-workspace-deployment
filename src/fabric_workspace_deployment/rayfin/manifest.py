@@ -4,8 +4,9 @@
 
 import json
 import re
+import shlex
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -55,11 +56,28 @@ class RayfinBuild:
 
 
 @dataclass(frozen=True)
+class RayfinDataMigrations:
+    """Application-owned, repeatable post-schema data migration command."""
+
+    command: str
+
+
+@dataclass(frozen=True)
 class RayfinData:
     """Managed Rayfin data-service settings."""
 
     enabled: bool
     dialect: str
+    migrations: RayfinDataMigrations | None = None
+
+
+@dataclass(frozen=True)
+class RayfinFunctions:
+    """Optional application-authenticated Functions service."""
+
+    enabled: bool = False
+    path: str = "rayfin/functions"
+    build_command: str = "npm run build"
 
 
 @dataclass(frozen=True)
@@ -73,6 +91,7 @@ class RayfinAppManifest:
     connections: RayfinConnections
     build: RayfinBuild
     data: RayfinData
+    functions: RayfinFunctions = field(default_factory=RayfinFunctions)
 
 
 @dataclass(frozen=True)
@@ -90,6 +109,17 @@ class RayfinDeploymentRecord:
     workspace_id: str
     fabric_item_id: str
     data_enabled: bool | None = None
+
+
+@dataclass(frozen=True)
+class RayfinManagedSqlDatabase:
+    """Verified target identity; credentials are never stored in this record."""
+
+    workspace_id: str
+    app_backend_id: str
+    database_id: str
+    server: str
+    database_name: str
 
 
 class RayfinManifestLoader:
@@ -116,7 +146,7 @@ class RayfinManifestLoader:
         if not isinstance(data, dict):
             raise ValueError(f"Rayfin manifest must contain a JSON object: {manifest_path}")
 
-        self._require_keys(data, {"schemaVersion", "kind", "app", "rayfin", "connections", "build"}, {"data"}, "manifest")
+        self._require_keys(data, {"schemaVersion", "kind", "app", "rayfin", "connections", "build"}, {"data", "functions"}, "manifest")
         app_data = self._require_dict(data["app"], "app")
         rayfin_data = self._require_dict(data["rayfin"], "rayfin")
         connections_data = self._require_dict(data["connections"], "connections")
@@ -128,7 +158,7 @@ class RayfinManifestLoader:
         self._require_exact_keys(connections_data, {"semanticModels"}, "connections")
         self._require_exact_keys(build_data, {"command", "outputPath", "indexDocument"}, "build")
         if data_service_data is not None:
-            self._require_exact_keys(data_service_data, {"enabled", "dialect"}, "data")
+            self._require_keys(data_service_data, {"enabled", "dialect"}, {"migrations"}, "data")
 
         schema_version = self._require_string(data["schemaVersion"], "schemaVersion")
         if schema_version != RAYFIN_MANIFEST_SCHEMA_VERSION:
@@ -175,7 +205,39 @@ class RayfinManifestLoader:
             dialect = self._require_string(data_service_data["dialect"], "data.dialect")
             if dialect != "mssql":
                 raise ValueError("data.dialect must be exactly 'mssql' for Fabric deployment")
-            data_service = RayfinData(enabled=enabled, dialect=dialect)
+            migrations = None
+            if "migrations" in data_service_data:
+                if not enabled:
+                    raise ValueError("data.migrations requires data.enabled=true")
+                migrations_data = self._require_dict(data_service_data["migrations"], "data.migrations")
+                self._require_exact_keys(migrations_data, {"command"}, "data.migrations")
+                migration_command = self._require_string(migrations_data["command"], "data.migrations.command")
+                if "\x00" in migration_command:
+                    raise ValueError("data.migrations.command cannot contain NUL characters")
+                try:
+                    shlex.split(migration_command)
+                except ValueError:
+                    raise ValueError("data.migrations.command must be a valid shell command") from None
+                migrations = RayfinDataMigrations(command=migration_command)
+            data_service = RayfinData(enabled=enabled, dialect=dialect, migrations=migrations)
+
+        functions = RayfinFunctions()
+        if "functions" in data:
+            functions_data = self._require_dict(data["functions"], "functions")
+            self._require_keys(functions_data, {"enabled"}, {"path", "buildCommand"}, "functions")
+            functions_enabled = functions_data["enabled"]
+            if not isinstance(functions_enabled, bool):
+                raise ValueError("functions.enabled must be a boolean")
+            if functions_enabled:
+                self._require_exact_keys(functions_data, {"enabled", "path", "buildCommand"}, "functions")
+            functions_path = self._require_relative_path(functions_data.get("path", functions.path), "functions.path")
+            functions_command = self._require_string(functions_data.get("buildCommand", functions.build_command), "functions.buildCommand")
+            functions_root = (app_root / functions_path).resolve()
+            try:
+                functions_root.relative_to(app_root.resolve())
+            except ValueError:
+                raise ValueError("functions.path must remain inside the application root, including through symlinks") from None
+            functions = RayfinFunctions(enabled=functions_enabled, path=functions_path, build_command=functions_command)
 
         return RayfinAppManifest(
             schema_version=schema_version,
@@ -185,6 +247,7 @@ class RayfinManifestLoader:
             connections=RayfinConnections(semantic_models=semantic_models),
             build=RayfinBuild(command=command, output_path=output_path, index_document=index_document),
             data=data_service,
+            functions=functions,
         )
 
     def validate_node_package(self, app_root: Path, manifest: RayfinAppManifest) -> None:
@@ -219,6 +282,117 @@ class RayfinManifestLoader:
         if locked_version != manifest.rayfin.version:
             raise ValueError(f"package-lock.json must resolve @microsoft/rayfin-cli exactly to {manifest.rayfin.version!r}; found {locked_version!r}")
 
+        if manifest.data.migrations is not None:
+            command = shlex.split(manifest.data.migrations.command)
+            scripts = package_json.get("scripts", {})
+            if command[:2] == ["npm", "run"]:
+                if len(command) < 3 or not isinstance(scripts, dict) or not isinstance(scripts.get(command[2]), str) or not scripts[command[2]].strip():
+                    raise ValueError("data.migrations.command must reference a non-empty root package script")
+
+        if manifest.functions.enabled:
+            self._validate_functions_package(app_root, manifest, package_json, package_lock)
+
+    def _validate_functions_package(self, app_root: Path, manifest: RayfinAppManifest, root_package: dict[str, Any], package_lock: dict[str, Any]) -> None:
+        """Require a portable Functions project installed by the root npm workspace."""
+        app_root = app_root.resolve()
+        functions_root = (app_root / manifest.functions.path).resolve()
+        try:
+            functions_root.relative_to(app_root)
+        except ValueError:
+            raise ValueError("functions.path must remain inside the application root") from None
+        if functions_root == app_root or not functions_root.is_dir():
+            raise ValueError("functions.path must identify an existing Functions subdirectory")
+
+        for name in ("package.json", "host.json", "tsconfig.json", "src/function_app.ts"):
+            required_path = functions_root / name
+            try:
+                required_path.resolve().relative_to(functions_root)
+            except ValueError:
+                raise ValueError(f"Functions file must remain inside the Functions project: {name}") from None
+            if not required_path.is_file() or required_path.stat().st_size == 0:
+                raise ValueError(f"Functions project requires a non-empty {name}")
+        functions_package = self._load_json_object(functions_root / "package.json", "Functions package.json")
+        host = self._load_json_object(functions_root / "host.json", "Functions host.json")
+        if host.get("version") != "2.0":
+            raise ValueError("Functions host.json must declare version '2.0'")
+        for group in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+            dependency_group = functions_package.get(group, {})
+            if not isinstance(dependency_group, dict):
+                raise ValueError(f"Functions package.json {group} must be an object")
+            for dependency, spec in dependency_group.items():
+                if not isinstance(spec, str):
+                    raise ValueError(f"Functions dependency {dependency!r} must have a string version")
+                if spec.startswith("file:"):
+                    local_path = self._require_relative_path(spec[5:], f"Functions dependency {dependency!r}")
+                    local_target = (functions_root / local_path).resolve()
+                    try:
+                        local_target.relative_to(functions_root)
+                    except ValueError:
+                        raise ValueError(f"Functions dependency {dependency!r} must remain inside the Functions project") from None
+                    if not local_target.exists():
+                        raise ValueError(f"Functions dependency {dependency!r} references a missing local file")
+
+        try:
+            build_argv = shlex.split(manifest.functions.build_command)
+        except ValueError:
+            raise ValueError("functions.buildCommand must be a valid command") from None
+        scripts = functions_package.get("scripts", {})
+        if not build_argv:
+            raise ValueError("functions.buildCommand must be a non-empty command")
+        if build_argv[:2] == ["npm", "run"]:
+            if len(build_argv) < 3 or not isinstance(scripts, dict) or not isinstance(scripts.get(build_argv[2]), str) or not scripts[build_argv[2]].strip():
+                raise ValueError("functions.buildCommand must reference a non-empty Functions package script")
+
+        sdk = "@microsoft/fabric-user-data-functions"
+        dependencies = functions_package.get("dependencies")
+        if not isinstance(dependencies, dict) or dependencies.get(sdk) != manifest.rayfin.version:
+            raise ValueError(f"Functions package.json must pin {sdk} exactly to the declared Rayfin release {manifest.rayfin.version!r}")
+        for group in ("devDependencies", "peerDependencies", "optionalDependencies"):
+            other_dependencies = functions_package.get(group, {})
+            if isinstance(other_dependencies, dict) and sdk in other_dependencies and other_dependencies[sdk] != manifest.rayfin.version:
+                raise ValueError(f"Functions package.json contains a conflicting {sdk} pin in {group}")
+
+        workspaces = root_package.get("workspaces")
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("packages")
+        if not isinstance(workspaces, list) or not workspaces:
+            raise ValueError("Enabled Functions require root npm workspaces so npm ci installs the Functions project")
+        workspace_match = False
+        for workspace in workspaces:
+            if not isinstance(workspace, str) or not workspace.strip() or workspace.startswith("!") or Path(workspace).is_absolute() or ".." in Path(workspace).parts:
+                raise ValueError("Root npm workspace patterns must be non-empty app-relative paths without exclusions")
+            if any(candidate.resolve() == functions_root for candidate in app_root.glob(workspace)):
+                workspace_match = True
+        if not workspace_match:
+            raise ValueError("Root npm workspaces must include functions.path")
+
+        functions_path = functions_root.relative_to(app_root).as_posix()
+        packages = package_lock.get("packages")
+        if not isinstance(packages, dict):
+            raise ValueError("Functions require an npm workspace package-lock.json with a packages map")
+        locked_workspace = packages.get(functions_path)
+        if not isinstance(locked_workspace, dict) or not isinstance(locked_workspace.get("dependencies"), dict) or locked_workspace["dependencies"].get(sdk) != manifest.rayfin.version:
+            raise ValueError("package-lock.json must include the Functions workspace with its exact SDK pin")
+        package_name = self._require_string(functions_package.get("name"), "Functions package.json name")
+        workspace_link = packages.get(f"node_modules/{package_name}")
+        if not isinstance(workspace_link, dict) or workspace_link.get("link") is not True or workspace_link.get("resolved") != functions_path:
+            raise ValueError("package-lock.json must link the Functions workspace from node_modules")
+        sdk_package = None
+        for parent in (functions_root, *functions_root.parents):
+            if parent == app_root.parent:
+                break
+            prefix = parent.relative_to(app_root).as_posix()
+            key = f"{prefix}/node_modules/{sdk}" if prefix != "." else f"node_modules/{sdk}"
+            candidate = packages.get(key)
+            if candidate is not None:
+                sdk_package = candidate
+                break
+        if not isinstance(sdk_package, dict) or sdk_package.get("version") != manifest.rayfin.version:
+            raise ValueError(f"package-lock.json must resolve Functions {sdk} exactly to {manifest.rayfin.version!r}")
+        sdk_dependencies = sdk_package.get("dependencies")
+        if not isinstance(sdk_dependencies, dict) or sdk_dependencies.get("@microsoft/rayfin-client") != manifest.rayfin.version:
+            raise ValueError("The Functions SDK must depend on the same declared Rayfin client release")
+
     def validate_data_schema(self, app_root: Path, manifest: RayfinAppManifest) -> None:
         """Require a Rayfin entity schema whenever the managed data service is enabled."""
         if not manifest.data.enabled:
@@ -227,7 +401,7 @@ class RayfinManifestLoader:
         if not schema_path.is_file() or schema_path.stat().st_size == 0:
             raise ValueError(f"Managed Rayfin data is enabled, but the required schema file is missing or empty: {schema_path}")
 
-    def load_deployment_record(self, registry_path: Path, workspace_id: str) -> RayfinDeploymentRecord:
+    def load_deployment_record(self, registry_path: Path, workspace_id: str, *, require_workspace: bool = False) -> RayfinDeploymentRecord:
         """
         Select a deployment registry record for a workspace.
 
@@ -249,12 +423,17 @@ class RayfinManifestLoader:
             if not isinstance(item_id, str) or _GUID_PATTERN.fullmatch(item_id.strip()) is None:
                 continue
 
-            candidate_workspace_id = candidate.get("workspaceId", inferred_workspace_id)
+            candidate_workspace_id = candidate.get("workspaceId", candidate.get("fabricWorkspaceId", inferred_workspace_id))
+            if "workspaceId" in candidate and "fabricWorkspaceId" in candidate:
+                explicit_workspace_id = self._require_string(candidate["workspaceId"], "registry.workspaceId")
+                fabric_workspace_id = self._require_string(candidate["fabricWorkspaceId"], "registry.fabricWorkspaceId")
+                if explicit_workspace_id.casefold() != fabric_workspace_id.casefold():
+                    raise ValueError("Rayfin deployment registry contains conflicting workspace identifiers")
             if isinstance(candidate_workspace_id, str) and _GUID_PATTERN.fullmatch(candidate_workspace_id.strip()):
                 record = RayfinDeploymentRecord(workspace_id=candidate_workspace_id.strip(), fabric_item_id=item_id.strip())
                 if candidate_workspace_id.strip().lower() == workspace_id.lower():
                     matching_records.append((record, candidate))
-            elif candidate_workspace_id is None:
+            elif candidate_workspace_id is None and not require_workspace:
                 fallback_records.append((RayfinDeploymentRecord(workspace_id=workspace_id, fabric_item_id=item_id.strip()), candidate))
 
         selected_records = matching_records
@@ -396,7 +575,7 @@ class RayfinManifestRenderer:
 
     def render_rayfin_yaml(self, manifest: RayfinAppManifest) -> str:
         """Render ``rayfin/rayfin.yml`` for static-hosting deployment."""
-        data = {
+        data: dict[str, Any] = {
             "id": manifest.app.id,
             "name": manifest.app.name,
             "version": manifest.app.version,
@@ -422,6 +601,13 @@ class RayfinManifestRenderer:
                 },
             },
         }
+        if manifest.functions.enabled:
+            data["services"]["functions"] = {
+                "enabled": True,
+                "auth": {"type": "application"},
+                "path": manifest.functions.path,
+                "buildCommand": manifest.functions.build_command,
+            }
         return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
     def write_generated_files(self, staging_root: Path, manifest: RayfinAppManifest, semantic_models: dict[str, ResolvedSemanticModel]) -> None:

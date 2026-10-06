@@ -12,14 +12,18 @@ import pytest
 import yaml
 
 from fabric_workspace_deployment.manager.rayfin.deployment import RayfinDeploymentManager
+from fabric_workspace_deployment.environment_variables import FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR, FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR, FWD_RAYFIN_SQL_SERVER_ENV_VAR, FWD_RAYFIN_WORKSPACE_ID_ENV_VAR
 from fabric_workspace_deployment.operations.operation_interfaces import RayfinParams, RayfinSemanticModelParams
-from fabric_workspace_deployment.rayfin.manifest import RayfinDeploymentRecord, RayfinManifestLoader
+from fabric_workspace_deployment.rayfin.manifest import RayfinDeploymentRecord, RayfinManagedSqlDatabase, RayfinManifestLoader
 
 WORKSPACE_ID = "11111111-1111-1111-1111-111111111111"
 MODEL_WORKSPACE_ID = "55555555-5555-5555-5555-555555555555"
 MODEL_ID = "22222222-2222-2222-2222-222222222222"
 ITEM_ID = "33333333-3333-3333-3333-333333333333"
 TENANT_ID = "44444444-4444-4444-4444-444444444444"
+DATABASE_ID = "66666666-6666-6666-6666-666666666666"
+SQL_SERVER = "managed.database.fabric.microsoft.com"
+DATABASE_NAME = "managed-app-db"
 
 
 def _write_app(root: Path) -> Path:
@@ -83,6 +87,58 @@ def _write_app(root: Path) -> Path:
     return app_root
 
 
+def _enable_functions(app_root: Path) -> None:
+    functions_root = app_root / "rayfin" / "functions"
+    (functions_root / "src").mkdir(parents=True)
+    sdk = "@microsoft/fabric-user-data-functions"
+    (functions_root / "package.json").write_text(json.dumps({"name": "sales-functions", "scripts": {"build": "tsc --build"}, "dependencies": {sdk: "1.35.1"}}), encoding="utf-8")
+    (functions_root / "host.json").write_text('{"version":"2.0"}', encoding="utf-8")
+    (functions_root / "tsconfig.json").write_text('{"include":["src"]}', encoding="utf-8")
+    (functions_root / "src" / "function_app.ts").write_text("export {};\n", encoding="utf-8")
+    manifest_path = app_root / "fabric-workspace-deployment.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["functions"] = {"enabled": True, "path": "rayfin/functions", "buildCommand": "npm run build"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    package_path = app_root / "package.json"
+    package = json.loads(package_path.read_text())
+    package["workspaces"] = ["rayfin/functions"]
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    lock_path = app_root / "package-lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["packages"].update(
+        {
+            "rayfin/functions": {"dependencies": {sdk: "1.35.1"}},
+            "node_modules/sales-functions": {"link": True, "resolved": "rayfin/functions"},
+            f"node_modules/{sdk}": {"version": "1.35.1", "dependencies": {"@microsoft/rayfin-client": "1.35.1"}},
+        }
+    )
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+
+def _enable_migrations(app_root: Path) -> None:
+    manifest_path = app_root / "fabric-workspace-deployment.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["data"]["migrations"] = {"command": "npm run data:migrate"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    package_path = app_root / "package.json"
+    package = json.loads(package_path.read_text())
+    package["scripts"] = {"data:migrate": "node migrations/run.mjs"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+
+class FakeDatabaseClient:
+    def __init__(self, database=None, error=None):
+        self.calls = []
+        self.database = database or RayfinManagedSqlDatabase(WORKSPACE_ID, ITEM_ID, DATABASE_ID, SQL_SERVER, DATABASE_NAME)
+        self.error = error
+
+    def resolve_managed_database(self, workspace_id, app_backend_id):
+        self.calls.append((workspace_id, app_backend_id))
+        if self.error is not None:
+            raise RuntimeError(self.error)
+        return self.database
+
+
 def _common(root: Path):
     return SimpleNamespace(
         local=SimpleNamespace(root_folder=str(root)),
@@ -99,15 +155,21 @@ class FakeAzCli:
         self.calls.append(scope)
         return "az-token"
 
+    def get_sql_access_token(self, tenant_id=None):
+        assert tenant_id == TENANT_ID
+        self.calls.append("https://database.windows.net")
+        return "sql-short-lived-token"
+
 
 class FakeFabricCli:
-    def __init__(self, *, fail_model: bool = False, app_item_id: str = ITEM_ID, app_workspace_id: str = WORKSPACE_ID, app_display_name: str = "sales-insights", wrap_api_response: bool = True):
+    def __init__(self, *, fail_model: bool = False, app_item_id: str = ITEM_ID, app_workspace_id: str = WORKSPACE_ID, app_display_name: str = "sales-insights", wrap_api_response: bool = True, app_type: str = "AppBackend"):
         self.calls = []
         self.fail_model = fail_model
         self.app_item_id = app_item_id
         self.app_workspace_id = app_workspace_id
         self.app_display_name = app_display_name
         self.wrap_api_response = wrap_api_response
+        self.app_type = app_type
 
     def run(self, command, timeout=None):
         self.calls.append((list(command), timeout))
@@ -117,7 +179,7 @@ class FakeFabricCli:
                 "id": self.app_item_id,
                 "workspaceId": self.app_workspace_id,
                 "displayName": self.app_display_name,
-                "type": "AppBackend",
+                "type": self.app_type,
             }
             response_data = (
                 {
@@ -149,7 +211,7 @@ class FakeFabricCli:
 
 
 class FakeDockerCli:
-    def __init__(self, *, fail_command: list[str] | None = None, version: str = "1.35.1", status: object | None = None, registry_data_enabled: bool | None = True):
+    def __init__(self, *, fail_command: list[str] | None = None, version: str = "1.35.1", status: object | None = None, registry_data_enabled: bool | None = True, migration_stdout: str = "", migration_stderr: str = ""):
         self.calls = []
         self.fail_command = fail_command
         self.version = version
@@ -159,11 +221,13 @@ class FakeDockerCli:
         self.generated_rayfin_yaml = None
         self.compose_text = None
         self.seeded_registry_seen = False
+        self.migration_stdout = migration_stdout
+        self.migration_stderr = migration_stderr
 
     def resolve_daemon_path(self, path):
         return Path(path)
 
-    def compose_run(self, compose_file, project_name, service, command, *, timeout=None, env=None):
+    def compose_run(self, compose_file, project_name, service, command, *, timeout=None, env=None, container_name=None):
         command = list(command)
         env = dict(env or {})
         self.calls.append(
@@ -174,6 +238,7 @@ class FakeDockerCli:
                 "command": command,
                 "timeout": timeout,
                 "env": env,
+                "container_name": container_name,
             }
         )
         staging_root = Path(env["RAYFIN_APP_ROOT"])
@@ -211,15 +276,12 @@ class FakeDockerCli:
             return "deployed", ""
         if command == ["./node_modules/.bin/rayfin", "up", "status", "--json"]:
             return json.dumps(self.status), ""
+        if command[:2] == ["sh", "-c"]:
+            return self.migration_stdout, self.migration_stderr
         return "", ""
 
 
-def _manager(root: Path, staging_root: Path | None, state_root: Path | None, az_cli=None, fabric_cli=None, docker_cli=None, rayfin_params=None, workspace_params=None):
-    kwargs = {}
-    if staging_root is not None:
-        kwargs["staging_root"] = staging_root
-    if state_root is not None:
-        kwargs["state_root"] = state_root
+def _manager(root: Path, staging_root: Path | None, state_root: Path | None, az_cli=None, fabric_cli=None, docker_cli=None, rayfin_params=None, workspace_params=None, database_client=None):
     configured_rayfins = (
         rayfin_params
         if rayfin_params is not None
@@ -252,7 +314,9 @@ def _manager(root: Path, staging_root: Path | None, state_root: Path | None, az_
         az_cli or FakeAzCli(),
         fabric_cli or FakeFabricCli(),
         docker_cli or FakeDockerCli(),
-        **kwargs,
+        staging_root=staging_root,
+        state_root=state_root,
+        database_client=database_client,
     )
 
 
@@ -350,6 +414,274 @@ def test_omitted_semantic_model_workspace_inherits_parent_workspace(tmp_path, mo
         "Analytics.Workspace",
         "Analytics.Workspace/Sales Model.SemanticModel",
     ]
+
+
+def test_functions_clean_checkout_uses_root_install_and_canonical_deployment(tmp_path, monkeypatch):
+    app_root = _write_app(tmp_path)
+    _enable_functions(app_root)
+    docker_cli = FakeDockerCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli).execute())
+
+    assert not (app_root / "node_modules").exists()
+    assert [call["command"] for call in docker_cli.calls] == [
+        ["npm", "ci"],
+        ["npm", "exec", "--workspace", "rayfin/functions", "--no", "--", "tsc", "--showConfig", "--project", "tsconfig.json"],
+        ["./node_modules/.bin/rayfin", "--version"],
+        ["./node_modules/.bin/rayfin", "up", "--yes"],
+        ["./node_modules/.bin/rayfin", "up", "status", "--json"],
+    ]
+    assert docker_cli.generated_rayfin_yaml["services"]["functions"] == {
+        "enabled": True,
+        "auth": {"type": "application"},
+        "path": "rayfin/functions",
+        "buildCommand": "npm run build",
+    }
+    assert list((tmp_path / "staging").iterdir()) == []
+
+
+def test_functions_typescript_configuration_failure_prevents_deployment(tmp_path, monkeypatch):
+    app_root = _write_app(tmp_path)
+    _enable_functions(app_root)
+    config_command = ["npm", "exec", "--workspace", "rayfin/functions", "--no", "--", "tsc", "--showConfig", "--project", "tsconfig.json"]
+    docker_cli = FakeDockerCli(fail_command=config_command)
+    fabric_cli = FakeFabricCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    with pytest.raises(RuntimeError, match="simulated Docker failure"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli, fabric_cli=fabric_cli).execute())
+
+    assert [call["command"] for call in docker_cli.calls] == [["npm", "ci"], config_command]
+    assert not any(call[0][0] == "api" for call in fabric_cli.calls)
+    assert len(list((tmp_path / "staging").iterdir())) == 1
+
+
+@pytest.mark.parametrize("functions_enabled", [False, True])
+def test_rayfin_plan_reports_functions_without_external_side_effects(tmp_path, caplog, functions_enabled):
+    app_root = _write_app(tmp_path)
+    if functions_enabled:
+        _enable_functions(app_root)
+    az_cli = FakeAzCli()
+    fabric_cli = FakeFabricCli()
+    docker_cli = FakeDockerCli()
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, fabric_cli=fabric_cli, docker_cli=docker_cli)
+    caplog.set_level("INFO")
+
+    manager.report_plan()
+
+    assert f"Functions enabled={functions_enabled}" in caplog.text
+    assert "rayfin up --yes" in caplog.text
+    if functions_enabled:
+        assert "auth.type=application" in caplog.text
+    assert az_cli.calls == fabric_cli.calls == docker_cli.calls == []
+    assert not (tmp_path / "staging").exists()
+    assert not (app_root / "rayfin" / "rayfin.yml").exists()
+
+
+def test_rayfin_plan_skips_workspace_before_reading_app(tmp_path, caplog):
+    manager = _manager(tmp_path, tmp_path / "staging", None, workspace_params=[SimpleNamespace(name="Skipped", skip_deploy=True, rayfins=[RayfinParams(root_path="missing", semantic_models={})])])
+    caplog.set_level("INFO")
+
+    manager.report_plan()
+
+    assert "skipDeploy=true" in caplog.text
+    assert not (tmp_path / "staging").exists()
+
+
+def test_migrations_run_after_guarded_deployment_before_status_with_ephemeral_environment(tmp_path, monkeypatch):
+    app_root = _write_app(tmp_path)
+    _enable_migrations(app_root)
+    az_cli = FakeAzCli()
+    fabric_cli = FakeFabricCli()
+    docker_cli = FakeDockerCli(migration_stdout='{"status":"Succeeded","applied":["0001"]}')
+    database_client = FakeDatabaseClient()
+    original_resolve = database_client.resolve_managed_database
+
+    def resolve(workspace_id, app_backend_id):
+        assert fabric_cli.calls[-1][0] == ["api", f"workspaces/{WORKSPACE_ID}/items/{ITEM_ID}", "-X", "get"]
+        assert docker_cli.calls[-1]["command"] == ["./node_modules/.bin/rayfin", "up", "--yes"]
+        assert az_cli.calls == []
+        return original_resolve(workspace_id, app_backend_id)
+
+    database_client.resolve_managed_database = resolve
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, fabric_cli=fabric_cli, docker_cli=docker_cli, database_client=database_client)
+
+    asyncio.run(manager.execute())
+
+    assert database_client.calls == [(WORKSPACE_ID, ITEM_ID)]
+    assert az_cli.calls == ["https://database.windows.net"]
+    assert [call["command"] for call in docker_cli.calls][-2:] == [["sh", "-c", "npm run data:migrate"], ["./node_modules/.bin/rayfin", "up", "status", "--json"]]
+    migration_env = docker_cli.calls[-2]["env"]
+    assert migration_env[FWD_RAYFIN_WORKSPACE_ID_ENV_VAR] == WORKSPACE_ID
+    assert migration_env[FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR] == ITEM_ID
+    assert migration_env[FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR] == DATABASE_ID
+    assert migration_env[FWD_RAYFIN_SQL_SERVER_ENV_VAR] == SQL_SERVER
+    assert migration_env[FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR] == DATABASE_NAME
+    assert migration_env[FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR] == "sql-short-lived-token"
+    assert docker_cli.calls[-2]["container_name"].endswith("-data-migrate")
+    assert all(call["env"][FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR] == "" for call in docker_cli.calls if call["command"][:2] != ["sh", "-c"])
+    assert list((tmp_path / "staging").iterdir()) == []
+    assert not (app_root / "rayfin" / ".deployments.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["No managed SQL Database relationship", "Ambiguous managed SQL Database relationship"])
+def test_migration_target_failure_prevents_sql_token_and_application_command(tmp_path, monkeypatch, failure):
+    _enable_migrations(_write_app(tmp_path))
+    az_cli = FakeAzCli()
+    docker_cli = FakeDockerCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, docker_cli=docker_cli, database_client=FakeDatabaseClient(error=failure))
+
+    with pytest.raises(RuntimeError, match=failure):
+        asyncio.run(manager.execute())
+
+    assert az_cli.calls == []
+    assert not any(call["command"][:2] == ["sh", "-c"] for call in docker_cli.calls)
+    assert len(list((tmp_path / "staging").iterdir())) == 1
+
+
+def test_migrations_reject_wrong_database_workspace_before_token(tmp_path, monkeypatch):
+    _enable_migrations(_write_app(tmp_path))
+    az_cli = FakeAzCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    database = RayfinManagedSqlDatabase(MODEL_WORKSPACE_ID, ITEM_ID, DATABASE_ID, SQL_SERVER, DATABASE_NAME)
+
+    with pytest.raises(RuntimeError, match="guarded workspace"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, database_client=FakeDatabaseClient(database=database)).execute())
+
+    assert az_cli.calls == []
+
+
+def test_migrations_reject_non_appbackend_before_target_resolution(tmp_path, monkeypatch):
+    _enable_migrations(_write_app(tmp_path))
+    database_client = FakeDatabaseClient()
+    az_cli = FakeAzCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    with pytest.raises(RuntimeError, match="must be an AppBackend"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, fabric_cli=FakeFabricCli(app_type="SQLDatabase"), database_client=database_client).execute())
+
+    assert database_client.calls == az_cli.calls == []
+
+
+def test_absent_migrations_do_not_resolve_database_or_acquire_sql_token(tmp_path, monkeypatch):
+    _write_app(tmp_path)
+    database_client = FakeDatabaseClient(error="must not resolve")
+    az_cli = FakeAzCli()
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    asyncio.run(_manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, database_client=database_client).execute())
+
+    assert database_client.calls == az_cli.calls == []
+
+
+def test_migration_failure_retains_staging_and_prevents_status(tmp_path, monkeypatch):
+    _enable_migrations(_write_app(tmp_path))
+    docker_cli = FakeDockerCli(fail_command=["sh", "-c", "npm run data:migrate"])
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+
+    with pytest.raises(RuntimeError, match="migration command failed"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli, database_client=FakeDatabaseClient()).execute())
+
+    assert docker_cli.calls[-1]["command"] == ["sh", "-c", "npm run data:migrate"]
+    assert len(list((tmp_path / "staging").iterdir())) == 1
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_migration_output_redacts_sql_credentials_connection_identity_and_inherited_secrets(tmp_path, monkeypatch, caplog, structured):
+    _enable_migrations(_write_app(tmp_path))
+    content = f"sql-short-lived-token {SQL_SERVER} {DATABASE_NAME} inherited-password"
+    stdout = json.dumps({"status": "Succeeded", "detail": content}) if structured else content
+    docker_cli = FakeDockerCli(migration_stdout=stdout, migration_stderr=content)
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    monkeypatch.setenv("API_PASSWORD", "inherited-password")
+    caplog.set_level("DEBUG")
+
+    asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli, database_client=FakeDatabaseClient()).execute())
+
+    for secret in ("sql-short-lived-token", SQL_SERVER, DATABASE_NAME, "inherited-password"):
+        assert secret not in caplog.text
+    assert "******" in caplog.text
+
+
+@pytest.mark.parametrize("banner", ["", "> app data:migrate\n> node migrations/run.mjs\n"])
+def test_migration_structured_failure_fails_even_when_process_succeeded(tmp_path, monkeypatch, banner):
+    _enable_migrations(_write_app(tmp_path))
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    docker_cli = FakeDockerCli(migration_stdout=banner + '{"success":false}')
+
+    with pytest.raises(RuntimeError, match="unsuccessful diagnostics"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli, database_client=FakeDatabaseClient()).execute())
+
+    assert docker_cli.calls[-1]["command"] == ["sh", "-c", "npm run data:migrate"]
+
+
+def test_structured_stderr_migration_failure_is_not_treated_as_success(tmp_path, monkeypatch):
+    _enable_migrations(_write_app(tmp_path))
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    docker_cli = FakeDockerCli(migration_stderr='{"status":"Failed"}')
+
+    with pytest.raises(RuntimeError, match="unsuccessful diagnostics"):
+        asyncio.run(_manager(tmp_path, tmp_path / "staging", None, docker_cli=docker_cli, database_client=FakeDatabaseClient()).execute())
+
+
+def test_migration_rerun_re_resolves_target_and_acquires_fresh_token(tmp_path, monkeypatch):
+    _enable_migrations(_write_app(tmp_path))
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    az_cli = FakeAzCli()
+    database_client = FakeDatabaseClient()
+    docker_cli = FakeDockerCli()
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, docker_cli=docker_cli, database_client=database_client)
+
+    asyncio.run(manager.execute())
+    asyncio.run(manager.execute())
+
+    assert database_client.calls == [(WORKSPACE_ID, ITEM_ID), (WORKSPACE_ID, ITEM_ID)]
+    assert az_cli.calls == ["https://database.windows.net", "https://database.windows.net"]
+    assert sum(call["command"] == ["sh", "-c", "npm run data:migrate"] for call in docker_cli.calls) == 2
+
+
+def test_failed_migration_rerun_keeps_diagnostics_credential_free_and_reconciles_fresh_staging(tmp_path, monkeypatch):
+    _enable_migrations(_write_app(tmp_path))
+    monkeypatch.setenv("RAYFIN_TOKEN", "configured-token")
+    az_cli = FakeAzCli()
+    database_client = FakeDatabaseClient()
+    docker_cli = FakeDockerCli(fail_command=["sh", "-c", "npm run data:migrate"])
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, docker_cli=docker_cli, database_client=database_client)
+
+    with pytest.raises(RuntimeError, match="migration command failed"):
+        asyncio.run(manager.execute())
+
+    failed_staging = next((tmp_path / "staging").iterdir())
+    persisted = "\n".join(path.read_text() for path in failed_staging.rglob("*") if path.is_file())
+    assert "sql-short-lived-token" not in persisted
+    assert SQL_SERVER not in persisted
+    assert DATABASE_NAME not in persisted
+    docker_cli.fail_command = None
+
+    asyncio.run(manager.execute())
+
+    assert not failed_staging.exists()
+    assert database_client.calls == [(WORKSPACE_ID, ITEM_ID), (WORKSPACE_ID, ITEM_ID)]
+    assert az_cli.calls == ["https://database.windows.net", "https://database.windows.net"]
+    assert list((tmp_path / "staging").iterdir()) == []
+
+
+def test_migration_dry_run_is_local_only_and_reports_repeatable_execution(tmp_path, caplog):
+    _enable_migrations(_write_app(tmp_path))
+    az_cli = FakeAzCli()
+    database_client = FakeDatabaseClient(error="must not resolve")
+    docker_cli = FakeDockerCli()
+    caplog.set_level("INFO")
+
+    _manager(tmp_path, tmp_path / "staging", None, az_cli=az_cli, docker_cli=docker_cli, database_client=database_client).report_plan()
+
+    assert "data.migrations.command" in caplog.text
+    assert "migration ledger" in caplog.text
+    assert database_client.calls == az_cli.calls == docker_cli.calls == []
+    assert not (tmp_path / "staging").exists()
 
 
 def test_force_binding_enables_destructive_schema_migrations(tmp_path, monkeypatch):
