@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from fabric_workspace_deployment.client.rayfin_database import FabricRayfinDatabaseClient
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.docker.cli import DockerCliError
 from fabric_workspace_deployment.manager.rayfin.deployment import RayfinDeploymentManager
@@ -521,6 +522,78 @@ def test_migration_uses_configured_sql_identity_instead_of_azure_cli_identity(tm
     assert "FAB_TOKEN_SQL" not in container_environment
     assert container_environment[FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR] == "${FWD_RAYFIN_SQL_ACCESS_TOKEN-}"
     assert any(call["command"][:3] == ["npm", "exec", "--workspace"] for call in docker_cli.calls)
+
+
+@pytest.mark.parametrize("sql_item_type", ["SQLDbNative", "SQLDatabase"])
+def test_live_relation_graph_reaches_environment_sql_token_migration(tmp_path, monkeypatch, sql_item_type):
+    _enable_migrations(_write_app(tmp_path))
+    monkeypatch.setenv("FAB_TOKEN", "fabric-token-principal-a")
+    monkeypatch.setenv("RAYFIN_TOKEN", "fabric-token-principal-a")
+    monkeypatch.setenv("FAB_TOKEN_SQL", " \n sql-token-principal-a \t")
+    azure_commands = []
+
+    def popen(command, **kwargs):
+        azure_commands.append(list(command))
+        return SimpleNamespace(returncode=0, communicate=lambda **kwargs: (b"sql-token-principal-b", b""))
+
+    monkeypatch.setattr("fabric_workspace_deployment.manager.azure.cli.Popen", popen)
+    common = _common(tmp_path)
+    common.endpoint = SimpleNamespace(cicd="https://fabric.example.invalid")
+    relation_path = f"{common.endpoint.cicd}/v1/workspaces/{WORKSPACE_ID}/items/{ITEM_ID}/relations"
+    database_path = f"{common.endpoint.cicd}/v1/workspaces/{WORKSPACE_ID}/sqlDatabases/{DATABASE_ID}"
+    function_id = "77777777-7777-7777-7777-777777777777"
+    endpoint_id = "88888888-8888-8888-8888-888888888888"
+    items = [
+        {"id": ITEM_ID, "workspaceId": WORKSPACE_ID, "type": "AppBackend"},
+        {"id": DATABASE_ID, "workspaceId": WORKSPACE_ID, "type": sql_item_type},
+        {"id": function_id, "workspaceId": WORKSPACE_ID, "type": "FunctionSet"},
+        {"id": endpoint_id, "workspaceId": WORKSPACE_ID, "type": "SqlAnalyticsEndpoint"},
+    ]
+    relations = [
+        {"itemId": DATABASE_ID, "dependentOnItemId": ITEM_ID, "relationType": "CascadeDelete"},
+        {"itemId": function_id, "dependentOnItemId": ITEM_ID, "relationType": "CascadeDelete"},
+        {"itemId": endpoint_id, "dependentOnItemId": DATABASE_ID, "relationType": "CascadeDelete"},
+    ]
+    public_types = {DATABASE_ID: "SQLDatabase", function_id: "UserDataFunction", endpoint_id: "SQLEndpoint"}
+    responses = {
+        f"{relation_path}/upstream?beta=true": {"items": items, "relations": relations},
+        f"{relation_path}/downstream?beta=true": {"items": [{**item, "type": public_types.get(item["id"], item["type"])} for item in items], "relations": relations},
+        database_path: {"id": DATABASE_ID, "workspaceId": WORKSPACE_ID, "type": "SQLDatabase", "properties": {"serverFqdn": f"tcp:{SQL_SERVER},1433", "databaseName": DATABASE_NAME, "connectionString": f"Server={SQL_SERVER};Database={DATABASE_NAME}"}},
+    }
+    http_calls = []
+
+    def execute(method, url, **kwargs):
+        http_calls.append(url)
+        assert kwargs["safe_log_context"]
+        assert kwargs["timeout"] == 60
+        return SimpleNamespace(json=lambda: responses[url])
+
+    azure = AzCli()
+    original_select_sql_token = azure.get_sql_access_token
+    selected_tenants = []
+
+    def select_sql_token(tenant_id=None):
+        assert http_calls == list(responses)
+        selected_tenants.append(tenant_id)
+        return original_select_sql_token(tenant_id)
+
+    monkeypatch.setattr(azure, "get_sql_access_token", select_sql_token)
+    database_client = FabricRayfinDatabaseClient(common, azure, SimpleNamespace(execute=execute))
+    docker_cli = FakeDockerCli()
+    manager = _manager(tmp_path, tmp_path / "staging", None, az_cli=azure, docker_cli=docker_cli, database_client=database_client)
+
+    asyncio.run(manager.execute())
+
+    migration_call = next(call for call in docker_cli.calls if call["command"][:2] == ["sh", "-c"])
+    assert selected_tenants == [TENANT_ID]
+    assert migration_call["env"][FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR] == "sql-token-principal-a"
+    assert migration_call["env"][FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR] == DATABASE_ID
+    assert migration_call["env"][FWD_RAYFIN_SQL_SERVER_ENV_VAR] == SQL_SERVER
+    assert migration_call["env"][FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR] == DATABASE_NAME
+    assert azure_commands == []
+    assert all(call["env"][FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR] == "" for call in docker_cli.calls if call is not migration_call)
+    assert docker_cli.calls[-1]["command"] == ["./node_modules/.bin/rayfin", "up", "status", "--json"]
+    assert list((tmp_path / "staging").iterdir()) == []
 
 
 def test_migration_rerun_reads_sql_environment_immediately_before_each_invocation(tmp_path, monkeypatch):

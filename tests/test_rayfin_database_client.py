@@ -45,8 +45,8 @@ def _item(item_id=DATABASE_ID, workspace_id=WORKSPACE_ID, item_type="SQLDatabase
     return {"id": item_id, "workspaceId": workspace_id, "type": item_type, "displayName": "same-name"}
 
 
-def _edge(parent=APP_ID, child=DATABASE_ID, relation_type="CascadeDelete"):
-    return {"itemId": parent, "dependentOnItemId": child, "relationType": relation_type}
+def _edge(owner=APP_ID, child=DATABASE_ID, relation_type="CascadeDelete"):
+    return {"itemId": child, "dependentOnItemId": owner, "relationType": relation_type}
 
 
 def _graph(items=None, edges=None):
@@ -57,8 +57,9 @@ def _database(**overrides):
     return {"id": DATABASE_ID, "workspaceId": WORKSPACE_ID, "type": "SQLDatabase", "properties": {"serverFqdn": f"tcp:{SERVER.upper()},1433", "databaseName": DATABASE, "connectionString": f"Server=tcp:{SERVER},1433;Database={DATABASE};Encrypt=True"}, **overrides}
 
 
-def test_selects_exact_owned_database_among_multiple_related_sql_items(caplog):
-    graph = _graph(items=[_item(OTHER_ID), _item()], edges=[_edge(child=OTHER_ID, relation_type="Datasource"), _edge()])
+@pytest.mark.parametrize("item_type", ["SQLDbNative", "SQLDatabase"])
+def test_selects_exact_owned_database_among_multiple_related_sql_items(caplog, item_type):
+    graph = _graph(items=[_item(OTHER_ID), _item(item_type=item_type)], edges=[_edge(child=OTHER_ID, relation_type="Datasource"), _edge()])
     client, http = _client([graph, _graph(items=[], edges=[]), _database()])
     caplog.set_level(logging.DEBUG)
 
@@ -75,8 +76,9 @@ def test_selects_exact_owned_database_among_multiple_related_sql_items(caplog):
     assert DATABASE not in caplog.text
 
 
-def test_accepts_parent_ownership_edge_reported_only_by_downstream_endpoint():
-    client, _ = _client([_graph(items=[], edges=[]), _graph(), _database()])
+@pytest.mark.parametrize("item_type", ["SQLDbNative", "SQLDatabase"])
+def test_accepts_child_to_owner_edge_reported_only_by_downstream_endpoint(item_type):
+    client, _ = _client([_graph(items=[], edges=[]), _graph(items=[_item(item_type=item_type)]), _database()])
 
     assert client.resolve_managed_database(WORKSPACE_ID, APP_ID).database_id == DATABASE_ID
 
@@ -87,9 +89,27 @@ def test_duplicate_identical_edges_across_directions_are_not_ambiguous():
     assert client.resolve_managed_database(WORKSPACE_ID, APP_ID).database_id == DATABASE_ID
 
 
+@pytest.mark.parametrize(("upstream_type", "downstream_type"), [("SQLDbNative", "SQLDatabase"), ("SQLDatabase", "SQLDbNative")])
+def test_native_and_public_sql_types_are_the_same_relation_identity(upstream_type, downstream_type):
+    client, _ = _client([_graph(items=[_item(item_type=upstream_type)]), _graph(items=[_item(item_type=downstream_type)]), _database()])
+
+    assert client.resolve_managed_database(WORKSPACE_ID, APP_ID).database_id == DATABASE_ID
+
+
+@pytest.mark.parametrize(("native_type", "public_type"), [("FunctionSet", "UserDataFunction"), ("SqlAnalyticsEndpoint", "SQLEndpoint")])
+def test_other_native_types_normalize_without_becoming_sql_databases(native_type, public_type):
+    upstream = _graph(items=[_item(), _item(OTHER_ID, item_type=native_type)], edges=[_edge(), _edge(child=OTHER_ID)])
+    downstream = _graph(items=[_item(), _item(OTHER_ID, item_type=public_type)], edges=[_edge(), _edge(child=OTHER_ID)])
+    client, http = _client([upstream, downstream, _database()])
+
+    assert client.resolve_managed_database(WORKSPACE_ID, APP_ID).database_id == DATABASE_ID
+    assert http.calls[-1][1].endswith(f"/sqlDatabases/{DATABASE_ID}")
+
+
 @pytest.mark.parametrize("relation_type", ["Datasource", "WeakAssociation", "PushData", "Orchestration", "HiddenInWorkspace", "Shortcut"])
-def test_soft_dependency_does_not_prove_managed_database_ownership(relation_type):
-    client, http = _client([_graph(edges=[_edge(relation_type=relation_type)]), _graph(items=[], edges=[])])
+@pytest.mark.parametrize("item_type", ["SQLDbNative", "SQLDatabase"])
+def test_soft_dependency_does_not_prove_managed_database_ownership(relation_type, item_type):
+    client, http = _client([_graph(items=[_item(item_type=item_type)], edges=[_edge(relation_type=relation_type)]), _graph(items=[], edges=[])])
 
     with pytest.raises(RuntimeError, match="exactly one AppBackend-owned"):
         client.resolve_managed_database(WORKSPACE_ID, APP_ID)
@@ -98,7 +118,7 @@ def test_soft_dependency_does_not_prove_managed_database_ownership(relation_type
 
 
 def test_reversed_cascade_edge_does_not_prove_appbackend_owns_database():
-    client, http = _client([_graph(edges=[_edge(parent=DATABASE_ID, child=APP_ID)]), _graph(items=[], edges=[])])
+    client, http = _client([_graph(edges=[_edge(owner=DATABASE_ID, child=APP_ID)]), _graph(items=[], edges=[]), _database()])
 
     with pytest.raises(RuntimeError, match="exactly one AppBackend-owned"):
         client.resolve_managed_database(WORKSPACE_ID, APP_ID)
@@ -112,7 +132,10 @@ def test_reversed_cascade_edge_does_not_prove_appbackend_owns_database():
         _graph(items=[], edges=[]),
         _graph(items=[_item()], edges=[]),
         _graph(items=[_item(), _item(OTHER_ID)], edges=[_edge(), _edge(child=OTHER_ID)]),
+        _graph(items=[_item(item_type="SQLDbNative"), _item(OTHER_ID)], edges=[_edge(), _edge(child=OTHER_ID)]),
         _graph(items=[_item(item_type="SQLEndpoint")]),
+        _graph(items=[_item(item_type="FunctionSet")]),
+        _graph(items=[_item(item_type="SqlAnalyticsEndpoint")]),
     ],
 )
 def test_missing_or_ambiguous_managed_database_fails_before_connection_read(graph):
@@ -124,8 +147,9 @@ def test_missing_or_ambiguous_managed_database_fails_before_connection_read(grap
     assert len(http.calls) == 2
 
 
-def test_cross_workspace_ownership_fails_before_connection_read():
-    client, http = _client([_graph(items=[_item(workspace_id=OTHER_ID)]), _graph(items=[], edges=[])])
+@pytest.mark.parametrize("item_type", ["SQLDbNative", "SQLDatabase"])
+def test_cross_workspace_ownership_fails_before_connection_read(item_type):
+    client, http = _client([_graph(items=[_item(workspace_id=OTHER_ID, item_type=item_type)]), _graph(items=[], edges=[])])
 
     with pytest.raises(RuntimeError, match="guarded workspace"):
         client.resolve_managed_database(WORKSPACE_ID, APP_ID)
@@ -142,6 +166,16 @@ def test_conflicting_item_identity_across_relation_directions_fails():
     assert len(http.calls) == 2
 
 
+@pytest.mark.parametrize("app_item", [_item(APP_ID, workspace_id=OTHER_ID, item_type="AppBackend"), _item(APP_ID, item_type="SQLDbNative")])
+def test_relation_identity_cannot_contradict_the_guarded_appbackend(app_item):
+    client, http = _client([_graph(items=[_item(item_type="SQLDbNative"), app_item])])
+
+    with pytest.raises(RuntimeError, match="contradict the guarded AppBackend"):
+        client.resolve_managed_database(WORKSPACE_ID, APP_ID)
+
+    assert len(http.calls) == 1
+
+
 def test_missing_owned_item_identity_fails_even_with_another_visible_database():
     client, _ = _client([_graph(items=[_item(OTHER_ID)]), _graph(items=[], edges=[])])
 
@@ -155,6 +189,7 @@ def test_missing_owned_item_identity_fails_even_with_another_visible_database():
         (_database(id=OTHER_ID), "differs"),
         (_database(workspaceId=OTHER_ID), "guarded workspace/type"),
         (_database(type="SQLEndpoint"), "guarded workspace/type"),
+        (_database(type="SQLDbNative"), "guarded workspace/type"),
         (_database(properties={}), "server FQDN"),
         (_database(properties={"serverFqdn": SERVER, "databaseName": ""}), "database name"),
         (_database(properties={"serverFqdn": SERVER, "databaseName": DATABASE, "connectionString": f"Server=other.example.invalid;Database={DATABASE}"}), "conflict"),

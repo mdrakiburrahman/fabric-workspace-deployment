@@ -8,6 +8,12 @@ from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, HttpRetryHandler, RayfinDatabaseClient
 from fabric_workspace_deployment.rayfin.manifest import RayfinManagedSqlDatabase
 
+_RELATION_ITEM_TYPES = {
+    "SQLDbNative": "SQLDatabase",
+    "FunctionSet": "UserDataFunction",
+    "SqlAnalyticsEndpoint": "SQLEndpoint",
+}
+
 
 class FabricRayfinDatabaseClient(FabricRestClient, RayfinDatabaseClient):
     """Resolve SQL ownership through typed Fabric item relations, never workspace position."""
@@ -27,6 +33,7 @@ class FabricRayfinDatabaseClient(FabricRestClient, RayfinDatabaseClient):
                 item = response_object(value, "Rayfin related item")
                 item_id = response_guid(item.get("id"), "Rayfin related item ID").casefold()
                 item_type = response_string(item.get("type"), "Rayfin related item type")
+                item_type = _RELATION_ITEM_TYPES.get(item_type, item_type)
                 item_workspace = response_guid(item.get("workspaceId"), "Rayfin related item workspace ID").casefold()
                 identity = (item_type, item_workspace)
                 if item_id in related_items and related_items[item_id] != identity:
@@ -36,10 +43,10 @@ class FabricRayfinDatabaseClient(FabricRestClient, RayfinDatabaseClient):
                     raise RuntimeError("Fabric ownership relations contradict the guarded AppBackend identity")
             for value in response_array(data.get("relations"), "Rayfin ownership edges"):
                 edge = response_object(value, "Rayfin ownership edge")
-                parent_id = response_guid(edge.get("itemId"), "Rayfin relation source ID")
-                child_id = response_guid(edge.get("dependentOnItemId"), "Rayfin relation dependent ID")
+                child_id = response_guid(edge.get("itemId"), "Rayfin relation child ID")
+                owner_id = response_guid(edge.get("dependentOnItemId"), "Rayfin relation owner ID")
                 relation_type = response_string(edge.get("relationType"), "Rayfin relation type")
-                if relation_type == "CascadeDelete" and parent_id.casefold() == app_backend_id.casefold():
+                if relation_type == "CascadeDelete" and owner_id.casefold() == app_backend_id.casefold():
                     owned_ids.add(child_id.casefold())
 
         sql_ids: set[str] = set()
@@ -53,7 +60,7 @@ class FabricRayfinDatabaseClient(FabricRestClient, RayfinDatabaseClient):
                 raise RuntimeError("Rayfin managed SQL ownership crosses the guarded workspace")
             sql_ids.add(item_id)
         if len(sql_ids) != 1:
-            raise RuntimeError("Fabric item relations must expose exactly one AppBackend-owned SQLDatabase through a parent CascadeDelete edge; refusing missing or ambiguous migration targeting")
+            raise RuntimeError("Fabric item relations must expose exactly one AppBackend-owned SQLDatabase through a child-to-owner CascadeDelete edge; refusing missing or ambiguous migration targeting")
 
         database_id = next(iter(sql_ids))
         database = response_object(self._get_json(f"/v1/workspaces/{workspace_id}/sqlDatabases/{database_id}", "Rayfin managed SQL identity"), "Rayfin managed SQL Database")
