@@ -9,7 +9,81 @@ from types import SimpleNamespace
 
 import pytest
 
+from fabric_workspace_deployment.environment_variables import FAB_TOKEN_SQL_ENV_VAR, SCOPE_TOKEN_ENV_VARS
 from fabric_workspace_deployment.manager.azure import cli
+
+
+@pytest.fixture(autouse=True)
+def clear_ambient_sql_token(monkeypatch):
+    monkeypatch.delenv(FAB_TOKEN_SQL_ENV_VAR, raising=False)
+
+
+@pytest.mark.parametrize("token", ["sql-env-token", " \t sql-env-token \n"])
+@pytest.mark.parametrize("tenant_id", [None, "11111111-1111-1111-1111-111111111111"])
+def test_sql_environment_token_precedes_azure_cli(monkeypatch, caplog, token, tenant_id):
+    monkeypatch.setenv(FAB_TOKEN_SQL_ENV_VAR, token)
+    monkeypatch.setattr(cli, "Popen", lambda *args, **kwargs: pytest.fail("Azure CLI must not acquire a supplied SQL token"))
+    caplog.set_level(logging.DEBUG)
+
+    assert cli.AzCli().get_sql_access_token(tenant_id) == "sql-env-token"
+    assert "sql-env-token" not in caplog.text
+
+
+@pytest.mark.parametrize("scope", ["https://database.windows.net", "https://database.windows.net/"])
+def test_sql_scope_maps_to_the_public_environment_token(monkeypatch, scope):
+    assert FAB_TOKEN_SQL_ENV_VAR == "FAB_TOKEN_SQL"
+    assert SCOPE_TOKEN_ENV_VARS["https://database.windows.net"] == FAB_TOKEN_SQL_ENV_VAR
+    monkeypatch.setenv(FAB_TOKEN_SQL_ENV_VAR, " sql-env-token ")
+    monkeypatch.setattr(cli, "Popen", lambda *args, **kwargs: pytest.fail("The SQL scope must use its environment token"))
+
+    assert cli.AzCli().get_access_token(scope) == "sql-env-token"
+
+
+@pytest.mark.parametrize("token", [None, "", " \t\r\n"])
+@pytest.mark.parametrize("tenant_id", [None, "11111111-1111-1111-1111-111111111111"])
+def test_blank_sql_environment_token_preserves_exact_azure_cli_fallback(monkeypatch, token, tenant_id):
+    if token is not None:
+        monkeypatch.setenv(FAB_TOKEN_SQL_ENV_VAR, token)
+    commands = []
+    timeouts = []
+
+    def popen(command, **kwargs):
+        commands.append(list(command))
+
+        def communicate(**kwargs):
+            timeouts.append(kwargs["timeout"])
+            return b" sql-cli-token \n", b""
+
+        return SimpleNamespace(returncode=0, communicate=communicate)
+
+    monkeypatch.setattr(cli, "Popen", popen)
+
+    assert cli.AzCli().get_sql_access_token(tenant_id) == "sql-cli-token"
+    expected = ["az", "account", "get-access-token", "--resource", "https://database.windows.net", "--query", "accessToken", "--output", "tsv"]
+    if tenant_id is not None:
+        expected.extend(["--tenant", tenant_id])
+    assert commands == [expected]
+    assert timeouts == [60]
+
+
+def test_sql_environment_token_is_re_read_and_removal_enables_fallback(monkeypatch):
+    commands = []
+
+    def popen(command, **kwargs):
+        commands.append(list(command))
+        return SimpleNamespace(returncode=0, communicate=lambda **kwargs: (b"sql-cli-token", b""))
+
+    monkeypatch.setattr(cli, "Popen", popen)
+    azure = cli.AzCli()
+    monkeypatch.setenv(FAB_TOKEN_SQL_ENV_VAR, " sql-env-first ")
+    assert azure.get_sql_access_token() == "sql-env-first"
+    monkeypatch.setenv(FAB_TOKEN_SQL_ENV_VAR, "\n sql-env-second \t")
+    assert azure.get_sql_access_token() == "sql-env-second"
+    assert commands == []
+
+    monkeypatch.delenv(FAB_TOKEN_SQL_ENV_VAR)
+    assert azure.get_sql_access_token() == "sql-cli-token"
+    assert len(commands) == 1
 
 
 def test_sql_token_is_acquired_uncached_without_logging_secret_stdout(monkeypatch, caplog):

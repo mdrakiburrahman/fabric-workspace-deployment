@@ -454,6 +454,7 @@ def test_environment_dump_redacts_tokens(monkeypatch, caplog):
         {
             "RAYFIN_TOKEN": "rayfin-secret",
             "FAB_TOKEN": "fabric-secret",
+            "FAB_TOKEN_SQL": "sql-env-secret",
             "NORMAL_VALUE": "visible",
         },
     )
@@ -463,7 +464,9 @@ def test_environment_dump_redacts_tokens(monkeypatch, caplog):
 
     assert "rayfin-secret" not in caplog.text
     assert "fabric-secret" not in caplog.text
+    assert "sql-env-secret" not in caplog.text
     assert "RAYFIN_TOKEN=******" in caplog.text
+    assert "FAB_TOKEN_SQL=******" in caplog.text
     assert "NORMAL_VALUE=visible" in caplog.text
     assert redact_environment_value("API_PASSWORD", "secret") == "******"
 
@@ -475,6 +478,8 @@ def test_packaged_compose_resource_uses_pinned_node_image():
     assert "RAYFIN_TOKEN" in compose_text
     assert "RAYFIN_WORKSPACE_ID" in compose_text
     assert "RAYFIN_TENANT_ID" in compose_text
+    assert "FAB_TOKEN_SQL" not in compose_text
+    assert "FWD_RAYFIN_SQL_ACCESS_TOKEN: ${FWD_RAYFIN_SQL_ACCESS_TOKEN-}" in compose_text
 
 
 def test_factory_passes_workspace_scoped_rayfins_to_manager(tmp_path, monkeypatch):

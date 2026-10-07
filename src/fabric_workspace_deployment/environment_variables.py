@@ -10,6 +10,7 @@ FAB_TOKEN_ENV_VAR = "FAB_TOKEN"
 FAB_TOKEN_AZURE_ENV_VAR = "FAB_TOKEN_AZURE"
 FAB_TOKEN_GRAPH_ENV_VAR = "FAB_TOKEN_GRAPH"
 FAB_TOKEN_CICD_ENV_VAR = "FAB_TOKEN_CICD"
+FAB_TOKEN_SQL_ENV_VAR = "FAB_TOKEN_SQL"
 FAB_PATH_ENV_VAR = "FAB_PATH"
 
 RAYFIN_TOKEN_ENV_VAR = "RAYFIN_TOKEN"
@@ -64,6 +65,7 @@ SKIP_MONITORING_DEPLOYMENT_ENV_VAR = "FAB_SKIP_MONITORING_DEPLOYMENT"
 SCOPE_TOKEN_ENV_VARS = {
     "https://analysis.windows.net/powerbi/api": FAB_TOKEN_ENV_VAR,
     "https://management.azure.com": FAB_TOKEN_AZURE_ENV_VAR,
+    "https://database.windows.net": FAB_TOKEN_SQL_ENV_VAR,
     "https://graph.microsoft.com": FAB_TOKEN_GRAPH_ENV_VAR,
     "https://graph.microsoft.us": FAB_TOKEN_GRAPH_ENV_VAR,
     "https://dod-graph.microsoft.us": FAB_TOKEN_GRAPH_ENV_VAR,

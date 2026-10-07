@@ -12,7 +12,7 @@ import sys
 from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Any
 
-from fabric_workspace_deployment.environment_variables import SCOPE_TOKEN_ENV_VARS
+from fabric_workspace_deployment.environment_variables import FAB_TOKEN_SQL_ENV_VAR, SCOPE_TOKEN_ENV_VARS
 
 
 class AzCli:
@@ -157,7 +157,11 @@ class AzCli:
         return token
 
     def get_sql_access_token(self, tenant_id: str | None = None) -> str:
-        """Acquire an uncached SQL credential immediately before each migration."""
+        """Read an uncached SQL token from FAB_TOKEN_SQL or tenant-scoped Azure CLI."""
+        token_from_env = os.getenv(FAB_TOKEN_SQL_ENV_VAR, "").strip()
+        if token_from_env:
+            return token_from_env
+
         command = ["account", "get-access-token", "--resource", "https://database.windows.net", "--query", "accessToken", "--output", "tsv"]
         if tenant_id is not None:
             command.extend(["--tenant", tenant_id])
