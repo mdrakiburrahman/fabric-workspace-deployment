@@ -50,10 +50,10 @@ Add an optional `rayfins` list to each parent entry in `common.fabric.workspaces
 
 Each Rayfin entry inherits its deployment workspace from the parent workspace's `name` and has exactly these fields:
 
-| Field            | Type    | Meaning                                                                                                                                                                                                                                                                              |
-| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `rootPath`       | string  | App root relative to `common.local.rootFolder`. The resolved path must remain under that root. Root paths must be unique across every workspace in the configuration.                                                                                                                 |
-| `force`          | boolean | Optional, defaults to `false`. When `true`, FWD passes Rayfin's `--force` flag to allow destructive managed-data schema migrations that may result in data loss.                                                                                                                       |
+| Field            | Type    | Meaning                                                                                                                                                                                                                                                                                  |
+| ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rootPath`       | string  | App root relative to `common.local.rootFolder`. The resolved path must remain under that root. Root paths must be unique across every workspace in the configuration.                                                                                                                    |
+| `force`          | boolean | Optional, defaults to `false`. When `true`, FWD passes Rayfin's `--force` flag to allow destructive managed-data schema migrations that may result in data loss.                                                                                                                         |
 | `semanticModels` | object  | Mapping from app connection alias to a binding containing required `itemName` and optional `workspaceName`. When `workspaceName` is omitted, the semantic model is resolved in the parent workspace; an explicit value preserves cross-workspace resolution. Empty mappings are allowed. |
 
 Each semantic-model binding supports these fields:
@@ -118,8 +118,8 @@ The manifest is intentionally strict: all shown sections and fields except the b
 | `data`                       | Optional managed data-service block. When omitted, FWD defaults to `{ "enabled": false, "dialect": "mssql" }` for backward compatibility. |
 | `data.enabled`               | Boolean enabling managed Rayfin data.                                                                                                     |
 | `data.dialect`               | Must be exactly `"mssql"`; Fabric deployments do not accept PostgreSQL.                                                                   |
-| `data.migrations`            | Optional FWD-owned post-schema command block; requires `data.enabled: true`. |
-| `data.migrations.command`    | Non-empty shell command run from the staged app root. An `npm run` command must name a root package script. |
+| `data.migrations`            | Optional FWD-owned post-schema command block; requires `data.enabled: true`.                                                              |
+| `data.migrations.command`    | Non-empty shell command run from the staged app root. An `npm run` command must name a root package script.                               |
 
 FWD runs `npm ci`, then invokes `./node_modules/.bin/rayfin`. It checks the installed CLI's `--version` output against `rayfin.version` before deployment, so `package.json` and `package-lock.json` must resolve that exact version.
 
@@ -208,27 +208,37 @@ To initialize reference/configuration data after managed schema provisioning, ad
 
 This command belongs to FWD orchestration and is not rendered into Rayfin's data-service YAML. An app without this block remains unchanged: FWD does not look up its managed SQL Database, acquire a SQL token, or run migration code.
 
-After full `rayfin up`, FWD verifies the current deployment registry's explicit workspace identifier (including Rayfin's canonical `fabricWorkspaceId`) and checks that the recorded item is an `AppBackend` in that workspace. It reads both upstream and downstream [Fabric item relations](https://learn.microsoft.com/en-us/rest/api/fabric/core/items/get-upstream-relations(beta)) and requires exactly one `SQLDatabase` child of that AppBackend through a parent-to-child `CascadeDelete` edge. Soft dependencies (`Datasource`, `WeakAssociation`, and others), reversed ownership, display names, and workspace list positions are not accepted as proof of management. FWD retrieves that exact SQL Database by ID and validates its workspace, type, server, database name, and any reported connection-string identity.
+After full `rayfin up`, FWD verifies the current deployment registry's explicit workspace identifier (including Rayfin's canonical `fabricWorkspaceId`) and checks that the recorded item is an `AppBackend` in that workspace. It reads both upstream and downstream [Fabric item relations](<https://learn.microsoft.com/en-us/rest/api/fabric/core/items/get-upstream-relations(beta)>) and requires exactly one `SQLDatabase` child of that AppBackend through a parent-to-child `CascadeDelete` edge. Soft dependencies (`Datasource`, `WeakAssociation`, and others), reversed ownership, display names, and workspace list positions are not accepted as proof of management. FWD retrieves that exact SQL Database by ID and validates its workspace, type, server, database name, and any reported connection-string identity.
 
 > [!IMPORTANT]
 > The Fabric relations endpoints require `beta=true`; Microsoft labels them evaluation/development APIs and does not recommend production use. This implementation fails closed when the API is unavailable or the backend does not expose the required ownership edge. The generic relationship contract is documented, but actual Rayfin ownership-edge availability has not been verified by a live deployment in this change. Validate it in your testing workspace before relying on migrations; FWD will not substitute a weaker or guessed target.
 
-Only after verifying the target, FWD acquires a fresh, uncached `https://database.windows.net` access token through Azure CLI in the configured tenant. This uses the active Azure CLI identity, which may differ from the principal supplying an ambient `RAYFIN_TOKEN`; ensure that identity has the required SQL permissions. It runs `sh -c <command>` once in the existing isolated Node container, with the staged app root as its working directory and a 15-minute timeout. Then it runs `rayfin up status --json`.
+Only after verifying the target, FWD selects an uncached `https://database.windows.net` access token immediately before migration. It re-reads and strips the optional `FAB_TOKEN_SQL` environment variable on every invocation. A non-empty value is used without invoking Azure CLI. If unset, empty, or whitespace-only, FWD preserves fresh Azure CLI acquisition in the configured tenant:
+
+```text
+az account get-access-token --resource https://database.windows.net --query accessToken --output tsv --tenant <configured-tenant>
+```
+
+Neither source is cached. Callers supplying `FAB_TOKEN_SQL` are responsible for its SQL audience, validity, and external refresh; FWD does not refresh supplied tokens or switch identities if one is rejected. `RAYFIN_TOKEN` has a Fabric/Power BI audience and must not be reused as a SQL credential.
+
+Fabric/Rayfin and SQL tokens normally need to represent the same intended principal for managed-item authorization. Intentionally different identities are supported when each has the necessary authorization; the Azure CLI fallback still uses the active CLI identity. Acquiring a token grants neither Fabric item access (including access to the managed SQL Database item) nor SQL data/DDL permissions.
+
+FWD runs `sh -c <command>` once in the existing isolated Node container, with the staged app root as its working directory and a 15-minute timeout. Then it runs `rayfin up status --json`.
 
 The migration invocation receives:
 
-| Variable | Value |
-| --- | --- |
-| `FWD_RAYFIN_WORKSPACE_ID` | Guarded deployment workspace ID. |
-| `FWD_RAYFIN_APP_BACKEND_ID` | Verified AppBackend item ID. |
-| `FWD_RAYFIN_SQL_DATABASE_ID` | Verified AppBackend-owned SQL Database item ID. |
-| `FWD_RAYFIN_SQL_SERVER` | SQL server host from the verified database metadata, with the default `,1433` suffix normalized away. |
-| `FWD_RAYFIN_SQL_DATABASE_NAME` | Database name from that database's properties. |
-| `FWD_RAYFIN_SQL_ACCESS_TOKEN` | Short-lived SQL-audience access token. |
+| Variable                       | Value                                                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `FWD_RAYFIN_WORKSPACE_ID`      | Guarded deployment workspace ID.                                                                                     |
+| `FWD_RAYFIN_APP_BACKEND_ID`    | Verified AppBackend item ID.                                                                                         |
+| `FWD_RAYFIN_SQL_DATABASE_ID`   | Verified AppBackend-owned SQL Database item ID.                                                                      |
+| `FWD_RAYFIN_SQL_SERVER`        | SQL server host from the verified database metadata, with the default `,1433` suffix normalized away.                |
+| `FWD_RAYFIN_SQL_DATABASE_NAME` | Database name from that database's properties.                                                                       |
+| `FWD_RAYFIN_SQL_ACCESS_TOKEN`  | SQL-audience access token selected from `FAB_TOKEN_SQL` or fresh Azure CLI acquisition immediately before migration. |
 
-These variables are populated internally; callers do not configure them. SQL credentials/connection values are not supplied to installation, deployment, or status commands. FWD passes them through process/container environment only, never writes their values into generated YAML or env files, and masks token, server, database-name, and other known sensitive environment values in diagnostics. Raw token-acquisition output and timeout exception chains are not logged.
+These variables are populated internally; callers do not configure them. `FAB_TOKEN_SQL` is not in the Compose service environment allowlist: only migration receives the selected value through `FWD_RAYFIN_SQL_ACCESS_TOKEN`. SQL credentials/connection values remain empty during installation, Functions/version checks, deployment, and status commands. FWD passes them through process/container environment only, never writes their values into generated YAML or env files, and masks token, server, database-name, and other known sensitive environment values in diagnostics. Raw token-acquisition output and timeout exception chains are not logged.
 
-The command may emit plain text or JSON diagnostics on either stream, including JSON lines after npm's script banner; FWD sanitizes both streams before logging or parsing. Nonzero exit, timeout, or structured unsuccessful status fails `deployRayfin`, stops the final status step, and retains staging for diagnostics. A timed-out migration's explicitly named container is stopped rather than left running after the Docker CLI exits; cleanup failures are surfaced. FWD does not automatically retry a failed migration command. A later invocation re-resolves the target, acquires another token, and runs the migration command again, while preserving the existing stale-staging cleanup/reconciliation behavior.
+The command may emit plain text or JSON diagnostics on either stream, including JSON lines after npm's script banner; FWD sanitizes both streams before logging or parsing. Credential-acquisition failure, nonzero exit, timeout, or structured unsuccessful status fails `deployRayfin`, stops the final status step, and retains staging for diagnostics. A timed-out migration's explicitly named container is stopped rather than left running after the Docker CLI exits; cleanup failures are surfaced. FWD does not automatically retry a failed migration command. A later invocation re-resolves the target, re-reads `FAB_TOKEN_SQL` or acquires a fresh Azure CLI token, and runs the migration command again, while preserving the existing stale-staging cleanup/reconciliation behavior.
 
 Applications own migration SQL, deterministic keys, transaction boundaries, a version ledger, and concurrent-run safety. Represent the initial bootstrap as `0001`; use additional immutable versions for later changes instead of rerunning a destructive bootstrap. FWD owns targeting, credential acquisition, execution ordering, isolation, and failure reporting. This is separate from `deploySeed`, which uploads Azure Storage files.
 
@@ -376,12 +386,12 @@ A deployed Rayfin application is a Fabric `AppBackend`. Configure its direct acc
 }
 ```
 
-| Portal permissions | `detail[].permissions` |
-| --- | ---: |
-| Read, Execute | `65` |
-| Read, Write, Execute | `67` |
-| Read, Reshare, Execute | `69` |
-| Read, Write, Reshare, Execute | `71` |
+| Portal permissions            | `detail[].permissions` |
+| ----------------------------- | ---------------------: |
+| Read, Execute                 |                   `65` |
+| Read, Write, Execute          |                   `67` |
+| Read, Reshare, Execute        |                   `69` |
+| Read, Write, Reshare, Execute |                   `71` |
 
 `artifactPermissions` must be omitted or `0`. FWD reads and writes AppBackend access through Fabric's artifacts access API using Entra object IDs for groups, users, and service principals. With authoritative purge enabled, unmatched direct grants are removed while rows carrying a workspace-role `accessSource` are preserved. Explicit desired entries are still reconciled.
 

@@ -103,6 +103,30 @@ def test_docker_timeout_sanitizes_streams_and_suppresses_raw_exception_chain(mon
     assert failure.value.__suppress_context__ is True
 
 
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_inherited_sql_environment_token_is_redacted_from_docker_failures(monkeypatch, caplog, timed_out):
+    token = "inherited-sql-env-token"
+    monkeypatch.setenv("FAB_TOKEN_SQL", token)
+    process_environments = []
+
+    def run(command, **kwargs):
+        process_environments.append(kwargs["env"])
+        if timed_out:
+            raise subprocess.TimeoutExpired(command, 30, output=token.encode(), stderr=token.encode())
+        return SimpleNamespace(returncode=1, stdout=token, stderr=token)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(DockerCliError) as failure:
+        DockerCli().run(["compose", "run", "rayfin"], timeout=30)
+
+    assert process_environments[0]["FAB_TOKEN_SQL"] == token
+    diagnostics = caplog.text + str(failure.value) + failure.value.stdout + failure.value.stderr + "".join(traceback.format_exception(failure.type, failure.value, failure.tb))
+    assert token not in diagnostics
+    assert failure.value.timed_out is timed_out
+
+
 def test_named_migration_container_is_stopped_after_cli_timeout(monkeypatch, tmp_path):
     calls = []
 
