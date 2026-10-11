@@ -46,7 +46,12 @@
   },
   "runArgs": [
     "--label",
-    "com.github.mdrakiburrahman.fabric-workspace-deployment.devcontainer=true"
+    "com.github.mdrakiburrahman.fabric-workspace-deployment.devcontainer=true",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--security-opt",
+    "apparmor=unconfined",
+    "--cap-add=SYS_ADMIN"
   ],
   "mounts": [
     "type=bind,source=${localEnv:HOME}/.azure,target=/home/vscode/.azure"
