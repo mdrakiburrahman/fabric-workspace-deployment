@@ -6,6 +6,8 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from azure.core.credentials import TokenCredential
@@ -55,6 +57,7 @@ class FabricCicdManager(CicdManager):
         self.folder_client = folder_client
         self.monitoring_manager = monitoring_manager
         self.spark_environment_client = spark_environment_client
+        self.namespace_rewriter = common_params.fabric.create_storage_namespace_rewriter()
 
     async def _execute(self) -> None:
         self.logger.info("Executing FabricCicdManager")
@@ -111,6 +114,40 @@ class FabricCicdManager(CicdManager):
         else:
             self.logger.info("No monitoring templates configured, skipping template generation")
 
+        source_artifacts_root = Path(self.common_params.local.root_folder) / template_params.artifacts_folder
+        staging_parent = None
+        artifacts_root = source_artifacts_root
+
+        try:
+            if self.namespace_rewriter.active:
+                staging_parent = Path(tempfile.mkdtemp(prefix="fabric-workspace-deployment-template-"))
+                artifacts_root = staging_parent / source_artifacts_root.name
+                rewritten_count = self.namespace_rewriter.copy_tree(source_artifacts_root, artifacts_root)
+                self.logger.info(f"Staged Fabric artifacts at {artifacts_root} with {rewritten_count} rewritten file(s)")
+
+            await self._reconcile_artifacts(
+                workspace_id=workspace_id,
+                workspace_params=workspace_params,
+                template_params=template_params,
+                artifacts_root=artifacts_root,
+            )
+        except Exception:
+            if staging_parent is not None:
+                self.logger.error(f"Fabric artifact staging retained for diagnostics: {staging_parent}")
+            raise
+        else:
+            if staging_parent is not None:
+                shutil.rmtree(staging_parent)
+                self.logger.info(f"Removed Fabric artifact staging directory: {staging_parent}")
+
+    async def _reconcile_artifacts(
+        self,
+        workspace_id: str,
+        workspace_params: FabricWorkspaceParams,
+        template_params: FabricWorkspaceTemplateParams,
+        artifacts_root: Path,
+    ) -> None:
+        """Publish and post-process one workspace from the selected artifacts root."""
         import fabric_cicd
 
         fabric_cicd.disable_file_logging()
@@ -125,7 +162,13 @@ class FabricCicdManager(CicdManager):
 
         self.logger.info(f"Starting CICD reconciliation for workspace ID: {workspace_id}")
 
-        param_file_full_path = os.path.join(self.common_params.local.root_folder, template_params.parameter_file_path)
+        parameter_path = Path(template_params.parameter_file_path)
+        configured_artifacts_path = Path(template_params.artifacts_folder)
+        try:
+            parameter_relative_path = parameter_path.relative_to(configured_artifacts_path)
+        except ValueError as e:
+            raise ValueError(f"Parameter file '{parameter_path}' must be inside artifacts folder '{configured_artifacts_path}'") from e
+        param_file_full_path = artifacts_root / parameter_relative_path
         with open(param_file_full_path, encoding="utf-8") as f:
             param_content = f.read()
         self.logger.debug(f"Parameter file content ({param_file_full_path}):\n{param_content}")
@@ -145,7 +188,7 @@ class FabricCicdManager(CicdManager):
             target_workspace = fabric_cicd.FabricWorkspace(
                 workspace_id=workspace_id,
                 environment=template_params.environment_key,
-                repository_directory=str(Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
+                repository_directory=str(artifacts_root),
                 item_type_in_scope=batch,
                 token_credential=self.token_credential,
             )
@@ -161,7 +204,7 @@ class FabricCicdManager(CicdManager):
             self.logger.info(f"Completed batch {batch_idx}/{len(deployment_batches)}")
 
             if "Environment" in batch:
-                await self._post_process_environment_spark_settings(workspace_id, workspace_params, template_params)
+                await self._post_process_environment_spark_settings(workspace_id, workspace_params, artifacts_root)
 
         if template_params.unpublish_orphans:
             self.logger.info("Unpublishing orphan items")
@@ -169,7 +212,7 @@ class FabricCicdManager(CicdManager):
             target_workspace_full = fabric_cicd.FabricWorkspace(
                 workspace_id=workspace_id,
                 environment=template_params.environment_key,
-                repository_directory=str(Path(self.common_params.local.root_folder) / template_params.artifacts_folder),
+                repository_directory=str(artifacts_root),
                 item_type_in_scope=template_params.item_types_in_scope,
                 token_credential=self.token_credential,
             )
@@ -187,7 +230,7 @@ class FabricCicdManager(CicdManager):
         self,
         workspace_id: str,
         workspace_params: FabricWorkspaceParams,
-        template_params: FabricWorkspaceTemplateParams,
+        artifacts_root: Path,
     ) -> None:
         """
         After fabric-cicd publishes Environments, overwrite spark settings
@@ -198,7 +241,6 @@ class FabricCicdManager(CicdManager):
         - https://github.com/microsoft/fabric-cicd/issues/955
         """
         capacity_id = (await self.workspace.get(workspace_params)).capacity_id
-        artifacts_root = Path(self.common_params.local.root_folder) / template_params.artifacts_folder
 
         env_dirs = [d for d in artifacts_root.iterdir() if d.is_dir() and d.name.endswith(".Environment")]
 
@@ -447,6 +489,14 @@ class FabricCicdManager(CicdManager):
 
             sjd_artifact_id = sjd_map[sjd.display_name]
             lakehouse_name = sjd.default_lakehouse_artifact_name
+            config = sjd.spark_job_definition_v1_config
+            if self.namespace_rewriter.active:
+                config = replace(
+                    config,
+                    executable_file=self.namespace_rewriter.rewrite_text(config.executable_file),
+                    command_line_arguments=self.namespace_rewriter.rewrite_text(config.command_line_arguments),
+                    additional_library_uris=[self.namespace_rewriter.rewrite_text(uri) for uri in config.additional_library_uris],
+                )
 
             self.logger.info(f"Updating Spark Job Definition '{sjd.display_name}' " f"(ID: {sjd_artifact_id}) with default Lakehouse '{lakehouse_name}'")
 
@@ -455,7 +505,7 @@ class FabricCicdManager(CicdManager):
                     workspace_id,
                     sjd_artifact_id,
                     lakehouse_name,
-                    sjd.spark_job_definition_v1_config,
+                    config,
                 ),
                 name=f"update-sjd-config-{sjd.display_name}",
             )

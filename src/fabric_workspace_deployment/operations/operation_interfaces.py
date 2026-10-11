@@ -28,6 +28,7 @@ from fabric_workspace_deployment.environment_variables import FAB_TOKEN_GRAPH_EN
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.environment_variables import SKIP_GATEWAY_DEPLOYMENT_ENV_VAR
 from fabric_workspace_deployment.rayfin.manifest import RAYFIN_MANIFEST_FILE_NAME, RayfinManagedSqlDatabase, RayfinManifestLoader
+from fabric_workspace_deployment.storage_namespace import DeploymentNamespace, SeedPathBinding, StorageNamespaceRewriter
 
 # ---------------------------------------------------------------------------- #
 # --------------------------- HTTP RETRY CONSTANTS --------------------------- #
@@ -1690,6 +1691,7 @@ class FabricStorageParams:
     shortcut_data_connection_id: str
     seed_files: list[SeedFile]
     rbac: StorageRbacParams
+    deployment_namespace: DeploymentNamespace | None = None
 
 
 @dataclass(frozen=True)
@@ -1716,6 +1718,23 @@ class FabricParams:
     workspaces: list[FabricWorkspaceParams]
     storages: list[FabricStorageParams]
     gateways: list[GatewayParams] = field(default_factory=list)
+
+    def create_storage_namespace_rewriter(self) -> StorageNamespaceRewriter:
+        """Create a rewriter from every namespace-enabled seed file."""
+        bindings = []
+        for storage in self.storages:
+            if storage.deployment_namespace is None:
+                continue
+            for seed_file in storage.seed_files:
+                bindings.append(
+                    SeedPathBinding(
+                        account=storage.account,
+                        container=storage.container,
+                        logical_path=seed_file.storage_account_file.file_path,
+                        path_prefix=storage.deployment_namespace.path_prefix,
+                    )
+                )
+        return StorageNamespaceRewriter(bindings)
 
     def get_gateway_by_connection_id(self, connection_id: str) -> GatewayParams:
         matches = [gateway for gateway in self.gateways if gateway.connection_id.casefold() == connection_id.casefold()]
@@ -3882,6 +3901,13 @@ class OperationParams:
             seen_accounts.add(storage.account)
             if not self._validate_fabric_storage_params(storage, i):
                 return False
+
+        try:
+            self.common.fabric.create_storage_namespace_rewriter()
+        except ValueError as e:
+            self.logger.error(f"Invalid deployment namespace configuration: {e}")
+            return False
+
         return True
 
     def _validate_fabric_storage_params(self, storage: "FabricStorageParams", index: int) -> bool:
@@ -4923,6 +4949,12 @@ class OperationParams:
                 seed_files.append(self._parse_seed_file(seed_file_data))
 
         rbac = self._parse_storage_rbac_params(data["rbac"])
+        deployment_namespace = None
+        if "deploymentNamespace" in data:
+            namespace_data = data["deploymentNamespace"]
+            if not isinstance(namespace_data, dict) or set(namespace_data) != {"pathPrefix"}:
+                raise ValueError("deploymentNamespace must contain exactly one field: pathPrefix")
+            deployment_namespace = DeploymentNamespace(path_prefix=namespace_data["pathPrefix"])
 
         return FabricStorageParams(
             account=data["account"],
@@ -4934,6 +4966,7 @@ class OperationParams:
             shortcut_data_connection_id=data["shortcutDataConnectionId"],
             seed_files=seed_files,
             rbac=rbac,
+            deployment_namespace=deployment_namespace,
         )
 
     def _parse_storage_rbac_params(self, data: dict[str, Any]) -> StorageRbacParams:
