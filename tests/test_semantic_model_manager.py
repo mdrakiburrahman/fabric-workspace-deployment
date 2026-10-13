@@ -233,6 +233,7 @@ def test_missing_model_is_published_from_workspace_artifacts(tmp_path, monkeypat
     assert captured["feature_flags"] == [
         "configured-flag",
         "enable_experimental_features",
+        "enable_bulk_publish",
         "enable_items_to_include",
     ]
     assert folder_client.calls == ["workspace-id", "workspace-id"]

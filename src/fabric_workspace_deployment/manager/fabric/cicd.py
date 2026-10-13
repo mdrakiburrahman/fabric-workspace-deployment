@@ -14,6 +14,7 @@ from azure.core.credentials import TokenCredential
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdDirectedAcyclicGraph,
@@ -182,6 +183,8 @@ class FabricCicdManager(CicdManager):
         deployment_batches = dag.get_deployment_batches(template_params.item_types_in_scope)
         self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
 
+        configure_publish_features(template_params.feature_flags)
+
         for batch_idx, batch in enumerate(deployment_batches, start=1):
             self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
 
@@ -192,12 +195,6 @@ class FabricCicdManager(CicdManager):
                 item_type_in_scope=batch,
                 token_credential=self.token_credential,
             )
-
-            if batch_idx == 1:  # Only add feature flags once
-                self.logger.info(f"Adding {len(template_params.feature_flags)} feature flags")
-                for feature_flag in template_params.feature_flags:
-                    self.logger.debug(f"Adding feature flag: {feature_flag}")
-                    fabric_cicd.append_feature_flag(feature_flag)
 
             self.logger.info(f"Publishing items in batch {batch_idx}")
             await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace)

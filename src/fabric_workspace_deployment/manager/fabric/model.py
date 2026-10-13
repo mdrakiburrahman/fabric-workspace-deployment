@@ -13,6 +13,7 @@ from typing import Any
 from fabric_workspace_deployment.client.fabric_rest import response_guid, verify_reconciliation
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdArtifactType,
@@ -228,9 +229,7 @@ class SemanticModelManager(ModelManager):
                 fc_logger.addHandler(handler)
                 break
 
-        required_feature_flags = ["enable_experimental_features", "enable_items_to_include"]
-        for feature_flag in dict.fromkeys([*workspace_params.template.feature_flags, *required_feature_flags]):
-            fabric_cicd.append_feature_flag(feature_flag)
+        configure_publish_features(workspace_params.template.feature_flags, "enable_items_to_include")
 
         target_workspace = fabric_cicd.FabricWorkspace(
             workspace_id=workspace_id,
