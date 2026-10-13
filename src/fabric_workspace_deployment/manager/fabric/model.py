@@ -13,7 +13,7 @@ from typing import Any
 from fabric_workspace_deployment.client.fabric_rest import response_guid, verify_reconciliation
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
-from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdArtifactType,
@@ -214,7 +214,7 @@ class SemanticModelManager(ModelManager):
         return matching_directories[0]
 
     async def _publish_missing_model(self, workspace_id: str, workspace_params: FabricWorkspaceParams, model_params: ModelParams) -> None:
-        self._get_model_source(workspace_params, model_params)
+        model_source = self._get_model_source(workspace_params, model_params)
         artifacts_root = self._get_artifacts_root(workspace_params)
 
         import fabric_cicd
@@ -230,8 +230,9 @@ class SemanticModelManager(ModelManager):
                 break
 
         configure_publish_features(workspace_params.template.feature_flags, "enable_items_to_include")
+        validate_publish_metadata(model_source, [CicdArtifactType.SEMANTIC_MODEL.value])
 
-        target_workspace = fabric_cicd.FabricWorkspace(
+        target_workspace = create_publish_workspace(
             workspace_id=workspace_id,
             environment=workspace_params.template.environment_key,
             repository_directory=str(artifacts_root),

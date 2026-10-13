@@ -14,7 +14,7 @@ from azure.core.credentials import TokenCredential
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdDirectedAcyclicGraph,
@@ -184,11 +184,12 @@ class FabricCicdManager(CicdManager):
         self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
 
         configure_publish_features(template_params.feature_flags)
+        validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
 
         for batch_idx, batch in enumerate(deployment_batches, start=1):
             self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
 
-            target_workspace = fabric_cicd.FabricWorkspace(
+            target_workspace = create_publish_workspace(
                 workspace_id=workspace_id,
                 environment=template_params.environment_key,
                 repository_directory=str(artifacts_root),

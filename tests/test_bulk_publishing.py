@@ -15,7 +15,7 @@ import pytest
 from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
-from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams
 
 
@@ -109,6 +109,70 @@ def test_template_propagates_bulk_publish_failure_without_cleanup(publishing_con
     manager._update_spark_job_definition_configs.assert_not_called()
 
 
+def _write_platform(root: Path, name: str, logical_id, item_type: str = "DataPipeline") -> Path:
+    item_dir = root / f"{name}.{item_type}"
+    item_dir.mkdir(parents=True)
+    path = item_dir / ".platform"
+    path.write_text(json.dumps({"metadata": {"type": item_type, "displayName": name}, "config": {"logicalId": logical_id}}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("logical_id", ["acff42ae6-074f-48a5-94b6-7b9da79d4622", "", None, 123, "00000000-0000-0000-0000-000000000000", "cff42ae6074f48a594b67b9da79d4622", "{cff42ae6-074f-48a5-94b6-7b9da79d4622}"])
+def test_metadata_rejects_invalid_logical_id_with_source_path(tmp_path, logical_id):
+    path = _write_platform(tmp_path, "90_maintenance_ev2_db", logical_id)
+    original = path.read_bytes()
+
+    with pytest.raises(ValueError, match="Invalid config.logicalId") as error:
+        validate_publish_metadata(tmp_path, ["DataPipeline"])
+
+    assert str(path) in str(error.value)
+    assert "8-4-4-4-12" in str(error.value)
+    assert path.read_bytes() == original
+
+
+def test_metadata_accepts_valid_ids_and_ignores_out_of_scope_items(tmp_path):
+    _write_platform(tmp_path, "Pipeline", "CFF42AE6-074F-48A5-94B6-7B9DA79D4622")
+    _write_platform(tmp_path, "Ignored", "invalid", "Notebook")
+
+    validate_publish_metadata(tmp_path, ["DataPipeline"])
+
+
+def test_metadata_rejects_case_insensitive_duplicate_logical_ids(tmp_path):
+    first = _write_platform(tmp_path, "First", "cff42ae6-074f-48a5-94b6-7b9da79d4622")
+    second = _write_platform(tmp_path, "Second", "CFF42AE6-074F-48A5-94B6-7B9DA79D4622", "Notebook")
+
+    with pytest.raises(ValueError, match="Duplicate config.logicalId") as error:
+        validate_publish_metadata(tmp_path, ["DataPipeline", "Notebook"])
+
+    assert str(first) in str(error.value)
+    assert str(second) in str(error.value)
+
+
+@pytest.mark.parametrize("content", ["{", "[]", '{"config": {}}', '{"metadata": {"type": "DataPipeline"}}'])
+def test_metadata_rejects_malformed_system_files_with_source_path(tmp_path, content):
+    path = tmp_path / ".platform"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        validate_publish_metadata(tmp_path, ["DataPipeline"])
+
+    assert str(path) in str(error.value)
+
+
+def test_template_validates_all_batches_before_workspace_creation(publishing_context):
+    manager, template, artifacts, events, _flags = publishing_context
+    template.item_types_in_scope = ["DataPipeline", "Reflex"]
+    template.unpublish_orphans = True
+    _write_platform(artifacts, "InvalidLaterBatch", "invalid", "Reflex")
+
+    with pytest.raises(ValueError, match="Invalid config.logicalId"):
+        asyncio.run(manager._reconcile_artifacts("workspace-id", SimpleNamespace(), template, artifacts))
+
+    assert events == []
+    manager._post_process_environment_spark_settings.assert_not_called()
+    manager._update_spark_job_definition_configs.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("scope", "parameter", "bulk_enabled", "warning"),
     [
@@ -192,3 +256,142 @@ def test_real_bulk_publisher_resolves_new_item_id_in_later_batch(tmp_path: Path,
     notebook_content = next(part for part in requests[1]["definitionParts"] if part["path"].endswith("/content.txt"))
     assert base64.b64decode(notebook_content["payload"]).decode("utf-8") == source_id
     assert workspace.repository_items["Notebook"]["Consumer"].guid == notebook_id
+
+
+@pytest.mark.parametrize(("existing", "schema"), [(True, None), (True, "dbo"), (True, "custom"), (False, None)])
+def test_real_bulk_publisher_preserves_existing_lakehouse_schema_and_source(tmp_path, monkeypatch, existing, schema, caplog):
+    monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
+    configure_publish_features([])
+    item_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    platform_path = _write_platform(tmp_path, "Source", "11111111-1111-1111-1111-111111111111", "Lakehouse")
+    metadata_path = platform_path.parent / "lakehouse.metadata.json"
+    metadata_path.write_text('{"defaultSchema":"dbo"}', encoding="utf-8")
+    original = metadata_path.read_bytes()
+    (tmp_path / "parameter.yml").write_text("find_replace: []\n", encoding="utf-8")
+    deployed_item = {"id": item_id, "type": "Lakehouse", "displayName": "Source", "description": ""}
+    deployed = [deployed_item] if existing else []
+    requests = []
+
+    def invoke(method, url, **kwargs):
+        response = {"header": {}, "body": {"value": [], "capacityId": "capacity-id"}}
+        if method == "GET" and url.endswith("/items"):
+            response["body"]["value"] = list(deployed)
+        elif method == "GET" and url.endswith("/lakehouses"):
+            response["body"]["value"] = [{"id": item_id, "properties": {"defaultSchema": schema}}]
+        elif method == "POST" and url.endswith("/items/bulkImportDefinitions"):
+            requests.append(kwargs["body"])
+            if not deployed:
+                deployed.append(deployed_item)
+            response["body"]["importItemDefinitionsDetails"] = [{"itemType": "Lakehouse", "itemDisplayName": "Source", "itemId": item_id, "operationType": "Update" if existing else "Create"}]
+        else:
+            assert method == "GET", f"Unexpected request: {method} {url}"
+        return response
+
+    endpoint = MagicMock()
+    endpoint.invoke.side_effect = invoke
+    monkeypatch.setattr("fabric_cicd.fabric_workspace.FabricEndpoint", lambda **kwargs: endpoint)
+    workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Lakehouse"], token_credential=AzureCliCredential())
+
+    with caplog.at_level(logging.INFO, logger="fabric_workspace_deployment.manager.fabric.publishing"):
+        fabric_cicd.publish_all_items(workspace)
+
+    assert len(requests) == 1
+    parts = requests[0]["definitionParts"]
+    assert any(part["path"].endswith("/.platform") for part in parts)
+    metadata_parts = [part for part in parts if part["path"].endswith("/lakehouse.metadata.json")]
+    assert len(metadata_parts) == 1
+    expected_metadata = {"defaultSchema": schema} if existing and schema else {} if existing else {"defaultSchema": "dbo"}
+    assert json.loads(base64.b64decode(metadata_parts[0]["payload"])) == expected_metadata
+    assert ("Preserving existing Lakehouse 'Source' default schema" in caplog.text) is existing
+    assert metadata_path.read_bytes() == original
+    lakehouse_reads = [call for call in endpoint.invoke.call_args_list if call.kwargs.get("url", "").endswith("/lakehouses")]
+    assert len(lakehouse_reads) == int(existing)
+
+
+@pytest.mark.parametrize("continuation_location", ["body", "header"])
+def test_lakehouse_schema_snapshot_paginates_and_is_cached(monkeypatch, continuation_location):
+    endpoint = MagicMock()
+    first_page: dict[str, dict[str, object]] = {"header": {}, "body": {"value": [{"id": "first", "properties": {}}]}}
+    first_page[continuation_location]["continuationUri"] = "https://api.fabric.microsoft.com/next"
+    endpoint.invoke.side_effect = [
+        first_page,
+        {"header": {}, "body": {"value": [{"id": "second", "properties": {"defaultSchema": "custom"}}]}},
+    ]
+
+    class FakeWorkspace:
+        def __init__(self, **kwargs):
+            self.endpoint = endpoint
+            self.base_api_url = "https://api.fabric.microsoft.com/v1/workspaces/workspace-id"
+
+    monkeypatch.setattr(fabric_cicd, "FabricWorkspace", FakeWorkspace)
+    workspace = create_publish_workspace(workspace_id="workspace-id", environment="ci", repository_directory="artifacts", item_type_in_scope=["Lakehouse"], token_credential=MagicMock())
+
+    assert workspace._get_existing_lakehouse_schemas() == {"first": None, "second": "custom"}
+    assert workspace._get_existing_lakehouse_schemas() == {"first": None, "second": "custom"}
+    assert endpoint.invoke.call_count == 2
+    assert endpoint.invoke.call_args.kwargs["url"] == "https://api.fabric.microsoft.com/next"
+
+
+@pytest.mark.parametrize("response", [{"id": "first"}, {"id": "first", "properties": {"defaultSchema": 123}}])
+def test_lakehouse_schema_snapshot_rejects_invalid_api_state(monkeypatch, response):
+    endpoint = MagicMock()
+    endpoint.invoke.return_value = {"header": {}, "body": {"value": [response]}}
+
+    class FakeWorkspace:
+        def __init__(self, **kwargs):
+            self.endpoint = endpoint
+            self.base_api_url = "https://api.fabric.microsoft.com/v1/workspaces/workspace-id"
+
+    monkeypatch.setattr(fabric_cicd, "FabricWorkspace", FakeWorkspace)
+    workspace = create_publish_workspace(workspace_id="workspace-id", environment="ci", repository_directory="artifacts", item_type_in_scope=["Lakehouse"], token_credential=MagicMock())
+
+    with pytest.raises(ValueError, match="Lakehouse 'first' response"):
+        workspace._get_existing_lakehouse_schemas()
+
+
+def test_real_bulk_publisher_resolves_spark_job_logical_attachment_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
+    configure_publish_features([])
+    source_logical_id = "11111111-1111-1111-1111-111111111111"
+    source_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    job_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    source_platform = _write_platform(tmp_path, "Source", source_logical_id, "Lakehouse")
+    (source_platform.parent / "lakehouse.metadata.json").write_text("{}", encoding="utf-8")
+    job_platform = _write_platform(tmp_path, "Job", "22222222-2222-2222-2222-222222222222", "SparkJobDefinition")
+    job_path = job_platform.parent / "SparkJobDefinitionV1.json"
+    job_path.write_text(json.dumps({"defaultLakehouseArtifactId": source_logical_id, "additionalLakehouseIds": [source_logical_id]}), encoding="utf-8")
+    original = job_path.read_bytes()
+    (tmp_path / "parameter.yml").write_text("find_replace: []\n", encoding="utf-8")
+    deployed = [{"id": source_id, "type": "Lakehouse", "displayName": "Source", "description": ""}]
+    requests = []
+
+    def invoke(method, url, **kwargs):
+        response = {"header": {}, "body": {"value": [], "capacityId": "capacity-id"}}
+        if method == "GET" and url.endswith("/items"):
+            response["body"]["value"] = list(deployed)
+        elif method == "GET" and url.endswith("/lakehouses"):
+            response["body"]["value"] = [{"id": source_id, "properties": {}}]
+        elif method == "POST" and url.endswith("/items/bulkImportDefinitions"):
+            requests.append(kwargs["body"])
+            deployed.append({"id": job_id, "type": "SparkJobDefinition", "displayName": "Job", "description": ""})
+            response["body"]["importItemDefinitionsDetails"] = [
+                {"itemType": "Lakehouse", "itemDisplayName": "Source", "itemId": source_id, "operationType": "Update"},
+                {"itemType": "SparkJobDefinition", "itemDisplayName": "Job", "itemId": job_id, "operationType": "Create"},
+            ]
+        else:
+            assert method == "GET", f"Unexpected request: {method} {url}"
+        return response
+
+    endpoint = MagicMock()
+    endpoint.invoke.side_effect = invoke
+    monkeypatch.setattr("fabric_cicd.fabric_workspace.FabricEndpoint", lambda **kwargs: endpoint)
+    workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Lakehouse", "SparkJobDefinition"], token_credential=AzureCliCredential())
+
+    fabric_cicd.publish_all_items(workspace)
+
+    assert len(requests) == 1
+    job_part = next(part for part in requests[0]["definitionParts"] if part["path"].endswith("/SparkJobDefinitionV1.json"))
+    assert json.loads(base64.b64decode(job_part["payload"])) == {"defaultLakehouseArtifactId": source_id, "additionalLakehouseIds": [source_id]}
+    platform_part = next(part for part in requests[0]["definitionParts"] if part["path"].endswith("/Job.SparkJobDefinition/.platform"))
+    assert json.loads(base64.b64decode(platform_part["payload"]))["config"]["logicalId"] == "22222222-2222-2222-2222-222222222222"
+    assert job_path.read_bytes() == original

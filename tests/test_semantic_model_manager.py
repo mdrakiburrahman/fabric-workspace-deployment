@@ -241,6 +241,22 @@ def test_missing_model_is_published_from_workspace_artifacts(tmp_path, monkeypat
     assert http_retry.calls[0][2]["data"] == '{"directLakeAutoSync":true}'
 
 
+def test_missing_model_rejects_invalid_logical_id_before_publishing(tmp_path, monkeypatch):
+    source_directory = tmp_path / "artifacts" / "projects" / "insights" / "insights.SemanticModel"
+    source_directory.mkdir(parents=True)
+    platform_path = source_directory / ".platform"
+    platform_path.write_text('{"metadata": {"type": "SemanticModel"}, "config": {"logicalId": "invalid"}}', encoding="utf-8")
+    manager = _manager(tmp_path, FakeFolderClient([]), FakeHttpRetry())
+    captured = _patch_fabric_cicd(monkeypatch)
+
+    with pytest.raises(ValueError, match="Invalid config.logicalId") as error:
+        asyncio.run(manager._publish_missing_model("workspace-id", _workspace_params(), ModelParams(display_name="insights", direct_lake_auto_sync=True)))
+
+    assert str(platform_path) in str(error.value)
+    assert "workspace_kwargs" not in captured
+    assert "publish_kwargs" not in captured
+
+
 def _bound_state(*, bound_id=CONNECTION_ID, candidates=None):
     return ModelBindingState([ModelDatasourceBinding(MONIKER, frozenset({CLUSTER_ID}), frozenset({bound_id}), frozenset([CONNECTION_ID] if candidates is None else candidates))], [ModelDatasourceCandidate(CONNECTION_ID, CLUSTER_ID)])
 
