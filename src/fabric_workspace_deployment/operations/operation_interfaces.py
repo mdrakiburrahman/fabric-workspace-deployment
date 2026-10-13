@@ -60,6 +60,7 @@ PARAMETER_FILE_NAME = "parameter.yml"
 PARAMETER_FILE_TEMPLATE_NAME = "parameter.yml.tmpl"
 PARAMETER_FILE_EXTENSION_YML = ".yml"
 PARAMETER_FILE_EXTENSION_TMPL = ".tmpl"
+EXTERNALLY_MANAGED_SHORTCUT_FIELDS = frozenset(["lakehouse", "pathPrefixes", "reason"])
 
 # ---------------------------------------------------------------------------- #
 # ------------------------- ENTITLEMENT CONSTANTS ---------------------------- #
@@ -663,6 +664,15 @@ class Generator:
     monitoring: list[MonitoringGeneratorFile]
 
 
+@dataclass(frozen=True)
+class ExternallyManagedShortcuts:
+    """Shortcuts of one Lakehouse that are created outside the repository and must survive orphan shortcut cleanup."""
+
+    lakehouse: str
+    path_prefixes: tuple[str, ...] = ("/",)
+    reason: str | None = None
+
+
 @dataclass
 class FabricWorkspaceTemplateParams:
     """Fabric workspace template parameters."""
@@ -677,6 +687,7 @@ class FabricWorkspaceTemplateParams:
     spark_job_definitions: list[SparkJobDefinition]
     generator: Generator
     bulk_publish: bool = False
+    externally_managed_shortcuts: list[ExternallyManagedShortcuts] = field(default_factory=list)
 
 
 @dataclass
@@ -4734,6 +4745,7 @@ class OperationParams:
         bulk_publish = data.get("bulkPublish", False)
         if not isinstance(bulk_publish, bool):
             raise ValueError("Workspace template bulkPublish must be a boolean")
+        externally_managed_shortcuts = self._parse_externally_managed_shortcuts(data.get("externallyManagedShortcuts", []))
         if "customLibraries" not in data:
             msg = "Missing required field 'customLibraries' in template configuration"
             raise KeyError(msg)
@@ -4785,7 +4797,36 @@ class OperationParams:
             spark_job_definitions=spark_job_definitions,
             generator=generator,
             bulk_publish=bulk_publish,
+            externally_managed_shortcuts=externally_managed_shortcuts,
         )
+
+    def _parse_externally_managed_shortcuts(self, data: Any) -> list[ExternallyManagedShortcuts]:
+        """Parse and strictly validate template.externallyManagedShortcuts; typos must fail instead of silently re-enabling shortcut deletes."""
+        if not isinstance(data, list):
+            raise ValueError("Workspace template externallyManagedShortcuts must be a list")
+        rules: list[ExternallyManagedShortcuts] = []
+        seen: set[str] = set()
+        for index, entry in enumerate(data):
+            location = f"Workspace template externallyManagedShortcuts[{index}]"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{location} must be an object")
+            unknown_fields = sorted(set(entry) - EXTERNALLY_MANAGED_SHORTCUT_FIELDS)
+            if unknown_fields:
+                raise ValueError(f"{location} has unknown field(s) {unknown_fields}; allowed fields are {sorted(EXTERNALLY_MANAGED_SHORTCUT_FIELDS)}")
+            lakehouse = entry.get("lakehouse")
+            if not isinstance(lakehouse, str) or not lakehouse.strip():
+                raise ValueError(f"{location}.lakehouse must be a non-empty string")
+            if lakehouse in seen:
+                raise ValueError(f"{location}.lakehouse '{lakehouse}' is listed more than once")
+            seen.add(lakehouse)
+            path_prefixes = entry.get("pathPrefixes", ["/"])
+            if not isinstance(path_prefixes, list) or not path_prefixes or not all(isinstance(prefix, str) and prefix.startswith("/") for prefix in path_prefixes):
+                raise ValueError(f"{location}.pathPrefixes must be a non-empty list of strings that start with '/'")
+            reason = entry.get("reason")
+            if reason is not None and not isinstance(reason, str):
+                raise ValueError(f"{location}.reason must be a string")
+            rules.append(ExternallyManagedShortcuts(lakehouse=lakehouse, path_prefixes=tuple(dict.fromkeys(path_prefixes)), reason=reason))
+        return rules
 
     def _parse_generator(self, data: dict[str, Any]) -> Generator:
         """Parse generator configuration."""

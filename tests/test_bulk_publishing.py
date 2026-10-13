@@ -47,7 +47,7 @@ def publishing_context(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(fabric_cicd, "FabricWorkspace", FakeWorkspace)
     monkeypatch.setattr(fabric_cicd, "publish_all_items", publish)
     monkeypatch.setattr(fabric_cicd, "unpublish_all_orphan_items", unpublish)
-    template = SimpleNamespace(artifacts_folder="artifacts", parameter_file_path="artifacts/parameter.yml", environment_key="ci", feature_flags=[], item_types_in_scope=["Notebook"], unpublish_orphans=False, spark_job_definitions=[], bulk_publish=True)
+    template = SimpleNamespace(artifacts_folder="artifacts", parameter_file_path="artifacts/parameter.yml", environment_key="ci", feature_flags=[], item_types_in_scope=["Notebook"], unpublish_orphans=False, spark_job_definitions=[], bulk_publish=True, externally_managed_shortcuts=[])
     return manager, template, artifacts, events, flags
 
 

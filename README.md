@@ -26,6 +26,7 @@ pip install fabric-workspace-deployment
 - [Fabric RBAC](docs/RBAC.md)
 - [Gateway connections, model bindings, and RLS](docs/GATEWAYS_AND_MODELS.md)
 - [Bulk publishing](docs/BULK_PUBLISHING.md)
+- [Externally managed shortcuts](docs/EXTERNALLY_MANAGED_SHORTCUTS.md)
 - [Logging](docs/LOGGING.md)
 - [Rayfin deployments](docs/RAYFIN.md)
 - [Headless devcontainer operations](docs/devcontainer/headless-operations.md)

@@ -14,7 +14,7 @@ from azure.core.credentials import TokenCredential
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_externally_managed_shortcuts, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdDirectedAcyclicGraph,
@@ -187,6 +187,7 @@ class FabricCicdManager(CicdManager):
         self.logger.info(f"Workspace {workspace_id} bulk publishing opt-in: {template_params.bulk_publish}")
         if template_params.bulk_publish:
             validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
+        validate_externally_managed_shortcuts(artifacts_root, template_params.item_types_in_scope, template_params.feature_flags, template_params.externally_managed_shortcuts)
 
         for batch_idx, batch in enumerate(deployment_batches, start=1):
             self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
@@ -198,6 +199,7 @@ class FabricCicdManager(CicdManager):
                 item_type_in_scope=batch,
                 token_credential=self.token_credential,
                 bulk_publish=template_params.bulk_publish,
+                externally_managed_shortcuts=template_params.externally_managed_shortcuts,
             )
 
             self.logger.info(f"Publishing items in batch {batch_idx}")
