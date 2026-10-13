@@ -17,11 +17,21 @@ if TYPE_CHECKING:
     from fabric_cicd._items._base_publisher import ItemPublisher  # type: ignore[import-untyped]
 
 
-def create_publish_workspace(*, workspace_id: str, environment: str, repository_directory: str, item_type_in_scope: list[str], token_credential: TokenCredential) -> "FabricWorkspace":
+def create_publish_workspace(*, workspace_id: str, environment: str, repository_directory: str, item_type_in_scope: list[str], token_credential: TokenCredential, bulk_publish: bool = False) -> "FabricWorkspace":
     import fabric_cicd  # type: ignore[import-untyped]
 
     class PublishWorkspace(fabric_cicd.FabricWorkspace):
         _existing_lakehouse_schemas: dict[str, str | None] | None = None
+        _bulk_publish_enabled: bool = False
+
+        @property
+        def bulk_publish_enabled(self) -> bool:
+            return self._bulk_publish_enabled
+
+        @bulk_publish_enabled.setter
+        def bulk_publish_enabled(self, enabled: bool) -> None:
+            # Upstream flags are process-global; the workspace opt-in must remain authoritative.
+            self._bulk_publish_enabled = enabled and bulk_publish
 
         def _get_existing_lakehouse_schemas(self) -> dict[str, str | None]:
             if self._existing_lakehouse_schemas is None:
@@ -72,10 +82,12 @@ def create_publish_workspace(*, workspace_id: str, environment: str, repository_
     return PublishWorkspace(workspace_id=workspace_id, environment=environment, repository_directory=repository_directory, item_type_in_scope=item_type_in_scope, token_credential=token_credential)
 
 
-def configure_publish_features(feature_flags: list[str], *additional_feature_flags: str) -> None:
+def configure_publish_features(feature_flags: list[str], *additional_feature_flags: str, bulk_publish: bool = False) -> None:
     import fabric_cicd  # type: ignore[import-untyped]
 
-    flags = list(dict.fromkeys([*feature_flags, "enable_experimental_features", "enable_bulk_publish", *additional_feature_flags]))
+    if "enable_bulk_publish" in feature_flags and not bulk_publish:
+        logging.getLogger(__name__).warning("Ignoring template.featureFlags enable_bulk_publish: opt in with template.bulkPublish=true")
+    flags = list(dict.fromkeys([*(flag for flag in feature_flags if flag != "enable_bulk_publish"), "enable_experimental_features", *(["enable_bulk_publish"] if bulk_publish else []), *additional_feature_flags]))
     logging.getLogger(__name__).info(f"Enabling Fabric publish feature flags: {flags}")
     for feature_flag in flags:
         fabric_cicd.append_feature_flag(feature_flag)

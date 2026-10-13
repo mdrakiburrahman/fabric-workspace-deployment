@@ -16,7 +16,7 @@ from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, OperationParams
 
 
 @pytest.fixture
@@ -47,11 +47,11 @@ def publishing_context(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(fabric_cicd, "FabricWorkspace", FakeWorkspace)
     monkeypatch.setattr(fabric_cicd, "publish_all_items", publish)
     monkeypatch.setattr(fabric_cicd, "unpublish_all_orphan_items", unpublish)
-    template = SimpleNamespace(artifacts_folder="artifacts", parameter_file_path="artifacts/parameter.yml", environment_key="ci", feature_flags=[], item_types_in_scope=["Notebook"], unpublish_orphans=False, spark_job_definitions=[])
+    template = SimpleNamespace(artifacts_folder="artifacts", parameter_file_path="artifacts/parameter.yml", environment_key="ci", feature_flags=[], item_types_in_scope=["Notebook"], unpublish_orphans=False, spark_job_definitions=[], bulk_publish=True)
     return manager, template, artifacts, events, flags
 
 
-def test_template_registers_bulk_defaults_before_workspace_creation(publishing_context):
+def test_template_registers_bulk_opt_in_before_workspace_creation(publishing_context):
     manager, template, artifacts, events, flags = publishing_context
 
     asyncio.run(manager._reconcile_artifacts("workspace-id", SimpleNamespace(), template, artifacts))
@@ -60,13 +60,68 @@ def test_template_registers_bulk_defaults_before_workspace_creation(publishing_c
     assert events == [("workspace", ["Notebook"], flags), ("publish", ["Notebook"])]
 
 
+def test_template_standard_mode_ignores_legacy_bulk_flag_and_bulk_preflight(publishing_context):
+    manager, template, artifacts, events, flags = publishing_context
+    template.bulk_publish = False
+    template.feature_flags = ["enable_bulk_publish", "enable_shortcut_publish"]
+    _write_platform(artifacts, "Legacy", "invalid", "Notebook")
+
+    asyncio.run(manager._reconcile_artifacts("workspace-id", SimpleNamespace(), template, artifacts))
+
+    assert "enable_bulk_publish" not in flags
+    assert "enable_shortcut_publish" in flags
+    assert events[-1] == ("publish", ["Notebook"])
+
+
+@pytest.mark.parametrize("configured", [None, False, True])
+def test_template_bulk_publish_parser_default_and_opt_in(configured):
+    params = OperationParams.__new__(OperationParams)
+    params.logger = logging.getLogger(__name__)
+    data = {"artifactsFolder": "artifacts", "parameterFilePath": "artifacts/parameter.yml", "itemTypesInScope": ["Lakehouse"], "environmentKey": "dev", "featureFlags": [], "unpublishOrphans": False, "customLibraries": [], "sparkJobDefinitions": [], "generator": {"monitoring": []}}
+    if configured is not None:
+        data["bulkPublish"] = configured
+
+    assert params._parse_fabric_workspace_template_params(data, ".").bulk_publish is (configured is True)
+
+
+@pytest.mark.parametrize("configured", [None, 1, 0, "true", "false", [], {}])
+def test_template_bulk_publish_parser_rejects_non_boolean(configured):
+    params = OperationParams.__new__(OperationParams)
+    with pytest.raises(ValueError, match="bulkPublish must be a boolean"):
+        params._parse_fabric_workspace_template_params({"bulkPublish": configured}, ".")
+
+
+@pytest.mark.parametrize("order", [(True, False), (False, True)])
+def test_upstream_bulk_flag_cannot_opt_in_another_workspace(tmp_path, monkeypatch, order):
+    from fabric_cicd._items._base_publisher import ItemPublisher  # type: ignore[import-untyped]
+
+    monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
+    monkeypatch.setattr(fabric_cicd.FabricWorkspace, "__init__", lambda self, **kwargs: None)
+    monkeypatch.setattr(ItemPublisher, "get_item_types_to_publish", lambda workspace: [])
+    bulk = MagicMock(return_value=[])
+    monkeypatch.setattr(ItemPublisher, "publish_all_bulk", bulk)
+    configure_publish_features([], bulk_publish=True)
+    for opt_in in order:
+        workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Notebook"], token_credential=MagicMock(), bulk_publish=opt_in)
+        workspace.workspace_id = "12345678-1234-5678-abcd-1234567890ab"
+        workspace.item_type_in_scope = ["Notebook"]
+        workspace.contains_param_item_vars = False
+        workspace.endpoint = MagicMock()
+        workspace.endpoint.invoke.return_value = {"body": {"capacityId": "capacity-id"}}
+        for method in ("_refresh_deployed_folders", "_refresh_repository_folders", "_publish_folders", "_refresh_deployed_items", "_refresh_repository_items"):
+            monkeypatch.setattr(workspace, method, MagicMock())
+        fabric_cicd.publish_all_items(workspace)
+        assert workspace.bulk_publish_enabled is opt_in
+    assert bulk.call_count == 1
+
+
 def test_template_preserves_configured_flags_without_duplicates(publishing_context):
     manager, template, artifacts, events, flags = publishing_context
     template.feature_flags = ["enable_shortcut_publish", "enable_bulk_publish", "enable_shortcut_publish", "enable_experimental_features"]
 
     asyncio.run(manager._reconcile_artifacts("workspace-id", SimpleNamespace(), template, artifacts))
 
-    assert flags == ["enable_shortcut_publish", "enable_bulk_publish", "enable_experimental_features"]
+    assert flags == ["enable_shortcut_publish", "enable_experimental_features", "enable_bulk_publish"]
     assert events[0][2] == flags
 
 
@@ -187,7 +242,7 @@ def test_upstream_bulk_gate_preserves_filtered_replacements_and_logged_fallback(
 
     monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
     monkeypatch.setattr(logging.getLogger("fabric_cicd"), "propagate", True)
-    configure_publish_features([])
+    configure_publish_features([], bulk_publish=True)
     workspace = fabric_cicd.FabricWorkspace.__new__(fabric_cicd.FabricWorkspace)
     workspace.workspace_id = "12345678-1234-5678-abcd-1234567890ab"
     workspace.item_type_in_scope = scope
@@ -215,7 +270,7 @@ def test_upstream_bulk_gate_preserves_filtered_replacements_and_logged_fallback(
 
 def test_real_bulk_publisher_resolves_new_item_id_in_later_batch(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
-    configure_publish_features([])
+    configure_publish_features([], bulk_publish=True)
     source_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     notebook_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     for name, item_type, logical_id in (
@@ -261,7 +316,7 @@ def test_real_bulk_publisher_resolves_new_item_id_in_later_batch(tmp_path: Path,
 @pytest.mark.parametrize(("existing", "schema"), [(True, None), (True, "dbo"), (True, "custom"), (False, None)])
 def test_real_bulk_publisher_preserves_existing_lakehouse_schema_and_source(tmp_path, monkeypatch, existing, schema, caplog):
     monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
-    configure_publish_features([])
+    configure_publish_features([], bulk_publish=True)
     item_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     platform_path = _write_platform(tmp_path, "Source", "11111111-1111-1111-1111-111111111111", "Lakehouse")
     metadata_path = platform_path.parent / "lakehouse.metadata.json"
@@ -290,7 +345,7 @@ def test_real_bulk_publisher_preserves_existing_lakehouse_schema_and_source(tmp_
     endpoint = MagicMock()
     endpoint.invoke.side_effect = invoke
     monkeypatch.setattr("fabric_cicd.fabric_workspace.FabricEndpoint", lambda **kwargs: endpoint)
-    workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Lakehouse"], token_credential=AzureCliCredential())
+    workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Lakehouse"], token_credential=AzureCliCredential(), bulk_publish=True)
 
     with caplog.at_level(logging.INFO, logger="fabric_workspace_deployment.manager.fabric.publishing"):
         fabric_cicd.publish_all_items(workspace)
@@ -351,7 +406,7 @@ def test_lakehouse_schema_snapshot_rejects_invalid_api_state(monkeypatch, respon
 
 def test_real_bulk_publisher_resolves_spark_job_logical_attachment_ids(tmp_path, monkeypatch):
     monkeypatch.setattr(fabric_cicd.constants, "FEATURE_FLAG", set())
-    configure_publish_features([])
+    configure_publish_features([], bulk_publish=True)
     source_logical_id = "11111111-1111-1111-1111-111111111111"
     source_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     job_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -385,7 +440,7 @@ def test_real_bulk_publisher_resolves_spark_job_logical_attachment_ids(tmp_path,
     endpoint = MagicMock()
     endpoint.invoke.side_effect = invoke
     monkeypatch.setattr("fabric_cicd.fabric_workspace.FabricEndpoint", lambda **kwargs: endpoint)
-    workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Lakehouse", "SparkJobDefinition"], token_credential=AzureCliCredential())
+    workspace = create_publish_workspace(workspace_id="12345678-1234-5678-abcd-1234567890ab", environment="ci", repository_directory=str(tmp_path), item_type_in_scope=["Lakehouse", "SparkJobDefinition"], token_credential=AzureCliCredential(), bulk_publish=True)
 
     fabric_cicd.publish_all_items(workspace)
 

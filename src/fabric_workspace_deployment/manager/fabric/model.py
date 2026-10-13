@@ -229,8 +229,9 @@ class SemanticModelManager(ModelManager):
                 fc_logger.addHandler(handler)
                 break
 
-        configure_publish_features(workspace_params.template.feature_flags, "enable_items_to_include")
-        validate_publish_metadata(model_source, [CicdArtifactType.SEMANTIC_MODEL.value])
+        configure_publish_features(workspace_params.template.feature_flags, "enable_items_to_include", bulk_publish=workspace_params.template.bulk_publish)
+        if workspace_params.template.bulk_publish:
+            validate_publish_metadata(model_source, [CicdArtifactType.SEMANTIC_MODEL.value])
 
         target_workspace = create_publish_workspace(
             workspace_id=workspace_id,
@@ -238,6 +239,7 @@ class SemanticModelManager(ModelManager):
             repository_directory=str(artifacts_root),
             item_type_in_scope=[CicdArtifactType.SEMANTIC_MODEL.value],
             token_credential=self.token_credential,
+            bulk_publish=workspace_params.template.bulk_publish,
         )
 
         item_name = f"{model_params.display_name}.SemanticModel"

@@ -39,6 +39,7 @@ def _workspace_params():
             artifacts_folder="artifacts",
             environment_key="dev",
             feature_flags=["configured-flag"],
+            bulk_publish=False,
         )
     )
 
@@ -203,7 +204,8 @@ def test_existing_model_only_reconciles_settings(tmp_path, monkeypatch):
     assert http_retry.calls[0][2]["data"] == '{"directLakeAutoSync":false}'
 
 
-def test_missing_model_is_published_from_workspace_artifacts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("bulk_publish", [False, True])
+def test_missing_model_is_published_from_workspace_artifacts(tmp_path, monkeypatch, bulk_publish):
     source_directory = tmp_path / "artifacts" / "projects" / "insights" / "insights.SemanticModel"
     source_directory.mkdir(parents=True)
     folder_client = FakeFolderClient([[], [_model_artifact()]])
@@ -211,12 +213,14 @@ def test_missing_model_is_published_from_workspace_artifacts(tmp_path, monkeypat
     token_credential = object()
     manager = _manager(tmp_path, folder_client, http_retry, token_credential)
     captured = _patch_fabric_cicd(monkeypatch)
+    workspace_params = _workspace_params()
+    workspace_params.template.bulk_publish = bulk_publish
 
     asyncio.run(
         manager.reconcile(
             "workspace-id",
             ModelParams(display_name="insights", direct_lake_auto_sync=True),
-            _workspace_params(),
+            workspace_params,
         )
     )
 
@@ -233,7 +237,7 @@ def test_missing_model_is_published_from_workspace_artifacts(tmp_path, monkeypat
     assert captured["feature_flags"] == [
         "configured-flag",
         "enable_experimental_features",
-        "enable_bulk_publish",
+        *(["enable_bulk_publish"] if bulk_publish else []),
         "enable_items_to_include",
     ]
     assert folder_client.calls == ["workspace-id", "workspace-id"]
@@ -248,9 +252,11 @@ def test_missing_model_rejects_invalid_logical_id_before_publishing(tmp_path, mo
     platform_path.write_text('{"metadata": {"type": "SemanticModel"}, "config": {"logicalId": "invalid"}}', encoding="utf-8")
     manager = _manager(tmp_path, FakeFolderClient([]), FakeHttpRetry())
     captured = _patch_fabric_cicd(monkeypatch)
+    workspace_params = _workspace_params()
+    workspace_params.template.bulk_publish = True
 
     with pytest.raises(ValueError, match="Invalid config.logicalId") as error:
-        asyncio.run(manager._publish_missing_model("workspace-id", _workspace_params(), ModelParams(display_name="insights", direct_lake_auto_sync=True)))
+        asyncio.run(manager._publish_missing_model("workspace-id", workspace_params, ModelParams(display_name="insights", direct_lake_auto_sync=True)))
 
     assert str(platform_path) in str(error.value)
     assert "workspace_kwargs" not in captured

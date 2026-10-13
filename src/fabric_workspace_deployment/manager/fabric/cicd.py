@@ -183,8 +183,10 @@ class FabricCicdManager(CicdManager):
         deployment_batches = dag.get_deployment_batches(template_params.item_types_in_scope)
         self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
 
-        configure_publish_features(template_params.feature_flags)
-        validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
+        configure_publish_features(template_params.feature_flags, bulk_publish=template_params.bulk_publish)
+        self.logger.info(f"Workspace {workspace_id} bulk publishing opt-in: {template_params.bulk_publish}")
+        if template_params.bulk_publish:
+            validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
 
         for batch_idx, batch in enumerate(deployment_batches, start=1):
             self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
@@ -195,6 +197,7 @@ class FabricCicdManager(CicdManager):
                 repository_directory=str(artifacts_root),
                 item_type_in_scope=batch,
                 token_credential=self.token_credential,
+                bulk_publish=template_params.bulk_publish,
             )
 
             self.logger.info(f"Publishing items in batch {batch_idx}")

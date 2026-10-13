@@ -676,6 +676,7 @@ class FabricWorkspaceTemplateParams:
     custom_libraries: list[CustomLibrary]
     spark_job_definitions: list[SparkJobDefinition]
     generator: Generator
+    bulk_publish: bool = False
 
 
 @dataclass
@@ -4730,6 +4731,9 @@ class OperationParams:
 
     def _parse_fabric_workspace_template_params(self, data: dict[str, Any], root_folder: str) -> FabricWorkspaceTemplateParams:
         """Parse Fabric workspace template parameters."""
+        bulk_publish = data.get("bulkPublish", False)
+        if not isinstance(bulk_publish, bool):
+            raise ValueError("Workspace template bulkPublish must be a boolean")
         if "customLibraries" not in data:
             msg = "Missing required field 'customLibraries' in template configuration"
             raise KeyError(msg)
@@ -4780,6 +4784,7 @@ class OperationParams:
             custom_libraries=custom_libraries,
             spark_job_definitions=spark_job_definitions,
             generator=generator,
+            bulk_publish=bulk_publish,
         )
 
     def _parse_generator(self, data: dict[str, Any]) -> Generator:
