@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import uuid
 
 from importlib import resources as importlib_resources
@@ -16,7 +17,7 @@ from typing import Any
 from fabric_workspace_deployment import resources as package_resources
 from fabric_workspace_deployment.environment_variables import FWD_RAYFIN_APP_BACKEND_ID_ENV_VAR, FWD_RAYFIN_SQL_ACCESS_TOKEN_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_ID_ENV_VAR, FWD_RAYFIN_SQL_DATABASE_NAME_ENV_VAR, FWD_RAYFIN_SQL_SERVER_ENV_VAR, FWD_RAYFIN_WORKSPACE_ID_ENV_VAR, RAYFIN_APP_ROOT_ENV_VAR, RAYFIN_GID_ENV_VAR, RAYFIN_MIGRATION_ENVIRONMENT_VARIABLES, RAYFIN_TENANT_ID_ENV_VAR, RAYFIN_TOKEN_ENV_VAR, RAYFIN_UID_ENV_VAR, RAYFIN_WORKSPACE_ID_ENV_VAR, redact_sensitive_values
 from fabric_workspace_deployment.manager.azure.cli import AzCli
-from fabric_workspace_deployment.manager.docker.cli import DockerCli
+from fabric_workspace_deployment.manager.docker.cli import DockerCli, DockerCliError
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
 from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricWorkspaceParams, RayfinDatabaseClient, RayfinManager, RayfinParams
 from fabric_workspace_deployment.rayfin.manifest import RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME, RayfinAppManifest, RayfinDeploymentRecord, RayfinManifestLoader, RayfinManifestRenderer, ResolvedSemanticModel
@@ -27,6 +28,11 @@ RAYFIN_STATUS_TIMEOUT_SECONDS = 5 * 60
 RAYFIN_MIGRATION_TIMEOUT_SECONDS = 15 * 60
 RAYFIN_COMPOSE_RESOURCE_NAME = "Compose.rayfin.yaml"
 RAYFIN_COMPOSE_SERVICE_NAME = "rayfin"
+RAYFIN_DEPLOY_MAX_ATTEMPTS = 3
+RAYFIN_DEPLOY_INITIAL_DELAY_SECONDS = 30
+_TRANSIENT_FUNCTIONS_FAILURE = re.compile(r"Functions deploy failed \((408|425|429|500|502|503|504)\):", re.IGNORECASE)
+_DIAGNOSTIC_SECRET = re.compile(r"""((?:["']?(?:authorization|accessToken|refreshToken|clientSecret|password|secret|publishableKey|token)["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)""", re.IGNORECASE)
+_BEARER_SECRET = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE)
 
 _EXACT_SEMVER_SEARCH_PATTERN = re.compile(r"(?<![0-9A-Za-z])((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?![0-9A-Za-z])")
 _GUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -110,6 +116,7 @@ class RayfinDeploymentManager(RayfinManager):
         token = self._get_rayfin_token()
 
         staging_path: Path | None = None
+        docker_env: dict[str, str] = {}
         try:
             staging_path = self._create_staging_tree(source_root, manifest)
             self.manifest_renderer.write_generated_files(staging_path, manifest, semantic_models)
@@ -143,14 +150,7 @@ class RayfinDeploymentManager(RayfinManager):
             deploy_command = ["./node_modules/.bin/rayfin", "up", "--yes"]
             if params.force:
                 deploy_command.append("--force")
-            self.docker_cli.compose_run(
-                compose_path,
-                project_name,
-                RAYFIN_COMPOSE_SERVICE_NAME,
-                deploy_command,
-                timeout=RAYFIN_DEPLOY_TIMEOUT_SECONDS,
-                env=docker_env,
-            )
+            self._deploy_with_retry(compose_path, project_name, docker_env, deploy_command, staging_path, manifest.functions.enabled)
 
             registry_path = staging_path / "rayfin" / RAYFIN_DEPLOYMENT_REGISTRY_FILE_NAME
             deployment_record = self.manifest_loader.load_deployment_record(registry_path, workspace_id, require_workspace=manifest.data.migrations is not None)
@@ -159,12 +159,54 @@ class RayfinDeploymentManager(RayfinManager):
             self._run_data_migrations(compose_path, project_name, docker_env, manifest, deployment_record)
             self._assert_rayfin_status(compose_path, project_name, docker_env, manifest)
 
+            self._export_diagnostics(staging_path, docker_env, "final")
             shutil.rmtree(staging_path)
             self.logger.info(f"Successfully deployed Rayfin app '{manifest.app.name}' and removed staging directory {staging_path}")
         except Exception:
             if staging_path is not None:
+                self._export_diagnostics(staging_path, docker_env, "failure")
                 self.logger.error(f"Rayfin deployment failed for {config_path}. Staging directory retained for diagnostics: {staging_path}")
             raise
+
+    def _deploy_with_retry(self, compose_path: Path, project_name: str, docker_env: dict[str, str], deploy_command: list[str], staging_path: Path, functions_enabled: bool) -> None:
+        for attempt in range(1, RAYFIN_DEPLOY_MAX_ATTEMPTS + 1):
+            self.logger.info("Rayfin deployment attempt %s/%s", attempt, RAYFIN_DEPLOY_MAX_ATTEMPTS)
+            try:
+                self.docker_cli.compose_run(compose_path, project_name, RAYFIN_COMPOSE_SERVICE_NAME, deploy_command, timeout=RAYFIN_DEPLOY_TIMEOUT_SECONDS, env=docker_env)
+                return
+            except DockerCliError as error:
+                match = _TRANSIENT_FUNCTIONS_FAILURE.search(f"{error.stdout}\n{error.stderr}")
+                if not functions_enabled or error.timed_out or match is None or attempt == RAYFIN_DEPLOY_MAX_ATTEMPTS:
+                    if functions_enabled and match is not None and attempt == RAYFIN_DEPLOY_MAX_ATTEMPTS:
+                        self.logger.error("Rayfin Functions HTTP %s retry attempts exhausted (%s/%s)", match.group(1), attempt, RAYFIN_DEPLOY_MAX_ATTEMPTS)
+                    raise
+                delay = RAYFIN_DEPLOY_INITIAL_DELAY_SECONDS * 2 ** (attempt - 1)
+                self.logger.warning("Rayfin Functions deployment returned HTTP %s on attempt %s/%s; retrying canonical rayfin up in the same staging directory in %ss", match.group(1), attempt, RAYFIN_DEPLOY_MAX_ATTEMPTS, delay)
+            finally:
+                self._export_diagnostics(staging_path, docker_env, f"attempt-{attempt}")
+            time.sleep(delay)
+
+    def _export_diagnostics(self, staging_path: Path, docker_env: dict[str, str], snapshot: str) -> None:
+        """Preserve sanitized CLI logs under the active invocation's artifact root."""
+        try:
+            handlers = logging.getLogger().handlers
+            log_root = next((Path(handler.baseFilename).parent for handler in handlers if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename).is_file()), Path(self.common_params.local.root_folder) / ".logs")
+            destination = log_root / "rayfin" / staging_path.name / snapshot
+            environment = {**os.environ, **docker_env}
+            for source in (staging_path / ".home" / ".rayfin" / "logs").glob("*.log"):
+                if source.is_symlink() or not source.is_file():
+                    continue
+                text = redact_sensitive_values(source.read_text(encoding="utf-8", errors="replace"), environment)
+                text = _BEARER_SECRET.sub("Bearer ******", text)
+                text = _DIAGNOSTIC_SECRET.sub(r'\1"******"', text)
+                destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+                target = destination / source.name
+                target.write_text(text, encoding="utf-8")
+                target.chmod(0o600)
+            if destination.exists():
+                self.logger.info("Sanitized Rayfin CLI diagnostics exported to %s", destination)
+        except Exception as error:
+            self.logger.warning("Unable to export Rayfin CLI diagnostics (%s); original staging logs remain available until cleanup", type(error).__name__)
 
     def _resolve_workspace_id(self, workspace_name: str, config_path: str) -> str:
         resource_path = f"{workspace_name}.Workspace"
