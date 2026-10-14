@@ -20,11 +20,11 @@ List such Lakehouses per workspace in `template.externallyManagedShortcuts`:
 }
 ```
 
-| Field          | Required | Meaning                                                                                      |
-| -------------- | -------- | -------------------------------------------------------------------------------------------- |
-| `lakehouse`    | Yes      | Lakehouse name; must match a `.Lakehouse` in `template.artifactsFolder`, listed once.        |
+| Field          | Required | Meaning                                                                                             |
+| -------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `lakehouse`    | Yes      | Lakehouse name; must match a `.Lakehouse` in `template.artifactsFolder`, listed once.               |
 | `pathPrefixes` | No       | Paths exempt from cleanup, prefix-matched (`/Tables/dbo/<name>`, `/Files/<name>`). Default `["/"]`. |
-| `reason`       | No       | Free text, logged when shortcuts are preserved.                                              |
+| `reason`       | No       | Free text, logged when shortcuts are preserved.                                                     |
 
 - Omitted or `[]` keeps upstream behavior. Shortcuts in `shortcuts.metadata.json` are still published.
 - Only deployed shortcuts absent from the repository and under a prefix are exempt; other orphans are still deleted.
