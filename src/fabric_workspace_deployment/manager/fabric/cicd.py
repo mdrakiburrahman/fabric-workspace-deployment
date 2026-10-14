@@ -14,6 +14,7 @@ from azure.core.credentials import TokenCredential
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_externally_managed_shortcuts, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdDirectedAcyclicGraph,
@@ -182,22 +183,24 @@ class FabricCicdManager(CicdManager):
         deployment_batches = dag.get_deployment_batches(template_params.item_types_in_scope)
         self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
 
+        configure_publish_features(template_params.feature_flags, bulk_publish=template_params.bulk_publish)
+        self.logger.info(f"Workspace {workspace_id} bulk publishing opt-in: {template_params.bulk_publish}")
+        if template_params.bulk_publish:
+            validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
+        validate_externally_managed_shortcuts(artifacts_root, template_params.item_types_in_scope, template_params.feature_flags, template_params.externally_managed_shortcuts)
+
         for batch_idx, batch in enumerate(deployment_batches, start=1):
             self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
 
-            target_workspace = fabric_cicd.FabricWorkspace(
+            target_workspace = create_publish_workspace(
                 workspace_id=workspace_id,
                 environment=template_params.environment_key,
                 repository_directory=str(artifacts_root),
                 item_type_in_scope=batch,
                 token_credential=self.token_credential,
+                bulk_publish=template_params.bulk_publish,
+                externally_managed_shortcuts=template_params.externally_managed_shortcuts,
             )
-
-            if batch_idx == 1:  # Only add feature flags once
-                self.logger.info(f"Adding {len(template_params.feature_flags)} feature flags")
-                for feature_flag in template_params.feature_flags:
-                    self.logger.debug(f"Adding feature flag: {feature_flag}")
-                    fabric_cicd.append_feature_flag(feature_flag)
 
             self.logger.info(f"Publishing items in batch {batch_idx}")
             await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace)

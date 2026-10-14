@@ -13,6 +13,7 @@ from typing import Any
 from fabric_workspace_deployment.client.fabric_rest import response_guid, verify_reconciliation
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdArtifactType,
@@ -213,7 +214,7 @@ class SemanticModelManager(ModelManager):
         return matching_directories[0]
 
     async def _publish_missing_model(self, workspace_id: str, workspace_params: FabricWorkspaceParams, model_params: ModelParams) -> None:
-        self._get_model_source(workspace_params, model_params)
+        model_source = self._get_model_source(workspace_params, model_params)
         artifacts_root = self._get_artifacts_root(workspace_params)
 
         import fabric_cicd
@@ -228,16 +229,17 @@ class SemanticModelManager(ModelManager):
                 fc_logger.addHandler(handler)
                 break
 
-        required_feature_flags = ["enable_experimental_features", "enable_items_to_include"]
-        for feature_flag in dict.fromkeys([*workspace_params.template.feature_flags, *required_feature_flags]):
-            fabric_cicd.append_feature_flag(feature_flag)
+        configure_publish_features(workspace_params.template.feature_flags, "enable_items_to_include", bulk_publish=workspace_params.template.bulk_publish)
+        if workspace_params.template.bulk_publish:
+            validate_publish_metadata(model_source, [CicdArtifactType.SEMANTIC_MODEL.value])
 
-        target_workspace = fabric_cicd.FabricWorkspace(
+        target_workspace = create_publish_workspace(
             workspace_id=workspace_id,
             environment=workspace_params.template.environment_key,
             repository_directory=str(artifacts_root),
             item_type_in_scope=[CicdArtifactType.SEMANTIC_MODEL.value],
             token_credential=self.token_credential,
+            bulk_publish=workspace_params.template.bulk_publish,
         )
 
         item_name = f"{model_params.display_name}.SemanticModel"
