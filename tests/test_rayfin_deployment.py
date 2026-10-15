@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import logging
 import traceback
 
 from pathlib import Path
@@ -283,6 +284,105 @@ class FakeDockerCli:
         if command[:2] == ["sh", "-c"]:
             return self.migration_stdout, self.migration_stderr
         return "", ""
+
+
+class RetryingDockerCli(FakeDockerCli):
+    def __init__(self, failures):
+        super().__init__()
+        self.failures = list(failures)
+        self.deploy_attempts = 0
+
+    def compose_run(self, compose_file, project_name, service, command, **kwargs):
+        if list(command)[:3] == ["./node_modules/.bin/rayfin", "up", "--yes"]:
+            self.deploy_attempts += 1
+            log_root = Path(kwargs["env"]["RAYFIN_APP_ROOT"]) / ".home" / ".rayfin" / "logs"
+            log_root.mkdir(parents=True, exist_ok=True)
+            (log_root / f"up-{self.deploy_attempts}.log").write_text('RootActivityId: generic-activity\nBearer unknown-auth-token\n{"clientSecret":"generated-secret","publishableKey":"pk-sensitive"}\n' + kwargs["env"]["RAYFIN_TOKEN"], encoding="utf-8")
+            if self.failures:
+                raise self.failures.pop(0)
+        return super().compose_run(compose_file, project_name, service, command, **kwargs)
+
+
+@pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
+def test_transient_functions_failure_retries_and_exports_each_attempt(tmp_path, monkeypatch, status):
+    app_root = _write_app(tmp_path)
+    _enable_functions(app_root)
+    docker = RetryingDockerCli([DockerCliError("failed", stdout=f"Functions deploy failed ({status}): backend unavailable")])
+    delays = []
+    monkeypatch.setattr("fabric_workspace_deployment.manager.rayfin.deployment.time.sleep", delays.append)
+    log_root = tmp_path / "artifact-logs"
+    log_root.mkdir()
+    handler = logging.FileHandler(log_root / "app.log")
+    monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
+    try:
+        manager = _manager(tmp_path, tmp_path / "staging", None, docker_cli=docker)
+        asyncio.run(manager.execute())
+    finally:
+        handler.close()
+    assert docker.deploy_attempts == 2
+    assert delays == [30]
+    assert not list((tmp_path / "staging").iterdir())
+    snapshots = list((log_root / "rayfin").glob("*/attempt-*"))
+    assert {path.name for path in snapshots} == {"attempt-1", "attempt-2"}
+    for path in (log_root / "rayfin").rglob("*.log"):
+        text = path.read_text()
+        assert "generic-activity" in text
+        assert all(secret not in text for secret in ["az-token", "unknown-auth-token", "generated-secret", "pk-sensitive"])
+
+
+@pytest.mark.parametrize(
+    "stdout,timed_out,functions_enabled",
+    [
+        ("Functions deploy failed (400): invalid payload", False, True),
+        ("Functions deploy failed (401): unauthorized", False, True),
+        ("Functions deploy failed (403): forbidden", False, True),
+        ("Functions deploy failed (404): not found", False, True),
+        ("Static deploy failed (500): unavailable", False, True),
+        ("Functions deploy failed (500): unavailable", True, True),
+        ("Functions deploy failed (500): unavailable", False, False),
+    ],
+)
+def test_non_transient_failure_is_not_retried(tmp_path, monkeypatch, stdout, timed_out, functions_enabled):
+    app_root = _write_app(tmp_path)
+    if functions_enabled:
+        _enable_functions(app_root)
+    error = DockerCliError("failed", stdout=stdout, timed_out=timed_out)
+    docker = RetryingDockerCli([error])
+    monkeypatch.setattr("fabric_workspace_deployment.manager.rayfin.deployment.time.sleep", lambda _: pytest.fail("Unexpected retry"))
+    manager = _manager(tmp_path, tmp_path / "staging", None, docker_cli=docker)
+    with pytest.raises(DockerCliError) as raised:
+        asyncio.run(manager.execute())
+    assert raised.value is error
+    assert docker.deploy_attempts == 1
+    assert list((tmp_path / "staging").iterdir())
+    assert list((tmp_path / ".logs" / "rayfin").rglob("*.log"))
+
+
+def test_functions_retry_exhaustion_preserves_last_error_and_diagnostics(tmp_path, monkeypatch):
+    app_root = _write_app(tmp_path)
+    _enable_functions(app_root)
+    errors = [DockerCliError(f"failure-{index}", stderr="Functions deploy failed (500): unavailable") for index in range(3)]
+    docker = RetryingDockerCli(errors)
+    delays = []
+    monkeypatch.setattr("fabric_workspace_deployment.manager.rayfin.deployment.time.sleep", delays.append)
+    manager = _manager(tmp_path, tmp_path / "staging", None, docker_cli=docker)
+    with pytest.raises(DockerCliError) as raised:
+        asyncio.run(manager.execute())
+    assert raised.value is errors[-1]
+    assert docker.deploy_attempts == 3
+    assert delays == [30, 60]
+    assert {path.name for path in (tmp_path / ".logs" / "rayfin").glob("*/attempt-*")} == {"attempt-1", "attempt-2", "attempt-3"}
+
+
+def test_diagnostics_export_failure_does_not_mask_deployment_error(tmp_path, monkeypatch):
+    _write_app(tmp_path)
+    error = DockerCliError("permanent failure", stdout="Functions deploy failed (403): forbidden")
+    docker = RetryingDockerCli([error])
+    manager = _manager(tmp_path, tmp_path / "staging", None, docker_cli=docker)
+    (tmp_path / ".logs").write_text("not a directory")
+    with pytest.raises(DockerCliError) as raised:
+        asyncio.run(manager.execute())
+    assert raised.value is error
 
 
 def _manager(root: Path, staging_root: Path | None, state_root: Path | None, az_cli=None, fabric_cli=None, docker_cli=None, rayfin_params=None, workspace_params=None, database_client=None):
