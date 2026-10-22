@@ -2,42 +2,25 @@
 
 ## How to use, on a Linux machine
 
-1. Get a fresh new WSL machine up:
+1. Clone the repo on Windows, then check out and push the branch you want to work on:
 
    ```powershell
-   $GIT_ROOT = git rev-parse --show-toplevel
-   & "$GIT_ROOT\contrib\bootstrap-dev-env.ps1"
-   ```
-
-1. Clone the repo, and open VSCode in it:
-
-   ```bash
-   sudo mkdir -p /workspaces && sudo chmod 777 /workspaces && cd /workspaces
-
-   git config --global user.name "Raki Rahman"
-   git config --global user.email "mdrakiburrahman@gmail.com"
    git clone https://github.com/mdrakiburrahman/fabric-workspace-deployment.git
-
-   cd fabric-workspace-deployment/
-   code .
    ```
 
-1. Run the bootstrapper script, that installs all tools idempotently:
+1. From an **elevated PowerShell 7** prompt in the checkout, install [Task](https://taskfile.dev) and run [`bootstrap-dev-env.yaml`](bootstrap-dev-env.yaml):
 
-   ```bash
-   GIT_ROOT=$(git rev-parse --show-toplevel)
-   chmod +x ${GIT_ROOT}/contrib/bootstrap-dev-env.sh && ${GIT_ROOT}/contrib/bootstrap-dev-env.sh
+   > ⚠️ This **deletes every WSL distribution** on the machine before recreating `Ubuntu-24.04`. Push any work inside WSL first.
+
+   ```powershell
+   winget install Task.Task
+   $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')
+   task --taskfile contrib/bootstrap-dev-env.yaml
    ```
 
-1. Launch devcontainer:
+   Without any prompts, this recreates WSL on the drive with the most free space and clones your current branch into `/workspaces/fabric-workspace-deployment` with this checkout's git identity. It then runs [`bootstrap-dev-env.sh`](bootstrap-dev-env.sh), which signs in the Azure CLI through your signed-in browser with single sign-on (no clicks), then builds and starts the devcontainer and opens it in VS Code. After a restart, run `task --taskfile contrib/bootstrap-dev-env.yaml up` instead; it keeps WSL and reopens the devcontainer.
 
-   ```bash
-   cd /workspaces/fabric-workspace-deployment
-   HEX=$(printf '%s' "$(wslpath -w .)" | xxd -ps -c 256)
-   code --folder-uri "vscode-remote://dev-container+${HEX}/workspaces/fabric-workspace-deployment"
-   ```
-
-   Or run the same environment headlessly:
+   Or run the same environment headlessly from `/workspaces/fabric-workspace-deployment` in WSL:
 
    ```bash
    npx --no-install nx run devcontainer:build

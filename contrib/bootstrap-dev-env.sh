@@ -60,6 +60,7 @@ sudo systemctl reset-failed docker.service 2>/dev/null || true
 sudo systemctl restart docker
 
 sudo chmod 666 /var/run/docker.sock
+sudo usermod -aG docker "$USER"
 docker container ls
 docker ps -q | xargs -r docker kill
 
@@ -94,7 +95,10 @@ echo ""
 
 if ! az account get-access-token --query "expiresOn" -o tsv >/dev/null 2>&1; then
     echo "az is not logged in, logging in..."
-    az login >/dev/null
+    # prompt=none lets the signed-in Windows browser complete the login with single sign-on, without clicks.
+    # Login experience v2 off skips the subscription picker that waits for input in a terminal.
+    BROWSER='bash -c "exec wslview \"${0/prompt=select_account/prompt=none}\"" %s' AZURE_CORE_LOGIN_EXPERIENCE_V2=off \
+        az login --tenant "72f988bf-86f1-41af-91ab-2d7cd011db47" --output none
 fi
 
 cp $NPMRC_TMPL $NPMRC
