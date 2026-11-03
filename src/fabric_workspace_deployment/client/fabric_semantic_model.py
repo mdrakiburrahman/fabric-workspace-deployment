@@ -107,12 +107,13 @@ class FabricSemanticModelClient(FabricRestClient, SemanticModelClient):
         if type(data.get("status")) is not int or data["status"] != 1 or errors:
             raise RuntimeError("Model explicit binding reported an unsuccessful business status")
 
-    def _rls_path(self, model_id: int) -> str:
-        response_integer(model_id, "Internal model ID")
-        return f"/metadata/model/{model_id}/rlsmembership/"
+    def _rls_path(self, workspace_id: str, model_object_id: str) -> str:
+        response_guid(workspace_id, "Model workspace ID")
+        response_guid(model_object_id, "Model object ID")
+        return f"/metadata/workspaces/{workspace_id}/models/{model_object_id}/rlsmembership"
 
-    async def get_rls_membership(self, model_id: int) -> list[RlsRoleMembership]:
-        data = response_object(self._get_json(self._rls_path(model_id), "Model RLS read"), "Model RLS response")
+    async def get_rls_membership(self, workspace_id: str, model_object_id: str) -> list[RlsRoleMembership]:
+        data = response_object(self._get_json(self._rls_path(workspace_id, model_object_id), "Model RLS read"), "Model RLS response")
         roles = []
         for index, record in enumerate(response_array(data.get("roleMembershipsInformation"), "RLS roleMembershipsInformation")):
             entry = response_object(record, f"RLS roles[{index}]")
@@ -127,7 +128,7 @@ class FabricSemanticModelClient(FabricRestClient, SemanticModelClient):
             raise RuntimeError("RLS response contains duplicate role IDs")
         return roles
 
-    async def update_rls_membership(self, model_id: int, deltas: list[RlsRoleDelta]) -> None:
+    async def update_rls_membership(self, workspace_id: str, model_object_id: str, deltas: list[RlsRoleDelta]) -> None:
         if not deltas or any(not delta.added_members and not delta.removed_members for delta in deltas):
             raise ValueError("RLS updates require non-empty membership deltas")
-        self._request(requests.post, self._rls_path(model_id), "Model RLS reconciliation", json={"roleMemberships": [{"id": delta.id, "name": delta.name, "addedMembers": delta.added_members, "removedMembers": delta.removed_members} for delta in deltas]})
+        self._request(requests.post, self._rls_path(workspace_id, model_object_id), "Model RLS reconciliation", json={"roleMemberships": [{"id": delta.id, "name": delta.name, "addedMembers": delta.added_members, "removedMembers": delta.removed_members} for delta in deltas]})

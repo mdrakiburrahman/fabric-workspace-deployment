@@ -2095,11 +2095,11 @@ class SemanticModelClient(ABC):
         pass
 
     @abstractmethod
-    async def get_rls_membership(self, model_id: int) -> list[RlsRoleMembership]:
+    async def get_rls_membership(self, workspace_id: str, model_object_id: str) -> list[RlsRoleMembership]:
         pass
 
     @abstractmethod
-    async def update_rls_membership(self, model_id: int, deltas: list[RlsRoleDelta]) -> None:
+    async def update_rls_membership(self, workspace_id: str, model_object_id: str, deltas: list[RlsRoleDelta]) -> None:
         pass
 
 
