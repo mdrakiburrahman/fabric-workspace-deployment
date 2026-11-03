@@ -18,6 +18,7 @@ CLUSTER_ID = "22222222-2222-2222-2222-222222222222"
 GROUP_ID = "33333333-3333-3333-3333-333333333333"
 OTHER_ID = "55555555-5555-5555-5555-555555555555"
 MONIKER = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+MODEL_OBJECT_ID = "66666666-6666-6666-6666-666666666666"
 
 
 def _common(root: Path):
@@ -47,6 +48,7 @@ def _workspace_params():
 def _model_artifact(model_id: int = 42):
     return SimpleNamespace(
         id=model_id,
+        object_id=MODEL_OBJECT_ID,
         type_name="Model",
         display_name="insights",
     )
@@ -135,12 +137,12 @@ class FakeModelClient(SemanticModelClient):
                     entry.gateway_ids = frozenset({cluster_id.casefold()})
                     entry.connection_ids = frozenset({bindings[entry.moniker].casefold()})
 
-    async def get_rls_membership(self, model_id):
-        self.calls.append(("read-rls", model_id))
+    async def get_rls_membership(self, workspace_id, model_object_id):
+        self.calls.append(("read-rls", workspace_id, model_object_id))
         return self.roles
 
-    async def update_rls_membership(self, model_id, deltas):
-        self.calls.append(("rls", model_id, deltas))
+    async def update_rls_membership(self, workspace_id, model_object_id, deltas):
+        self.calls.append(("rls", workspace_id, model_object_id, deltas))
         if self.apply_changes:
             for delta in deltas:
                 role = next(role for role in self.roles if role.id == delta.id)
@@ -381,8 +383,10 @@ def test_rls_exact_add_remove_mixed_and_noop(tmp_path, current, desired, added, 
     asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, security={"Role": desired})))
     updates = [call for call in client.calls if call[0] == "rls"]
     assert len(updates) == bool(added or removed)
+    assert [call[1:3] for call in client.calls if call[0] == "read-rls"][0] == ("workspace", MODEL_OBJECT_ID)
     if updates:
-        delta = updates[0][2][0]
+        assert updates[0][1:3] == ("workspace", MODEL_OBJECT_ID)
+        delta = updates[0][3][0]
         assert len(delta.added_members) == added
         assert len(delta.removed_members) == removed
         assert delta.id == 7
@@ -392,7 +396,7 @@ def test_rls_exact_add_remove_mixed_and_noop(tmp_path, current, desired, added, 
 def test_rls_user_payload_uses_existing_identity_metadata(tmp_path):
     manager, client, _, _ = _feature_manager(tmp_path, roles=[RlsRoleMembership(7, "Role", [])])
     asyncio.run(manager.reconcile("workspace", ModelParams("insights", False, security={"Role": ["user"]})))
-    member = next(call for call in client.calls if call[0] == "rls")[2][0].added_members[0]
+    member = next(call for call in client.calls if call[0] == "rls")[3][0].added_members[0]
     assert member["objectType"] == 1
     assert member["isSecurityGroup"] is False
     assert member["userPrincipalName"] == "reader@example.invalid"

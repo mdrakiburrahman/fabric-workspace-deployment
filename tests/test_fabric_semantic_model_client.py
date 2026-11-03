@@ -20,6 +20,7 @@ GROUP_ID = "33333333-3333-3333-3333-333333333333"
 MONIKER = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 WORKSPACE_ID = "44444444-4444-4444-4444-444444444444"
 SQL_ENDPOINT_ID = "55555555-5555-5555-5555-555555555555"
+MODEL_OBJECT_ID = "66666666-6666-6666-6666-666666666666"
 SQL_SERVER = "example.datawarehouse.fabric.microsoft.com"
 SQL_NAME = "Example SQL endpoint"
 
@@ -257,21 +258,23 @@ def test_http_success_is_not_binding_business_success(data):
 def test_rls_read_preserves_original_removal_member_data():
     member = {"objectId": GROUP_ID, "displayName": "secret group name", "objectType": 2, "groupType": 3, "isSecurityGroup": True}
     client, http = _client([{"roleMembershipsInformation": [{"id": 7, "name": "Role", "members": [member]}]}, None])
-    roles = asyncio.run(client.get_rls_membership(42))
+    roles = asyncio.run(client.get_rls_membership(WORKSPACE_ID, MODEL_OBJECT_ID))
     assert roles[0].members[0].data == member
-    asyncio.run(client.update_rls_membership(42, [RlsRoleDelta(7, "Role", [], [roles[0].members[0].data])]))
+    asyncio.run(client.update_rls_membership(WORKSPACE_ID, MODEL_OBJECT_ID, [RlsRoleDelta(7, "Role", [], [roles[0].members[0].data])]))
     assert http.calls[1][2]["json"] == {"roleMemberships": [{"id": 7, "name": "Role", "addedMembers": [], "removedMembers": [member]}]}
-    assert http.calls[1][1].endswith("/metadata/model/42/rlsmembership/")
+    assert [call[1] for call in http.calls] == [f"https://analysis.example.invalid/metadata/workspaces/{WORKSPACE_ID}/models/{MODEL_OBJECT_ID}/rlsmembership"] * 2
 
 
 def test_rls_requires_valid_members_and_nonempty_deltas():
     client, _ = _client([{"roleMembershipsInformation": [{"id": 7, "name": "Role", "members": [{"objectId": "bad-secret"}]}]}])
     with pytest.raises(RuntimeError, match="GUID"):
-        asyncio.run(client.get_rls_membership(42))
+        asyncio.run(client.get_rls_membership(WORKSPACE_ID, MODEL_OBJECT_ID))
+    with pytest.raises(RuntimeError, match="Model object ID"):
+        asyncio.run(client.get_rls_membership(WORKSPACE_ID, 42))
     with pytest.raises(ValueError, match="non-empty"):
-        asyncio.run(client.update_rls_membership(42, []))
+        asyncio.run(client.update_rls_membership(WORKSPACE_ID, MODEL_OBJECT_ID, []))
     with pytest.raises(ValueError, match="non-empty"):
-        asyncio.run(client.update_rls_membership(42, [RlsRoleDelta(7, "Role", [], [])]))
+        asyncio.run(client.update_rls_membership(WORKSPACE_ID, MODEL_OBJECT_ID, [RlsRoleDelta(7, "Role", [], [])]))
 
 
 @pytest.mark.parametrize("model_id", [0, -1, True, "model-guid"])

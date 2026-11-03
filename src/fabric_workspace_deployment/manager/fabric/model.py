@@ -170,7 +170,7 @@ class SemanticModelManager(ModelManager):
             rls_deltas: list[RlsRoleDelta] = []
             expected_rls: dict[int, tuple[str, frozenset[str]]] = {}
             if desired_security:
-                roles = await self.semantic_model_client.get_rls_membership(matching_model.id)
+                roles = await self.semantic_model_client.get_rls_membership(workspace_id, matching_model.object_id)
                 rls_deltas = self._plan_rls(roles, desired_security)
                 expected_rls = {role.id: (role.name, frozenset(member.object_id.casefold() for member in role.members)) for role in roles}
                 for name, members in desired_security.items():
@@ -186,8 +186,8 @@ class SemanticModelManager(ModelManager):
             if binding_updates:
                 await verify_reconciliation(lambda: self.semantic_model_client.get_bindings(matching_model.id), lambda state: self._bindings_match(state, bindings, untouched_bindings), "Model binding reconciliation")
             if rls_deltas:
-                await self.semantic_model_client.update_rls_membership(matching_model.id, rls_deltas)
-                await verify_reconciliation(lambda: self.semantic_model_client.get_rls_membership(matching_model.id), lambda state: self._rls_matches(state, expected_rls), "Model RLS reconciliation")
+                await self.semantic_model_client.update_rls_membership(workspace_id, matching_model.object_id, rls_deltas)
+                await verify_reconciliation(lambda: self.semantic_model_client.get_rls_membership(workspace_id, matching_model.object_id), lambda state: self._rls_matches(state, expected_rls), "Model RLS reconciliation")
 
             self.logger.info(f"Successfully reconciled model '{model_params.display_name}' " f"with: {settings_data}")
 
