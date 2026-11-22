@@ -3697,8 +3697,8 @@ class OperationParams:
                 self.logger.error(f"Workspace template feature_flags at index {i} must be a list")
                 return False
 
-            if not workspace.template.unpublish_orphans:
-                self.logger.error(f"Workspace template unpublish_orphans at index {i} cannot be empty")
+            if not isinstance(workspace.template.unpublish_orphans, bool):
+                self.logger.error(f"Workspace template unpublish_orphans at index {i} must be a boolean")
                 return False
 
             param_file_full_path = str(Path(self.common.local.root_folder) / workspace.template.parameter_file_path)
@@ -4746,6 +4746,9 @@ class OperationParams:
         if not isinstance(bulk_publish, bool):
             raise ValueError("Workspace template bulkPublish must be a boolean")
         externally_managed_shortcuts = self._parse_externally_managed_shortcuts(data.get("externallyManagedShortcuts", []))
+        unpublish_orphans = data["unpublishOrphans"]
+        if not isinstance(unpublish_orphans, bool):
+            raise ValueError("Workspace template unpublishOrphans must be a boolean")
         if "customLibraries" not in data:
             msg = "Missing required field 'customLibraries' in template configuration"
             raise KeyError(msg)
@@ -4792,7 +4795,7 @@ class OperationParams:
             item_types_in_scope=data["itemTypesInScope"],
             environment_key=data["environmentKey"],
             feature_flags=data["featureFlags"],
-            unpublish_orphans=data["unpublishOrphans"],
+            unpublish_orphans=unpublish_orphans,
             custom_libraries=custom_libraries,
             spark_job_definitions=spark_job_definitions,
             generator=generator,
