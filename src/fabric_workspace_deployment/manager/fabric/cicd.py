@@ -62,6 +62,9 @@ class FabricCicdManager(CicdManager):
 
     async def _execute(self) -> None:
         self.logger.info("Executing FabricCicdManager")
+        active_workspaces = [workspace for workspace in self.common_params.fabric.workspaces if not workspace.skip_deploy]
+        if any(getattr(workspace.template, "folder_paths_to_include", None) is not None for workspace in active_workspaces) and any("disable_workspace_folder_publish" in workspace.template.feature_flags for workspace in active_workspaces):
+            raise ValueError("folderPathsToInclude cannot be used when disable_workspace_folder_publish is enabled in another workspace")
         tasks = []
         deployed_workspaces = []
         for workspace_params in self.common_params.fabric.workspaces:
@@ -183,7 +186,16 @@ class FabricCicdManager(CicdManager):
         deployment_batches = dag.get_deployment_batches(template_params.item_types_in_scope)
         self.logger.info(f"Deployment will proceed in {len(deployment_batches)} batch(es)")
 
-        configure_publish_features(template_params.feature_flags, bulk_publish=template_params.bulk_publish)
+        items_to_include = getattr(template_params, "items_to_include", None)
+        folder_paths_to_include = getattr(template_params, "folder_paths_to_include", None)
+        selection_flags = []
+        if items_to_include is not None:
+            selection_flags.append("enable_items_to_include")
+        if folder_paths_to_include is not None:
+            if "disable_workspace_folder_publish" in fabric_cicd.constants.FEATURE_FLAG:
+                raise ValueError("folderPathsToInclude cannot be used when disable_workspace_folder_publish is enabled")
+            selection_flags.append("enable_include_folder")
+        configure_publish_features(template_params.feature_flags, *selection_flags, bulk_publish=template_params.bulk_publish)
         self.logger.info(f"Workspace {workspace_id} bulk publishing opt-in: {template_params.bulk_publish}")
         if template_params.bulk_publish:
             validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
@@ -203,10 +215,13 @@ class FabricCicdManager(CicdManager):
             )
 
             self.logger.info(f"Publishing items in batch {batch_idx}")
-            await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace)
+            if items_to_include is None:
+                await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace)
+            else:
+                await asyncio.to_thread(fabric_cicd.publish_all_items, target_workspace, items_to_include=items_to_include, folder_path_to_include=folder_paths_to_include)
             self.logger.info(f"Completed batch {batch_idx}/{len(deployment_batches)}")
 
-            if "Environment" in batch:
+            if "Environment" in batch and items_to_include is None:
                 await self._post_process_environment_spark_settings(workspace_id, workspace_params, artifacts_root)
 
         if template_params.unpublish_orphans:
@@ -391,12 +406,7 @@ class FabricCicdManager(CicdManager):
             RuntimeError: If monitoring metadata cannot be retrieved
         """
         self.logger.info(f"Generating {len(template_params.generator.monitoring)} monitoring template file(s)")
-        monitoring_metadata = await self.monitoring_manager.get_monitoring_metadata(workspace_id, workspace_params)
-
-        cluster_uri = monitoring_metadata.kusto.query_service_uri
-        database_id = monitoring_metadata.kusto.database_id
-
-        self.logger.info(f"Retrieved monitoring metadata - Cluster URI: {cluster_uri}, Database ID: {database_id}")
+        monitoring_metadata = None
 
         for idx, monitoring_file in enumerate(template_params.generator.monitoring):
             self.logger.info(f"Processing monitoring template {idx + 1}/{len(template_params.generator.monitoring)}: " f"{monitoring_file.source} -> {monitoring_file.dest}")
@@ -414,13 +424,14 @@ class FabricCicdManager(CicdManager):
             with open(source_path, encoding="utf-8") as f:
                 content = f.read()
 
-            original_content = content
-            content = content.replace("{monitoring_kql_cluster_uri}", cluster_uri)
-            content = content.replace("{monitoring_kql_database_id}", database_id)
-
-            replacements_made = content != original_content
-            if replacements_made:
-                self.logger.debug(f"Replaced placeholders in {source_path.name}: " f"{{monitoring_kql_cluster_uri}} -> {cluster_uri}, " f"{{monitoring_kql_database_id}} -> {database_id}")
+            if "{monitoring_kql_cluster_uri}" in content or "{monitoring_kql_database_id}" in content:
+                if monitoring_metadata is None:
+                    monitoring_metadata = await self.monitoring_manager.get_monitoring_metadata(workspace_id, workspace_params)
+                cluster_uri = monitoring_metadata.kusto.query_service_uri
+                database_id = monitoring_metadata.kusto.database_id
+                content = content.replace("{monitoring_kql_cluster_uri}", cluster_uri)
+                content = content.replace("{monitoring_kql_database_id}", database_id)
+                self.logger.debug(f"Replaced monitoring placeholders in {source_path.name}")
             else:
                 self.logger.debug(f"No placeholders found in {source_path.name}")
 
