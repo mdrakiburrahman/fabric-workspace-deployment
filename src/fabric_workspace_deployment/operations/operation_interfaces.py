@@ -4745,10 +4745,10 @@ class OperationParams:
         bulk_publish = data.get("bulkPublish", False)
         if not isinstance(bulk_publish, bool):
             raise ValueError("Workspace template bulkPublish must be a boolean")
+        externally_managed_shortcuts = self._parse_externally_managed_shortcuts(data.get("externallyManagedShortcuts", []))
         unpublish_orphans = data["unpublishOrphans"]
         if not isinstance(unpublish_orphans, bool):
             raise ValueError("Workspace template unpublishOrphans must be a boolean")
-        externally_managed_shortcuts = self._parse_externally_managed_shortcuts(data.get("externallyManagedShortcuts", []))
         if "customLibraries" not in data:
             msg = "Missing required field 'customLibraries' in template configuration"
             raise KeyError(msg)
