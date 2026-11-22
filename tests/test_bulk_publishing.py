@@ -16,7 +16,7 @@ from azure.identity import AzureCliCredential
 
 from fabric_workspace_deployment.manager.fabric.cicd import FabricCicdManager
 from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_publish_metadata
-from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, OperationParams
+from fabric_workspace_deployment.operations.operation_interfaces import CommonParams, FabricParams, Operation, OperationParams
 
 
 @pytest.fixture
@@ -450,3 +450,77 @@ def test_real_bulk_publisher_resolves_spark_job_logical_attachment_ids(tmp_path,
     platform_part = next(part for part in requests[0]["definitionParts"] if part["path"].endswith("/Job.SparkJobDefinition/.platform"))
     assert json.loads(base64.b64decode(platform_part["payload"]))["config"]["logicalId"] == "22222222-2222-2222-2222-222222222222"
     assert job_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_template_unpublish_orphans_parser_preserves_boolean(configured):
+    params = OperationParams.__new__(OperationParams)
+    params.logger = logging.getLogger(__name__)
+    data = {"artifactsFolder": "artifacts", "parameterFilePath": "artifacts/parameter.yml", "itemTypesInScope": ["Lakehouse"], "environmentKey": "dev", "featureFlags": [], "unpublishOrphans": configured, "customLibraries": [], "sparkJobDefinitions": [], "generator": {"monitoring": []}}
+
+    assert params._parse_fabric_workspace_template_params(data, ".").unpublish_orphans is configured
+
+
+@pytest.mark.parametrize("configured", [None, 1, 0, "true", "false", [], {}])
+def test_template_unpublish_orphans_parser_rejects_non_boolean(configured):
+    params = OperationParams.__new__(OperationParams)
+    with pytest.raises(ValueError, match="unpublishOrphans must be a boolean"):
+        params._parse_fabric_workspace_template_params({"unpublishOrphans": configured}, ".")
+
+
+def _fabric_params_for_unpublish_validation(configured):
+    params = OperationParams.__new__(OperationParams)
+    params.logger = logging.getLogger(__name__)
+    autoscale = SimpleNamespace(
+        spark_core=SimpleNamespace(workload_autoscale_limit=0, justification="test"),
+        warehouse=SimpleNamespace(workload_autoscale_limit=0, justification="test"),
+    )
+    workspace = SimpleNamespace(
+        name="workspace",
+        description="test",
+        dataset_storage_mode="Default",
+        template=SimpleNamespace(
+            artifacts_folder="artifacts",
+            parameter_file_path="parameter.yml",
+            item_types_in_scope=["Lakehouse"],
+            environment_key="dev",
+            feature_flags=[],
+            unpublish_orphans=configured,
+            spark_job_definitions=[],
+            generator=SimpleNamespace(monitoring=[]),
+        ),
+        icon_path="icon.png",
+        capacity=SimpleNamespace(name="cap", sku="F2", justification="test", administrators=["admin"], autoscale=autoscale),
+        shortcut_auth_z_role_name="Storage Blob Data Reader",
+        skip_deploy=False,
+        model=[],
+        spark=SimpleNamespace(),
+        shortcut=None,
+        rbac=None,
+        monitoring=SimpleNamespace(),
+        alert=None,
+    )
+    params.common = SimpleNamespace(local=SimpleNamespace(root_folder="."), fabric=SimpleNamespace(workspaces=[workspace], storages=[]), identities=[])
+    params.operation = Operation.DEPLOY_FABRIC_WORKSPACE
+    return params
+
+
+@pytest.mark.parametrize(
+    ("configured", "valid"),
+    [(False, True), (True, True), (None, False), (1, False), (0, False), ("false", False)],
+)
+def test_fabric_validation_requires_boolean_unpublish_orphans(monkeypatch, configured, valid):
+    params = _fabric_params_for_unpublish_validation(configured)
+    for name in (
+        "_validate_gateway_params",
+        "_validate_model_params",
+        "_validate_spark_job_definition_params",
+        "_validate_spark_params",
+        "_validate_monitoring_params",
+        "_validate_all_fabric_storage_params",
+    ):
+        monkeypatch.setattr(params, name, lambda *args: True)
+    monkeypatch.setattr(params, "_is_yaml_file_invalid", lambda *args: False)
+    monkeypatch.setattr("fabric_workspace_deployment.operations.operation_interfaces.os.path.exists", lambda *args: True)
+
+    assert params._validate_fabric_params() is valid
