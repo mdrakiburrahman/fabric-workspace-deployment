@@ -688,6 +688,8 @@ class FabricWorkspaceTemplateParams:
     generator: Generator
     bulk_publish: bool = False
     externally_managed_shortcuts: list[ExternallyManagedShortcuts] = field(default_factory=list)
+    items_to_include: list[str] | None = None
+    folder_paths_to_include: list[str] | None = None
 
 
 @dataclass
@@ -4749,6 +4751,28 @@ class OperationParams:
         unpublish_orphans = data["unpublishOrphans"]
         if not isinstance(unpublish_orphans, bool):
             raise ValueError("Workspace template unpublishOrphans must be a boolean")
+        items_to_include = data.get("itemsToInclude")
+        if "itemsToInclude" in data:
+            if not isinstance(items_to_include, list) or not items_to_include:
+                raise ValueError("Workspace template itemsToInclude must be a non-empty list")
+            for item in items_to_include:
+                if not isinstance(item, str) or not item.strip() or item != item.strip() or "." not in item:
+                    raise ValueError("Workspace template itemsToInclude entries must have the format name.Type")
+                name, item_type = item.rsplit(".", 1)
+                if not name.strip() or name != name.strip() or item_type not in data["itemTypesInScope"]:
+                    raise ValueError(f"Workspace template itemsToInclude entry '{item}' must have a non-empty name and a type in itemTypesInScope")
+            if len({item.lower() for item in items_to_include}) != len(items_to_include):
+                raise ValueError("Workspace template itemsToInclude must not contain duplicates")
+            if unpublish_orphans:
+                raise ValueError("Workspace template itemsToInclude cannot be combined with unpublishOrphans=true")
+        folder_paths_to_include = data.get("folderPathsToInclude")
+        if "folderPathsToInclude" in data:
+            if items_to_include is None:
+                raise ValueError("Workspace template folderPathsToInclude requires itemsToInclude")
+            if not isinstance(folder_paths_to_include, list) or not folder_paths_to_include or any(not isinstance(path, str) or not path.startswith("/") or path != path.strip() or path == "/" or path.endswith("/") or "//" in path for path in folder_paths_to_include):
+                raise ValueError("Workspace template folderPathsToInclude must be a non-empty list of absolute folder paths without trailing slashes")
+            if "disable_workspace_folder_publish" in data["featureFlags"]:
+                raise ValueError("Workspace template folderPathsToInclude cannot be combined with disable_workspace_folder_publish")
         if "customLibraries" not in data:
             msg = "Missing required field 'customLibraries' in template configuration"
             raise KeyError(msg)
@@ -4756,6 +4780,8 @@ class OperationParams:
         if "sparkJobDefinitions" not in data:
             msg = "Missing required field 'sparkJobDefinitions' in template configuration"
             raise KeyError(msg)
+        if items_to_include is not None and data["sparkJobDefinitions"]:
+            raise ValueError("Workspace template itemsToInclude cannot be combined with sparkJobDefinitions")
 
         custom_libraries = []
         for lib_data in data["customLibraries"]:
@@ -4801,6 +4827,8 @@ class OperationParams:
             generator=generator,
             bulk_publish=bulk_publish,
             externally_managed_shortcuts=externally_managed_shortcuts,
+            items_to_include=items_to_include,
+            folder_paths_to_include=folder_paths_to_include,
         )
 
     def _parse_externally_managed_shortcuts(self, data: Any) -> list[ExternallyManagedShortcuts]:
