@@ -14,7 +14,7 @@ from azure.core.credentials import TokenCredential
 
 from fabric_workspace_deployment.manager.azure.cli import AzCli
 from fabric_workspace_deployment.manager.fabric.cli import FabricCli
-from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_externally_managed_shortcuts, validate_publish_metadata
+from fabric_workspace_deployment.manager.fabric.publishing import configure_publish_features, create_publish_workspace, validate_externally_managed_shortcuts, validate_orphan_cleanup_exceptions, validate_publish_metadata
 from fabric_workspace_deployment.operations.operation_interfaces import (
     ArtifactType,
     CicdDirectedAcyclicGraph,
@@ -201,6 +201,19 @@ class FabricCicdManager(CicdManager):
             validate_publish_metadata(artifacts_root, template_params.item_types_in_scope)
         validate_externally_managed_shortcuts(artifacts_root, template_params.item_types_in_scope, template_params.feature_flags, template_params.externally_managed_shortcuts)
 
+        orphan_exceptions = getattr(template_params, "orphan_cleanup_exceptions", [])
+        target_workspace_full = None
+        if orphan_exceptions:
+            if not template_params.unpublish_orphans or items_to_include is not None:
+                raise ValueError("orphanCleanupExceptions requires full publishing with unpublishOrphans=true")
+            target_workspace_full = fabric_cicd.FabricWorkspace(
+                workspace_id=workspace_id,
+                environment=template_params.environment_key,
+                repository_directory=str(artifacts_root),
+                item_type_in_scope=template_params.item_types_in_scope,
+                token_credential=self.token_credential,
+            )
+            await asyncio.to_thread(validate_orphan_cleanup_exceptions, target_workspace_full, orphan_exceptions)
         for batch_idx, batch in enumerate(deployment_batches, start=1):
             self.logger.info(f"Batch {batch_idx}/{len(deployment_batches)}: Deploying {len(batch)} artifact type(s): {batch}")
 
@@ -227,14 +240,19 @@ class FabricCicdManager(CicdManager):
         if template_params.unpublish_orphans:
             self.logger.info("Unpublishing orphan items")
             # Use full scope for unpublishing orphans
-            target_workspace_full = fabric_cicd.FabricWorkspace(
-                workspace_id=workspace_id,
-                environment=template_params.environment_key,
-                repository_directory=str(artifacts_root),
-                item_type_in_scope=template_params.item_types_in_scope,
-                token_credential=self.token_credential,
-            )
-            await asyncio.to_thread(fabric_cicd.unpublish_all_orphan_items, target_workspace_full)
+            if target_workspace_full is None:
+                target_workspace_full = fabric_cicd.FabricWorkspace(
+                    workspace_id=workspace_id,
+                    environment=template_params.environment_key,
+                    repository_directory=str(artifacts_root),
+                    item_type_in_scope=template_params.item_types_in_scope,
+                    token_credential=self.token_credential,
+                )
+            if orphan_exceptions:
+                exclusion = await asyncio.to_thread(validate_orphan_cleanup_exceptions, target_workspace_full, orphan_exceptions)
+                await asyncio.to_thread(fabric_cicd.unpublish_all_orphan_items, target_workspace_full, item_name_exclude_regex=exclusion)
+            else:
+                await asyncio.to_thread(fabric_cicd.unpublish_all_orphan_items, target_workspace_full)
 
         self.logger.info("Updating Spark Job Definition configurations")
         if template_params.spark_job_definitions:

@@ -690,6 +690,7 @@ class FabricWorkspaceTemplateParams:
     externally_managed_shortcuts: list[ExternallyManagedShortcuts] = field(default_factory=list)
     items_to_include: list[str] | None = None
     folder_paths_to_include: list[str] | None = None
+    orphan_cleanup_exceptions: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -4751,6 +4752,29 @@ class OperationParams:
         unpublish_orphans = data["unpublishOrphans"]
         if not isinstance(unpublish_orphans, bool):
             raise ValueError("Workspace template unpublishOrphans must be a boolean")
+        orphan_cleanup_exceptions = data.get("orphanCleanupExceptions", [])
+        if "orphanCleanupExceptions" in data:
+            from uuid import UUID
+
+            if not isinstance(orphan_cleanup_exceptions, list) or not orphan_cleanup_exceptions:
+                raise ValueError("Workspace template orphanCleanupExceptions must be a non-empty list")
+            if not unpublish_orphans:
+                raise ValueError("Workspace template orphanCleanupExceptions requires unpublishOrphans=true")
+            seen_names: set[str] = set()
+            seen_ids: set[str] = set()
+            for entry in orphan_cleanup_exceptions:
+                if not isinstance(entry, dict) or set(entry) != {"name", "type", "id"} or any(not isinstance(value, str) or not value.strip() or value != value.strip() for value in entry.values()):
+                    raise ValueError("Workspace template orphanCleanupExceptions entries require non-empty name, type, and id strings")
+                if entry["type"] not in data["itemTypesInScope"]:
+                    raise ValueError("Workspace template orphanCleanupExceptions type must be in itemTypesInScope")
+                try:
+                    item_id = str(UUID(entry["id"]))
+                except ValueError as error:
+                    raise ValueError("Workspace template orphanCleanupExceptions id must be a UUID") from error
+                if entry["name"].casefold() in seen_names or item_id in seen_ids:
+                    raise ValueError("Workspace template orphanCleanupExceptions names and IDs must be unique")
+                seen_names.add(entry["name"].casefold())
+                seen_ids.add(item_id)
         items_to_include = data.get("itemsToInclude")
         if "itemsToInclude" in data:
             if not isinstance(items_to_include, list) or not items_to_include:
@@ -4829,6 +4853,7 @@ class OperationParams:
             externally_managed_shortcuts=externally_managed_shortcuts,
             items_to_include=items_to_include,
             folder_paths_to_include=folder_paths_to_include,
+            orphan_cleanup_exceptions=orphan_cleanup_exceptions,
         )
 
     def _parse_externally_managed_shortcuts(self, data: Any) -> list[ExternallyManagedShortcuts]:

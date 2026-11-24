@@ -35,3 +35,22 @@ For `deployTemplate`, set `template.itemsToInclude` to a non-empty list of `name
 To restrict workspace folder publishing as well, set `template.folderPathsToInclude` to a non-empty list of absolute Fabric folder paths such as `/Team/Reports`, without trailing slashes. It requires `itemsToInclude`, cannot be combined with `disable_workspace_folder_publish`, and enables fabric-cicd's `enable_include_folder` feature. The upstream filter includes root items and only items in the exact specified paths, not their subfolders. It may create the specified folders and their ancestors if they are missing; omitting it allows all repository folders to be published.
 
 These filters do not limit workspace fan-out, custom-library staging, or template generation. Set `skipDeploy` on other workspaces and review those configurations separately. Non-empty `sparkJobDefinitions` is rejected in selective mode because its creation and update hooks run outside these filters. Selection is experimental, may omit dependencies, and does not prove that the selected items exist or that the deployment had no other side effects. Feature flags are process-global in fabric-cicd; do not enable `disable_workspace_folder_publish` in any workspace in the same run when using folder inclusion.
+
+## Orphan cleanup exceptions
+
+For full `deployTemplate` publishing, `orphanCleanupExceptions` protects specific existing workspace items from orphan deletion while leaving cleanup enabled for other items:
+
+```json
+{
+  "unpublishOrphans": true,
+  "itemTypesInScope": ["DataPipeline", "Reflex"],
+  "orphanCleanupExceptions": [
+    {"name": "ExternalPipeline", "type": "DataPipeline", "id": "11111111-1111-4111-8111-111111111111"},
+    {"name": "ExternalAlert", "type": "Reflex", "id": "22222222-2222-4222-8222-222222222222"}
+  ]
+}
+```
+
+Omit the field for normal cleanup. When present it must be a non-empty list; each entry requires the exact display name, item type in scope, and existing workspace item ID. Each name must uniquely identify that item across all workspace item types; missing, wrong or ambiguous identities fail. The list applies only to its workspace. The publisher checks the paginated item listing before publication and again immediately before cleanup, then passes an escaped, anchored name exclusion to fabric-cicd. These checks are not atomic with cleanup; coordinate concurrent workspace changes.
+
+This only excludes orphan deletion; it does not prevent publishing a matching repository item, other deployment hooks, or changes by other actors. It cannot be combined with selective `itemsToInclude` or `unpublishOrphans=false`. Workspace generation and staging can run before the first identity check.

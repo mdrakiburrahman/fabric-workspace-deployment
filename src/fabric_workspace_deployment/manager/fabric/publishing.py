@@ -5,9 +5,11 @@
 import base64
 import json
 import logging
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from azure.core.credentials import TokenCredential
@@ -138,6 +140,48 @@ def validate_externally_managed_shortcuts(artifacts_root: Path, item_types_in_sc
     if "enable_shortcut_publish" not in feature_flags:
         logger.warning("template.externallyManagedShortcuts has no effect: fabric-cicd only manages shortcuts when template.featureFlags includes enable_shortcut_publish")
     logger.info("Externally managed shortcuts exempt from orphan cleanup: " + ", ".join(f"{rule.lakehouse}{list(rule.path_prefixes)}" for rule in rules))
+
+
+def validate_orphan_cleanup_exceptions(workspace: "FabricWorkspace", exceptions: list[dict[str, str]]) -> str:
+    """Resolve each exception uniquely before passing name-only exclusions to fabric-cicd."""
+    items_url = f"{workspace.base_api_url}/items"
+    expected_url = urlsplit(items_url)
+    url = items_url
+    seen_urls: set[str] = set()
+    matches: dict[str, list[dict[str, str]]] = {entry["name"].casefold(): [] for entry in exceptions}
+    while url:
+        parsed = urlsplit(url)
+        if (parsed.scheme, parsed.netloc, parsed.path, parsed.fragment) != (expected_url.scheme, expected_url.netloc, expected_url.path, "") or url in seen_urls:
+            raise ValueError("Invalid or repeated item listing continuation URI")
+        seen_urls.add(url)
+        response = workspace.endpoint.invoke(method="GET", url=url)
+        body = response.get("body")
+        if not isinstance(body, dict) or not isinstance(body.get("value"), list):
+            raise ValueError("Invalid workspace item listing")
+        for item in body["value"]:
+            if not isinstance(item, dict) or not all(isinstance(item.get(key), str) and item[key] for key in ("displayName", "type", "id")):
+                raise ValueError("Invalid item in workspace listing")
+            name = item["displayName"].casefold()
+            if name in matches:
+                matches[name].append(item)
+        continuation = body.get("continuationUri") or response.get("header", {}).get("continuationUri")
+        if continuation is not None and not isinstance(continuation, str):
+            raise ValueError("Invalid item listing continuation URI")
+        if body.get("continuationToken") and not continuation:
+            raise ValueError("Item listing continuation token has no continuation URI")
+        url = continuation or ""
+
+    for entry in exceptions:
+        found = matches[entry["name"].casefold()]
+        if len(found) != 1 or found[0]["displayName"] != entry["name"] or found[0]["type"] != entry["type"]:
+            raise ValueError(f"Orphan cleanup exception '{entry['name']}' must uniquely match its exact name and type in the workspace")
+        try:
+            same_id = UUID(found[0]["id"]) == UUID(entry["id"])
+        except ValueError as error:
+            raise ValueError(f"Invalid ID for orphan cleanup exception '{entry['name']}'") from error
+        if not same_id:
+            raise ValueError(f"Orphan cleanup exception '{entry['name']}' does not match its configured ID")
+    return r"\A(?:" + "|".join(re.escape(entry["name"]) for entry in exceptions) + r")\Z"
 
 
 def configure_publish_features(feature_flags: list[str], *additional_feature_flags: str, bulk_publish: bool = False) -> None:
